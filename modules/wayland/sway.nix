@@ -16,7 +16,7 @@ in
 
       fonts = {
         names = [ "JetBrainsMono Nerd Font" ];
-        size = 10.0;
+        size = 9.5;
       };
 
       gaps = {
@@ -136,7 +136,7 @@ in
       input = {
         "type:touchpad" = {
           tap = "enabled";
-          natural_scroll = "enabled";
+          natural_scroll = "disabled";
           accel_profile = "adaptive";
           pointer_accel = "0.3";
         };
@@ -149,8 +149,13 @@ in
       output = {
         "*" = {
           bg = "#0f0f0f solid_color";
+          scale = "1.0";
         };
       };
     };
+
+    extraConfig = ''
+      workspace 1
+    '';
   };
 }

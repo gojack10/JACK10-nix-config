@@ -25,6 +25,33 @@
 
   fonts.fontconfig.enable = true;
 
+  # Dark mode for GTK apps
+  gtk = {
+    enable = true;
+    theme = {
+      name = "Adwaita-dark";
+      package = pkgs.gnome-themes-extra;
+    };
+    font = {
+      name = "JetBrainsMono Nerd Font";
+      size = 10;
+    };
+    gtk3.extraConfig = {
+      gtk-application-prefer-dark-theme = true;
+      gtk-xft-dpi = 98304;  # 96 * 1024 * ~1.0 - slightly smaller
+    };
+    gtk4.extraConfig.gtk-application-prefer-dark-theme = true;
+  };
+
+  # Qt dark mode (follows GTK)
+  qt = {
+    enable = true;
+    platformTheme.name = "gtk";
+  };
+
+  # Disable dconf (no dbus session on Void)
+  dconf.enable = false;
+
   home.sessionVariables = {
     LANG = "C.UTF-8";
     MOZ_ENABLE_WAYLAND = "1";

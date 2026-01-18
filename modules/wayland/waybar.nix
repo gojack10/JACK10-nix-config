@@ -5,7 +5,7 @@
     ".config/waybar/config".text = builtins.toJSON {
       layer = "top";
       position = "top";
-      height = 26;
+      height = 18;
       modules-left = [ "sway/workspaces" "sway/mode" ];
       modules-right = [ "cpu" "memory" "network" "battery" "clock" ];
 
@@ -47,7 +47,7 @@
     ".config/waybar/style.css".text = ''
       * {
         font-family: "JetBrainsMono Nerd Font Mono", monospace;
-        font-size: 12px;
+        font-size: 9.5px;
         border: none;
         border-radius: 0;
         min-height: 0;

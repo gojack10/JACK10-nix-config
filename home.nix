@@ -326,11 +326,10 @@ in
         "Print" = "exec grim -g \"$(slurp)\" - | wl-copy";
       };
 
-      bars = [{
-        command = "waybar";
-      }];
+      bars = [];
 
       startup = [
+        { command = "waybar"; }
         { command = "mako"; }
         { command = "nm-applet --indicator"; }
       ];
@@ -385,7 +384,7 @@ in
       position = "top";
       height = 26;
       modules-left = [ "sway/workspaces" "sway/mode" ];
-      modules-right = [ "pulseaudio" "cpu" "memory" "network" "battery" "clock" ];
+      modules-right = [ "cpu" "memory" "network" "battery" "clock" ];
 
       "sway/workspaces" = {
         disable-scroll = true;
@@ -416,11 +415,6 @@ in
         interval = 5;
       };
 
-      pulseaudio = {
-        format = "VOL {volume}%";
-        format-muted = "muted";
-      };
-
       clock = {
         format = "{:%Y-%m-%d %H:%M}";
         interval = 1;
@@ -429,7 +423,7 @@ in
 
     ".config/waybar/style.css".text = ''
       * {
-        font-family: "JetBrainsMono Nerd Font";
+        font-family: "JetBrainsMono Nerd Font Mono", monospace;
         font-size: 12px;
         border: none;
         border-radius: 0;
@@ -605,6 +599,7 @@ in
   # SESSION VARIABLES
   # ══════════════════════════════════════════════════════════════════════════════
   home.sessionVariables = {
+    LANG = "C.UTF-8";
     MOZ_ENABLE_WAYLAND = "1";
     XDG_CURRENT_DESKTOP = "sway";
     XDG_SESSION_TYPE = "wayland";

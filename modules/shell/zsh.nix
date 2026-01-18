@@ -1,0 +1,111 @@
+{ config, pkgs, ... }:
+
+{
+  programs.zsh = {
+    enable = true;
+    autosuggestion.enable = true;
+    syntaxHighlighting.enable = true;
+    historySubstringSearch.enable = true;
+
+    plugins = [
+      {
+        name = "fzf-tab";
+        src = pkgs.fetchFromGitHub {
+          owner = "Aloxaf";
+          repo = "fzf-tab";
+          rev = "v1.1.2";
+          sha256 = "sha256-Qv8zAiMtrr67CbLRrFjGaPzFZcOiMVEFLg1Z+N6VMhg=";
+        };
+      }
+    ];
+
+    history = {
+      size = 100000;
+      save = 100000;
+      ignoreDups = true;
+      ignoreAllDups = true;
+      share = true;
+      extended = true;
+    };
+
+    oh-my-zsh = {
+      enable = true;
+      plugins = [ "git" "fzf" ];
+      theme = "eastwood-custom";
+      custom = "$HOME/.config/oh-my-zsh-custom";
+    };
+
+    shellAliases = {
+      ts = "tmux attach \\; choose-tree -NNs";
+      claudeyolo = "claude --dangerously-skip-permissions";
+      rsync = "rsync -ah --info=progress2 --no-i-r --stats";
+      fastfetch = "fastfetch --logo-position top";
+    };
+
+    # .zprofile - runs on login shell (XDG needed before sway starts)
+    profileExtra = ''
+      # XDG_RUNTIME_DIR for Wayland/Sway
+      if [ -z "$XDG_RUNTIME_DIR" ]; then
+        export XDG_RUNTIME_DIR=/tmp/$(id -u)-runtime-dir
+        mkdir -p "$XDG_RUNTIME_DIR"
+        chmod 700 "$XDG_RUNTIME_DIR"
+      fi
+    '';
+
+    initContent = ''
+      # Quality of life
+      setopt AUTO_CD
+      setopt CORRECT
+      setopt NO_BEEP
+      setopt HIST_VERIFY
+      setopt HIST_EXPIRE_DUPS_FIRST
+
+      # PATH
+      export PATH="$HOME/.local/bin:$PATH"
+      export PATH="$HOME/.nix-profile/bin:$PATH"
+
+      # Editor
+      export EDITOR=nvim
+      export VISUAL=nvim
+
+      # pbcopy for OSC 52 clipboard (works in tmux, SSH, raw terminal)
+      pbcopy() {
+        if [[ -n "$TMUX" ]]; then
+          local data=$(base64 | tr -d '\n')
+          printf '\033Ptmux;\033\033]52;c;%s\007\033\\' "$data"
+        elif [[ -n "$SSH_TTY" ]]; then
+          local data=$(base64 | tr -d '\n')
+          printf '\033]52;c;%s\007' "$data"
+        elif command -v /usr/bin/pbcopy &>/dev/null; then
+          /usr/bin/pbcopy
+        else
+          local data=$(base64 | tr -d '\n')
+          printf '\033]52;c;%s\007' "$data"
+        fi
+      }
+    '';
+  };
+
+  programs.fzf = {
+    enable = true;
+    enableZshIntegration = true;
+  };
+
+  # oh-my-zsh custom theme
+  home.file.".config/oh-my-zsh-custom/themes/eastwood-custom.zsh-theme".text = ''
+    # Customized git status - shows dirty marker before branch name
+    git_custom_status() {
+      local cb=$(git_current_branch)
+      if [ -n "$cb" ]; then
+        echo "$(parse_git_dirty)$ZSH_THEME_GIT_PROMPT_PREFIX$(git_current_branch)$ZSH_THEME_GIT_PROMPT_SUFFIX"
+      fi
+    }
+
+    ZSH_THEME_GIT_PROMPT_PREFIX="%{$reset_color%}%{$fg[green]%}["
+    ZSH_THEME_GIT_PROMPT_SUFFIX="]%{$reset_color%}"
+    ZSH_THEME_GIT_PROMPT_DIRTY="%{$fg[red]%}*%{$reset_color%}"
+    ZSH_THEME_GIT_PROMPT_CLEAN=""
+
+    PROMPT='%F{green}%n@%m%f $(git_custom_status)%{$fg[cyan]%}[%~% ]%{$reset_color%}%B$%b '
+  '';
+}

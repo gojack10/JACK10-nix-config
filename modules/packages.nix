@@ -5,6 +5,7 @@
     # Wayland & Desktop (sway added by wayland.windowManager.sway.enable)
     waybar
     wofi          # rofi replacement for wayland
+    bemenu        # simpler dmenu for wayland (used for askpass)
     mako          # notification daemon
     swaybg        # wallpaper
     swaylock      # lock screen

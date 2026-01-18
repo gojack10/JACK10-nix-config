@@ -68,6 +68,9 @@
       export EDITOR=nvim
       export VISUAL=nvim
 
+      # Sudo askpass for GUI prompts (enables sudo -A)
+      export SUDO_ASKPASS="$HOME/.local/bin/askpass-wofi"
+
       # pbcopy for OSC 52 clipboard (works in tmux, SSH, raw terminal)
       pbcopy() {
         if [[ -n "$TMUX" ]]; then

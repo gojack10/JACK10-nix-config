@@ -122,7 +122,7 @@ in
         "XF86AudioMute" = "exec pactl set-sink-mute @DEFAULT_SINK@ toggle";
 
         # Screenshot
-        "Print" = "exec grim -g \"$(slurp)\" - | wl-copy";
+        "Print" = "exec grim -g \"$(slurp)\" - | swappy -f -";
       };
 
       bars = [];
@@ -131,6 +131,12 @@ in
         { command = "waybar"; }
         { command = "mako"; }
         { command = "nm-applet --indicator"; }
+        { command = "dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP=sway"; }
+        { command = "pipewire"; }
+        { command = "pipewire-pulse"; }
+        { command = "wireplumber"; }
+        { command = "${config.home.homeDirectory}/.nix-profile/libexec/xdg-desktop-portal-wlr"; }
+        { command = "${config.home.homeDirectory}/.nix-profile/libexec/xdg-desktop-portal"; }
       ];
 
       input = {

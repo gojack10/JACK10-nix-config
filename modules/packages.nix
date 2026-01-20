@@ -8,12 +8,14 @@
     bemenu        # simpler dmenu for wayland (used for askpass)
     mako          # notification daemon
     swaybg        # wallpaper
-    swaylock      # lock screen
-    swayidle      # idle management
     wl-clipboard  # clipboard
     grim          # screenshot
     slurp         # region selection
+    swappy        # screenshot annotation
     brightnessctl
+    xdg-desktop-portal      # portal base
+    xdg-desktop-portal-wlr  # portal backend for sway (screen capture)
+    xdg-desktop-portal-gtk  # portal backend for file dialogs
 
     # Terminal & Shell
     foot          # lightweight wayland-native terminal
@@ -26,10 +28,10 @@
     ripgrep
     fd
 
-    # System
-    networkmanagerapplet
-    pavucontrol
-    pulseaudio  # for pactl
+    # Audio (PipeWire replaces PulseAudio, also enables portal screen capture)
+    pipewire
+    wireplumber       # PipeWire session manager
+    pavucontrol       # volume control (works with PipeWire)
 
     # Fonts
     nerd-fonts.jetbrains-mono

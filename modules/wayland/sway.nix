@@ -123,6 +123,20 @@ in
 
         # Screenshot
         "Print" = "exec grim -g \"$(slurp)\" - | swappy -f -";
+
+        # Resize mode
+        "${modifier}+r" = "mode resize";
+      };
+
+      modes = {
+        resize = {
+          # hjkl to resize - grows in direction pressed, like tmux
+          "h" = "resize grow left 20px";
+          "j" = "resize grow down 20px";
+          "k" = "resize grow up 20px";
+          "l" = "resize grow right 20px";
+          "Escape" = "mode default";
+        };
       };
 
       bars = [];

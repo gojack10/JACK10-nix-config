@@ -13,6 +13,7 @@
     ./modules/shell/zsh.nix
     ./modules/shell/tmux.nix
     ./modules/shell/git.nix
+    ./modules/shell/lf.nix
     # Editor
     ./modules/editor/nvim.nix
   ];

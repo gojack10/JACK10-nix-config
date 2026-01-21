@@ -64,6 +64,9 @@
       export PATH="$HOME/.local/bin:$PATH"
       export PATH="$HOME/.nix-profile/bin:$PATH"
 
+      # mise version manager
+      eval "$($HOME/.local/bin/mise activate zsh)"
+
       # Editor
       export EDITOR=nvim
       export VISUAL=nvim

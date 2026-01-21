@@ -21,6 +21,9 @@
     foot          # lightweight wayland-native terminal
     zsh
     fzf
+    lf            # terminal file manager (vim-like)
+    xdg-utils     # xdg-open for lf
+    swayimg       # simple image viewer for sway
 
     # Dev tools
     neovim

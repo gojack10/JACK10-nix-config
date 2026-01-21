@@ -59,6 +59,10 @@
     XDG_CURRENT_DESKTOP = "sway";
     XDG_SESSION_TYPE = "wayland";
   };
+  home.sessionPath = [
+    "$HOME/.local/bin"
+    "$HOME/.nix-profile/bin"
+  ];
 
   # Local scripts
   home.file.".local/bin/askpass-wofi" = {

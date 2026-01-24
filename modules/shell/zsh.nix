@@ -55,7 +55,7 @@
     initContent = ''
       # Quality of life
       setopt AUTO_CD
-      setopt CORRECT
+      setopt NO_CORRECT
       setopt NO_BEEP
       setopt HIST_VERIFY
       setopt HIST_EXPIRE_DUPS_FIRST

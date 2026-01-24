@@ -7,7 +7,7 @@
       position = "top";
       height = 18;
       modules-left = [ "sway/workspaces" "sway/mode" ];
-      modules-right = [ "cpu" "memory" "network" "battery" "clock" ];
+      modules-right = [ "cpu" "memory" "network" "battery" "custom/mic" "pulseaudio" "clock" ];
 
       "sway/workspaces" = {
         disable-scroll = true;
@@ -42,6 +42,19 @@
         format = "{:%Y-%m-%d %H:%M}";
         interval = 1;
       };
+
+      pulseaudio = {
+        format = "VOL {volume}%";
+        format-muted = "VOL MUTE";
+        on-click = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle";
+        scroll-step = 5;
+      };
+
+      "custom/mic" = {
+        exec = "bash -c 'vol=$(wpctl get-volume @DEFAULT_AUDIO_SOURCE@ | awk \"{print int(\\$2*100)}\"); mute=$(wpctl get-volume @DEFAULT_AUDIO_SOURCE@ | grep MUTED); if [ -n \"$mute\" ]; then echo \"MIC MUTE\"; else echo \"MIC $vol%\"; fi'";
+        interval = 1;
+        on-click = "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle";
+      };
     };
 
     ".config/waybar/style.css".text = ''
@@ -74,9 +87,13 @@
         color: #ffffff;
       }
 
-      #cpu, #memory, #network, #battery, #pulseaudio, #clock {
+      #cpu, #memory, #network, #battery, #pulseaudio, #clock, #custom-mic {
         padding: 0 10px;
         color: #d0d0d0;
+      }
+
+      #pulseaudio.muted, #custom-mic.muted {
+        color: #ff5555;
       }
 
       #battery.charging {

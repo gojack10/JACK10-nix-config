@@ -117,9 +117,14 @@ in
         # Volume/brightness
         "XF86MonBrightnessUp" = "exec brightnessctl set +5%";
         "XF86MonBrightnessDown" = "exec brightnessctl set 5%-";
-        "XF86AudioRaiseVolume" = "exec pactl set-sink-volume @DEFAULT_SINK@ +5%";
-        "XF86AudioLowerVolume" = "exec pactl set-sink-volume @DEFAULT_SINK@ -5%";
-        "XF86AudioMute" = "exec pactl set-sink-mute @DEFAULT_SINK@ toggle";
+        "XF86AudioRaiseVolume" = "exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+";
+        "XF86AudioLowerVolume" = "exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-";
+        "XF86AudioMute" = "exec wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle";
+
+        # Speaker volume (F6 mute, F7 down, F8 up)
+        "F6" = "exec wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle";
+        "F7" = "exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-";
+        "F8" = "exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+";
 
         # Screenshot
         "Print" = "exec grim -g \"$(slurp)\" - | swappy -f -";
@@ -151,6 +156,8 @@ in
         { command = "wireplumber"; }
         { command = "${config.home.homeDirectory}/.nix-profile/libexec/xdg-desktop-portal-wlr"; }
         { command = "${config.home.homeDirectory}/.nix-profile/libexec/xdg-desktop-portal"; }
+        { command = "wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 30%"; }
+        { command = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0%"; }
       ];
 
       input = {

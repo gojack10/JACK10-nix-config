@@ -129,6 +129,9 @@ in
         # Screenshot
         "Print" = "exec grim -g \"$(slurp)\" - | swappy -f -";
 
+        # Deep work timer toggle
+        "${modifier}+Shift+d" = "exec ~/.local/bin/deepwork toggle";
+
         # Resize mode
         "${modifier}+r" = "mode resize";
       };

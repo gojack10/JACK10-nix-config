@@ -38,7 +38,9 @@
 
     # Fonts
     nerd-fonts.jetbrains-mono
+    nerd-fonts.symbols-only   # fallback for any missing NF glyphs
     font-awesome
-    noto-fonts          # sans-serif UI font
+    noto-fonts                # sans-serif UI font
+    noto-fonts-color-emoji    # emoji support
   ];
 }

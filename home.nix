@@ -67,6 +67,14 @@
     "$HOME/.nix-profile/bin"
   ];
 
+  # Nix settings (enable flakes)
+  nix = {
+    package = pkgs.nix;
+    settings = {
+      experimental-features = [ "nix-command" "flakes" ];
+    };
+  };
+
   # Local scripts
   home.file.".local/bin/askpass-wofi" = {
     executable = true;

@@ -54,6 +54,28 @@
     '';
 
     initContent = ''
+      # home-manager switch helper
+      hms() {
+        local flake="$HOME/.config/home-manager"
+        local hosts=$(nix eval "$flake#homeConfigurations" --apply 'x: builtins.attrNames x' 2>/dev/null | tr -d '[]"' | tr ' ' '\n' | grep -v '^$')
+
+        if [[ -z "$1" ]]; then
+          echo "Usage: hms <hostname>"
+          echo "Available hosts:"
+          echo "$hosts" | sed 's/^/  /'
+          return 1
+        fi
+
+        if echo "$hosts" | grep -qx "$1"; then
+          home-manager switch --flake "$flake#$1"
+        else
+          echo "Unknown host: $1"
+          echo "Available:"
+          echo "$hosts" | sed 's/^/  /'
+          return 1
+        fi
+      }
+
       # Quality of life
       setopt AUTO_CD
       setopt NO_CORRECT

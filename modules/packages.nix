@@ -39,5 +39,6 @@
     # Fonts
     nerd-fonts.jetbrains-mono
     font-awesome
+    noto-fonts          # sans-serif UI font
   ];
 }

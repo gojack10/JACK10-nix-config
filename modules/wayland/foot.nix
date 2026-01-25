@@ -3,7 +3,7 @@
 {
   home.file.".config/foot/foot.ini".text = ''
     [main]
-    font=JetBrainsMono Nerd Font:size=9.5
+    font=JetBrainsMono Nerd Font Mono:size=9.5
     pad=8x8
 
     [colors]

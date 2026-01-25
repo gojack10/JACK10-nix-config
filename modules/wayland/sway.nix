@@ -151,6 +151,7 @@ in
 
       startup = [
         { command = "waybar"; }
+        { command = "~/.local/bin/sway-workspace-outputs"; }
         { command = "mako"; }
         { command = "nm-applet --indicator"; }
         { command = "dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP=sway"; }
@@ -180,6 +181,9 @@ in
         "*" = {
           bg = "#0f0f0f solid_color";
           scale = "1.0";
+        };
+        "Sceptre Tech Inc Sceptre C32 0x00000001" = {
+          mode = "1920x1080@120Hz";
         };
       };
     };

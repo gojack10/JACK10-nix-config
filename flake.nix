@@ -17,12 +17,14 @@
       # Machine-specific settings
       defaults = {
         fontSize = 11.0;
+        fontSizeFoot = 11.0;
+        fontSizeWaybar = 11.0;
         useSystemSway = true;
       };
 
       machines = {
-        litetop = defaults // { fontSize = 9.5; };
-        "10top" = defaults;
+        litetop = defaults // { fontSize = 9.5; fontSizeFoot = 9.5; fontSizeWaybar = 9.5; };
+        "10top" = defaults // { fontSizeFoot = 12.0; fontSizeWaybar = 11.5; };
         desktop = defaults;
       };
 
@@ -30,7 +32,7 @@
         inherit pkgs;
         extraSpecialArgs = {
           inherit hostname;
-          inherit (settings) fontSize useSystemSway;
+          inherit (settings) fontSize fontSizeFoot fontSizeWaybar useSystemSway;
         };
         modules = [ ./home.nix ];
       };

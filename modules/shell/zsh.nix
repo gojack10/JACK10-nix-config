@@ -54,6 +54,9 @@
     '';
 
     initContent = ''
+      # home-manager update
+      alias hmu="nix flake update --flake ~/.config/home-manager"
+
       # home-manager switch helper
       hms() {
         local flake="$HOME/.config/home-manager"

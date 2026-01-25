@@ -25,6 +25,9 @@
   programs.home-manager.enable = true;
 
   fonts.fontconfig.enable = true;
+  fonts.fontconfig.defaultFonts = {
+    monospace = [ "JetBrainsMono Nerd Font Mono" ];
+  };
 
   # Dark mode for GTK apps
   gtk = {

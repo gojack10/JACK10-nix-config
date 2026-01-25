@@ -1,9 +1,9 @@
-{ config, pkgs, ... }:
+{ config, pkgs, fontSize, ... }:
 
 {
   home.file.".config/foot/foot.ini".text = ''
     [main]
-    font=JetBrainsMono Nerd Font Mono:size=9.5
+    font=JetBrainsMono Nerd Font Mono:size=${toString fontSize}
     pad=8x8
 
     [colors]

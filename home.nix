@@ -1,4 +1,4 @@
-{ config, pkgs, ... }:
+{ config, pkgs, fontSize, hostname, useSystemSway, ... }:
 
 {
   imports = [
@@ -38,7 +38,7 @@
     };
     font = {
       name = "JetBrainsMono Nerd Font";
-      size = 10;
+      size = builtins.floor (fontSize + 0.5);
     };
     gtk3.extraConfig = {
       gtk-application-prefer-dark-theme = true;
@@ -72,7 +72,37 @@
     executable = true;
     text = ''
       #!/bin/sh
-      bemenu -x -p "sudo:" --fn "JetBrainsMono Nerd Font 12"
+      bemenu -x -p "sudo:" --fn "JetBrainsMono Nerd Font ${toString (builtins.floor (fontSize + 2.5))}"
+    '';
+  };
+
+  home.file.".local/bin/sway-workspace-outputs" = {
+    executable = true;
+    text = ''
+      #!/bin/sh
+      # Move workspaces 4+ to external monitor if connected
+
+      assign_workspaces() {
+        external=$(swaymsg -t get_outputs -r | grep -o '"name": "[^"]*"' | cut -d'"' -f4 | grep -v eDP-1 | head -1)
+
+        if [ -n "$external" ]; then
+          for ws in 4 5 6 7 8 9 10; do
+            swaymsg "workspace $ws output $external"
+          done
+          # Switch external to workspace 4
+          swaymsg "focus output $external"
+          swaymsg "workspace 4"
+        fi
+      }
+
+      # Run once immediately
+      assign_workspaces
+
+      # Then subscribe to output events
+      swaymsg -t subscribe '["output"]' --monitor | while read -r event; do
+        sleep 0.5  # let output settle
+        assign_workspaces
+      done
     '';
   };
 }

@@ -1,10 +1,5 @@
-{ config, pkgs, lib, ... }:
+{ config, pkgs, lib, fontSize, useSystemSway, ... }:
 
-let
-  hostnameFile = builtins.readFile /etc/hostname;
-  hostname = builtins.replaceStrings ["\n"] [""] hostnameFile;
-  useSystemSway = builtins.elem hostname [ "litetop" "10top" ];
-in
 {
   wayland.windowManager.sway = {
     enable = true;
@@ -16,7 +11,7 @@ in
 
       fonts = {
         names = [ "JetBrainsMono Nerd Font" ];
-        size = 9.5;
+        size = fontSize;
       };
 
       gaps = {

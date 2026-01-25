@@ -1,4 +1,4 @@
-{ config, pkgs, ... }:
+{ config, pkgs, fontSize, ... }:
 
 {
   home.file.".config/wofi/style.css".text = ''
@@ -6,7 +6,7 @@
       background-color: #0f0f0f;
       color: #d0d0d0;
       font-family: "JetBrainsMono Nerd Font";
-      font-size: 12px;
+      font-size: ${toString (fontSize + 2)}px;
     }
 
     #input {

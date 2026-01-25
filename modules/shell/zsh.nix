@@ -40,6 +40,7 @@
       claudeyolo = "claude --dangerously-skip-permissions";
       rsync = "rsync -ah --info=progress2 --no-i-r --stats";
       fastfetch = "fastfetch --logo-position top";
+      brave-update = "cd ~/void-packages && git -C ./srcpkgs/brave-bin pull && ./xbps-src pkg brave-bin && sudo xbps-install -R hostdir/binpkgs -u brave-bin && cd -";
     };
 
     # .zprofile - runs on login shell (XDG needed before sway starts)

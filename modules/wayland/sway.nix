@@ -133,11 +133,15 @@
 
       modes = {
         resize = {
-          # hjkl to resize - grows in direction pressed, like tmux
+          # hjkl to grow, Shift+hjkl to shrink
           "h" = "resize grow left 20px";
           "j" = "resize grow down 20px";
           "k" = "resize grow up 20px";
           "l" = "resize grow right 20px";
+          "Shift+h" = "resize shrink left 20px";
+          "Shift+j" = "resize shrink down 20px";
+          "Shift+k" = "resize shrink up 20px";
+          "Shift+l" = "resize shrink right 20px";
           "Escape" = "mode default";
         };
       };

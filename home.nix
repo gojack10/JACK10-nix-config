@@ -26,7 +26,8 @@
 
   fonts.fontconfig.enable = true;
   fonts.fontconfig.defaultFonts = {
-    monospace = [ "JetBrainsMono Nerd Font Mono" ];
+    monospace = [ "JetBrainsMono Nerd Font Mono" "Symbols Nerd Font Mono" ];
+    emoji = [ "Noto Color Emoji" ];
   };
 
   # Dark mode for GTK apps

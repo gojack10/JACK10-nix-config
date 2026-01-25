@@ -1,4 +1,4 @@
-{ config, pkgs, fontSize, ... }:
+{ config, pkgs, fontSizeWaybar, ... }:
 
 {
   home.file = {
@@ -67,7 +67,7 @@
     ".config/waybar/style.css".text = ''
       * {
         font-family: "JetBrainsMono Nerd Font Mono", monospace;
-        font-size: ${toString fontSize}px;
+        font-size: ${toString fontSizeWaybar}px;
         border: none;
         border-radius: 0;
         min-height: 0;

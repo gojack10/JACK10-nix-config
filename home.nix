@@ -54,17 +54,28 @@
     platformTheme.name = "gtk";
   };
 
-  # Disable dconf (no dbus session on Void)
-  dconf.enable = false;
+  # dconf settings (GTK portal reads theme from here)
+  dconf = {
+    enable = true;
+    settings = {
+      "org/gnome/desktop/interface" = {
+        color-scheme = "prefer-dark";
+        gtk-theme = "Adwaita-dark";
+      };
+    };
+  };
 
   home.sessionVariables = {
     LANG = "C.UTF-8";
     MOZ_ENABLE_WAYLAND = "1";
     XDG_CURRENT_DESKTOP = "sway";
     XDG_SESSION_TYPE = "wayland";
+    GTK_USE_PORTAL = "1";  # Chromium/Brave use portal for file dialogs
     # PipeWire needs these to find Nix-installed plugins
     SPA_PLUGIN_DIR = "${config.home.homeDirectory}/.nix-profile/lib/spa-0.2";
     PIPEWIRE_MODULE_DIR = "${config.home.homeDirectory}/.nix-profile/lib/pipewire-0.3";
+    # gsettings schema path for GTK portal dark theme
+    GSETTINGS_SCHEMA_DIR = "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/gsettings-desktop-schemas-${pkgs.gsettings-desktop-schemas.version}/glib-2.0/schemas";
   };
   home.sessionPath = [
     "$HOME/.local/bin"

@@ -16,6 +16,8 @@
     xdg-desktop-portal      # portal base
     xdg-desktop-portal-wlr  # portal backend for sway (screen capture)
     xdg-desktop-portal-gtk  # portal backend for file dialogs
+    dconf                   # GTK settings backend (needed for portal dark theme)
+    gsettings-desktop-schemas  # schemas for GTK portal
 
     # Terminal & Shell
     foot          # lightweight wayland-native terminal

@@ -36,6 +36,7 @@
     };
 
     shellAliases = {
+      open = "xdg-open";
       ts = "tmux attach \\; choose-tree -NNs";
       claudeyolo = "claude --dangerously-skip-permissions";
       rsync = "rsync -ah --info=progress2 --no-i-r --stats";

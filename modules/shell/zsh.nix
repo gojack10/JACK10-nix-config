@@ -51,6 +51,9 @@
         mkdir -p "$XDG_RUNTIME_DIR"
         chmod 700 "$XDG_RUNTIME_DIR"
       fi
+
+      # Source home-manager session variables (GTK_USE_PORTAL, etc.)
+      . "$HOME/.nix-profile/etc/profile.d/hm-session-vars.sh"
     '';
 
     initContent = ''

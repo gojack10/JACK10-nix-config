@@ -196,6 +196,7 @@
 
     extraConfig = ''
       workspace 1
+      seat seat0 xcursor_theme retrosmart-xcursor-black 24
     '';
   };
 }

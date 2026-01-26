@@ -41,6 +41,10 @@
       name = "JetBrainsMono Nerd Font";
       size = builtins.floor (fontSize + 0.5);
     };
+    cursorTheme = {
+      name = "retrosmart-xcursor-black";
+      size = 24;
+    };
     gtk3.extraConfig = {
       gtk-application-prefer-dark-theme = true;
       gtk-xft-dpi = 98304;  # 96 * 1024 * ~1.0 - slightly smaller
@@ -76,6 +80,9 @@
     PIPEWIRE_MODULE_DIR = "${config.home.homeDirectory}/.nix-profile/lib/pipewire-0.3";
     # gsettings schema path for GTK portal dark theme
     GSETTINGS_SCHEMA_DIR = "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/gsettings-desktop-schemas-${pkgs.gsettings-desktop-schemas.version}/glib-2.0/schemas";
+    # Cursor theme for Wayland
+    XCURSOR_THEME = "retrosmart-xcursor-black";
+    XCURSOR_SIZE = "24";
   };
   home.sessionPath = [
     "$HOME/.local/bin"
@@ -89,6 +96,9 @@
       experimental-features = [ "nix-command" "flakes" ];
     };
   };
+
+  # Cursor theme (Retrosmart black)
+  home.file.".local/share/icons/retrosmart-xcursor-black".source = ./assets/cursors/retrosmart-xcursor-black;
 
   # Local scripts
   home.file.".local/bin/askpass-wofi" = {

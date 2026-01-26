@@ -158,6 +158,7 @@
         { command = "pipewire-pulse"; }
         { command = "wireplumber"; }
         { command = "${config.home.homeDirectory}/.nix-profile/libexec/xdg-desktop-portal-wlr"; }
+        { command = "${config.home.homeDirectory}/.nix-profile/libexec/xdg-desktop-portal-gtk"; }
         { command = "${config.home.homeDirectory}/.nix-profile/libexec/xdg-desktop-portal"; }
         { command = "wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 30%"; }
         { command = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0%"; }
@@ -178,13 +179,19 @@
 
       output = {
         "*" = {
-          bg = "#0f0f0f solid_color";
+          bg = "${config.home.homeDirectory}/.config/home-manager/bg.png fill";
           scale = "1.0";
         };
         "Sceptre Tech Inc Sceptre C32 0x00000001" = {
           mode = "1920x1080@120Hz";
         };
       };
+
+      window.commands = [
+        # Float portal file dialogs and keep on focused workspace
+        { command = "floating enable"; criteria = { app_id = "xdg-desktop-portal-gtk"; }; }
+        { command = "move position center"; criteria = { app_id = "xdg-desktop-portal-gtk"; }; }
+      ];
     };
 
     extraConfig = ''

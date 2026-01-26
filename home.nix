@@ -62,6 +62,9 @@
     MOZ_ENABLE_WAYLAND = "1";
     XDG_CURRENT_DESKTOP = "sway";
     XDG_SESSION_TYPE = "wayland";
+    # PipeWire needs these to find Nix-installed plugins
+    SPA_PLUGIN_DIR = "${config.home.homeDirectory}/.nix-profile/lib/spa-0.2";
+    PIPEWIRE_MODULE_DIR = "${config.home.homeDirectory}/.nix-profile/lib/pipewire-0.3";
   };
   home.sessionPath = [
     "$HOME/.local/bin"

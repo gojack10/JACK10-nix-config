@@ -7,6 +7,23 @@
 ```bash
 cp CLAUDE.md AGENTS.md && cp CLAUDE.md .cursor/AGENTS.md
 ```
+
+## Sudo Command Constraints
+
+When running sudo commands:
+
+1. **No chaining** - Cannot use `&&` or `;` with sudo
+2. **No piping** - Cannot pipe to/from sudo commands
+3. **No direct writes** - Cannot write files directly with sudo
+
+**Workaround for writing files as root:**
+```bash
+# First write to /tmp/
+echo "content" > /tmp/myfile
+# Then move with sudo
+sudo mv /tmp/myfile /etc/destination
+```
+
 ## Git Commit Conventions
 
 Use Conventional Commits format. Max 100 char title.

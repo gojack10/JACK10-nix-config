@@ -13,6 +13,7 @@
     slurp         # region selection
     swappy        # screenshot annotation
     brightnessctl
+    wev           # wayland event viewer (debug keybindings)
     xdg-desktop-portal      # portal base
     xdg-desktop-portal-wlr  # portal backend for sway (screen capture)
     xdg-desktop-portal-gtk  # portal backend for file dialogs

@@ -9,6 +9,7 @@
     ./modules/wayland/foot.nix
     ./modules/wayland/wofi.nix
     ./modules/wayland/mako.nix
+    ./modules/wayland/mouse.nix
     # Shell
     ./modules/shell/zsh.nix
     ./modules/shell/tmux.nix

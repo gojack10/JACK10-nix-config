@@ -74,11 +74,11 @@
         "${modifier}+Shift+r" = "reload";
         "${modifier}+space" = "scratchpad show";
 
-        # Focus (hjkl)
-        "${modifier}+h" = "focus left";
-        "${modifier}+j" = "focus down";
-        "${modifier}+k" = "focus up";
-        "${modifier}+l" = "focus right";
+        # Focus (hjkl) - center cursor on window
+        "${modifier}+h" = "focus left; exec ~/.local/bin/sway-center-cursor window";
+        "${modifier}+j" = "focus down; exec ~/.local/bin/sway-center-cursor window";
+        "${modifier}+k" = "focus up; exec ~/.local/bin/sway-center-cursor window";
+        "${modifier}+l" = "focus right; exec ~/.local/bin/sway-center-cursor window";
 
         # Move (Shift+hjkl)
         "${modifier}+Shift+h" = "move left";
@@ -86,17 +86,17 @@
         "${modifier}+Shift+k" = "move up";
         "${modifier}+Shift+l" = "move right";
 
-        # Workspaces
-        "${modifier}+1" = "workspace 1";
-        "${modifier}+2" = "workspace 2";
-        "${modifier}+3" = "workspace 3";
-        "${modifier}+4" = "workspace 4";
-        "${modifier}+5" = "workspace 5";
-        "${modifier}+6" = "workspace 6";
-        "${modifier}+7" = "workspace 7";
-        "${modifier}+8" = "workspace 8";
-        "${modifier}+9" = "workspace 9";
-        "${modifier}+0" = "workspace 10";
+        # Workspaces - center cursor on output
+        "${modifier}+1" = "workspace 1; exec ~/.local/bin/sway-center-cursor output";
+        "${modifier}+2" = "workspace 2; exec ~/.local/bin/sway-center-cursor output";
+        "${modifier}+3" = "workspace 3; exec ~/.local/bin/sway-center-cursor output";
+        "${modifier}+4" = "workspace 4; exec ~/.local/bin/sway-center-cursor output";
+        "${modifier}+5" = "workspace 5; exec ~/.local/bin/sway-center-cursor output";
+        "${modifier}+6" = "workspace 6; exec ~/.local/bin/sway-center-cursor output";
+        "${modifier}+7" = "workspace 7; exec ~/.local/bin/sway-center-cursor output";
+        "${modifier}+8" = "workspace 8; exec ~/.local/bin/sway-center-cursor output";
+        "${modifier}+9" = "workspace 9; exec ~/.local/bin/sway-center-cursor output";
+        "${modifier}+0" = "workspace 10; exec ~/.local/bin/sway-center-cursor output";
 
         "${modifier}+Shift+1" = "move container to workspace 1";
         "${modifier}+Shift+2" = "move container to workspace 2";

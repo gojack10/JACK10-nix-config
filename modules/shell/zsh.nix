@@ -42,6 +42,10 @@
       rsync = "rsync -ah --info=progress2 --no-i-r --stats";
       fastfetch = "fastfetch --logo-position top";
       brave-update = "cd ~/void-packages && git -C ./srcpkgs/brave-bin pull && ./xbps-src pkg brave-bin && sudo xbps-install -R hostdir/binpkgs -u brave-bin && cd -";
+      # Power management (Void Linux)
+      zzz = "echo gn && sudo /usr/bin/zzz > /dev/null 2>&1 && echo 'im up bro'";
+      bye = "echo cya && sudo poweroff";
+      rrr = "echo 'ok brb' && sudo reboot";
     };
 
     # .zprofile - runs on login shell (XDG needed before sway starts)

@@ -33,6 +33,7 @@
     git
     ripgrep
     fd
+    rustup
 
     # Audio (PipeWire replaces PulseAudio, also enables portal screen capture)
     pipewire

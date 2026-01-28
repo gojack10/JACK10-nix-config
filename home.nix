@@ -88,6 +88,7 @@
   home.sessionPath = [
     "$HOME/.local/bin"
     "$HOME/.nix-profile/bin"
+    "$HOME/.cargo/bin"
   ];
 
   # Nix settings (enable flakes)
@@ -95,6 +96,23 @@
     package = pkgs.nix;
     settings = {
       experimental-features = [ "nix-command" "flakes" ];
+    };
+  };
+
+  # Default applications (xdg-open)
+  xdg.mimeApps = {
+    enable = true;
+    defaultApplications = {
+      "text/html" = "brave-browser.desktop";
+      "x-scheme-handler/http" = "brave-browser.desktop";
+      "x-scheme-handler/https" = "brave-browser.desktop";
+      "x-scheme-handler/about" = "brave-browser.desktop";
+      "x-scheme-handler/unknown" = "brave-browser.desktop";
+      "video/webm" = "brave-browser.desktop";
+      "video/mp4" = "brave-browser.desktop";
+      "video/x-matroska" = "brave-browser.desktop";
+      "audio/mpeg" = "brave-browser.desktop";
+      "application/pdf" = "brave-browser.desktop";
     };
   };
 

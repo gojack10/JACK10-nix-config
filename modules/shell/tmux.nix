@@ -46,6 +46,10 @@
       bind x kill-pane
       bind X kill-window
       bind s choose-tree -NNs
+
+      # Pane pip indicator (bottom-left of active pane only)
+      set -g pane-border-status bottom
+      set -g pane-border-format '#{?pane_active, ● ,}'
     '';
   };
 }

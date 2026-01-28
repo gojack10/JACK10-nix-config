@@ -46,6 +46,7 @@
       zzz = "echo gn && sudo /usr/bin/zzz > /dev/null 2>&1 && echo 'im up bro'";
       bye = "echo cya && sudo poweroff";
       rrr = "echo 'ok brb' && sudo reboot";
+      fixnet = "echo 'Restarting iwd...' && sudo sv restart iwd && echo 'Done'";
     };
 
     # .zprofile - runs on login shell (XDG needed before sway starts)

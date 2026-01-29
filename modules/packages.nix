@@ -12,6 +12,7 @@
     grim          # screenshot
     slurp         # region selection
     swappy        # screenshot annotation
+    # wl-screenrec - use system wf-recorder instead (Nix binary can't use system VAAPI)
     brightnessctl
     wev           # wayland event viewer (debug keybindings)
     xdg-desktop-portal      # portal base
@@ -33,11 +34,8 @@
     git
     ripgrep
     fd
-    rustup
 
-    # Audio (PipeWire replaces PulseAudio, also enables portal screen capture)
-    pipewire
-    wireplumber       # PipeWire session manager
+    # Audio - use system pipewire/wireplumber (Nix versions can't access system drivers)
     pavucontrol       # volume control (works with PipeWire)
 
     # Fonts

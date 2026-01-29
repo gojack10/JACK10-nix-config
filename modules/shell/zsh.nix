@@ -60,6 +60,9 @@
 
       # Source home-manager session variables (GTK_USE_PORTAL, etc.)
       . "$HOME/.nix-profile/etc/profile.d/hm-session-vars.sh"
+
+      # Fix PATH order - /usr/bin before nix paths (fixes dlopen issues with libclang)
+      export PATH="$HOME/.cargo/bin:$HOME/.local/bin:/usr/bin:/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin"
     '';
 
     initContent = ''
@@ -95,10 +98,6 @@
       setopt HIST_VERIFY
       setopt HIST_EXPIRE_DUPS_FIRST
 
-      # PATH
-      export PATH="$HOME/.local/bin:$PATH"
-      export PATH="$HOME/.nix-profile/bin:$PATH"
-
       # mise version manager (if installed)
       [[ -x "$HOME/.local/bin/mise" ]] && eval "$($HOME/.local/bin/mise activate zsh)"
 
@@ -124,6 +123,9 @@
           printf '\033]52;c;%s\007' "$data"
         fi
       }
+
+      # Fix PATH order - /usr/bin before nix paths (fixes dlopen issues with libclang)
+      export PATH="$HOME/.cargo/bin:$HOME/.local/bin:/usr/bin:/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin"
     '';
   };
 

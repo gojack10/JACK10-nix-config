@@ -81,6 +81,8 @@
     # Cursor theme for Wayland
     XCURSOR_THEME = "retrosmart-xcursor-black";
     XCURSOR_SIZE = "24";
+    # Disable OpenCode's default system prompt
+    OPENCODE_DISABLE_SYSTEM_PROMPT = "true";
   };
   home.sessionPath = [
     "$HOME/.local/bin"
@@ -111,6 +113,19 @@
       "audio/mpeg" = "brave-browser.desktop";
       "application/pdf" = "brave-browser.desktop";
     };
+  };
+
+  # Gammastep (software dimming beyond hardware minimum)
+  services.gammastep = {
+    enable = true;
+    tray = true;
+    dawnTime = "6:30-7:30";
+    duskTime = "19:00-20:00";
+    temperature = {
+      day = 6500;    # neutral daylight
+      night = 2500;  # warm + perceived dimmer
+    };
+    settings.general.brightness-night = 0.7;  # additional software dimming
   };
 
   # Cursor theme (Retrosmart black)

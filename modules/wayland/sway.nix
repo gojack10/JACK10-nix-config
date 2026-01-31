@@ -153,6 +153,7 @@
         { command = "~/.local/bin/sway-workspace-outputs"; }
         { command = "mako"; }
         { command = "nm-applet --indicator"; }
+        { command = "gammastep"; }
         { command = "dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP=sway"; }
         { command = "pipewire"; }
         { command = "pipewire-pulse"; }

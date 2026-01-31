@@ -62,7 +62,7 @@
       . "$HOME/.nix-profile/etc/profile.d/hm-session-vars.sh"
 
       # Fix PATH order - /usr/bin before nix paths (fixes dlopen issues with libclang)
-      export PATH="$HOME/.cargo/bin:$HOME/.local/bin:/usr/bin:/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin"
+      export PATH="$HOME/.opencode/bin:$HOME/.cargo/bin:$HOME/.local/bin:/usr/bin:/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin"
     '';
 
     initContent = ''
@@ -125,7 +125,7 @@
       }
 
       # Fix PATH order - /usr/bin before nix paths (fixes dlopen issues with libclang)
-      export PATH="$HOME/.cargo/bin:$HOME/.local/bin:/usr/bin:/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin"
+      export PATH="$HOME/.opencode/bin:$HOME/.cargo/bin:$HOME/.local/bin:/usr/bin:/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin"
     '';
   };
 

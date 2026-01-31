@@ -21,6 +21,9 @@
     dconf                   # GTK settings backend (needed for portal dark theme)
     gsettings-desktop-schemas  # schemas for GTK portal
 
+    # Mouse/input tools
+    zenity        # simple GUI dialogs for scripts
+
     # Terminal & Shell
     foot          # lightweight wayland-native terminal
     zsh
@@ -34,6 +37,7 @@
     git
     ripgrep
     fd
+    jq            # JSON processor
 
     # Audio - use system pipewire/wireplumber (Nix versions can't access system drivers)
     pavucontrol       # volume control (works with PipeWire)

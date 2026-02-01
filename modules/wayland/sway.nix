@@ -119,8 +119,8 @@
         # Gammastep toggle (Fn+F9)
         "XF86Tools" = "exec pkill -USR1 gammastep";
 
-        # Screenshot
-        "Print" = "exec grim -g \"$(slurp)\" - | swappy -f -";
+        # Screenshot (idempotent - won't spawn duplicates)
+        "Print" = "exec pgrep -x slurp || grim -g \"$(slurp)\" - | swappy -f -";
 
         # Deep work timer toggle
         "${modifier}+Shift+d" = "exec ~/.local/bin/deepwork toggle";

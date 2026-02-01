@@ -98,20 +98,65 @@
     };
   };
 
+  # mpv - use system mpv (Nix mpv can't access Void's mesa/VAAPI drivers)
+  # Install via: sudo xbps-install mpv
+
+  home.file.".config/mpv/mpv.conf".text = ''
+    # Force Wayland
+    gpu-context=wayland
+    vo=gpu-next
+    # Hardware decoding
+    hwdec=auto-safe
+    # Window behavior
+    fs=no
+    keep-open=yes
+    save-position-on-quit=yes
+    # OSD styling
+    osd-font=JetBrainsMono Nerd Font
+    osd-font-size=24
+  '';
+
+  home.file.".config/mpv/input.conf".text = ''
+    # Vim-like bindings
+    l seek 5
+    h seek -5
+    j seek -60
+    k seek 60
+    H add chapter -1
+    L add chapter 1
+  '';
+
   # Default applications (xdg-open)
   xdg.mimeApps = {
     enable = true;
     defaultApplications = {
+      # Web
       "text/html" = "brave-browser.desktop";
       "x-scheme-handler/http" = "brave-browser.desktop";
       "x-scheme-handler/https" = "brave-browser.desktop";
       "x-scheme-handler/about" = "brave-browser.desktop";
       "x-scheme-handler/unknown" = "brave-browser.desktop";
-      "video/webm" = "brave-browser.desktop";
-      "video/mp4" = "brave-browser.desktop";
-      "video/x-matroska" = "brave-browser.desktop";
-      "audio/mpeg" = "brave-browser.desktop";
+      # Documents
       "application/pdf" = "brave-browser.desktop";
+      # Video - mpv
+      "video/webm" = "mpv.desktop";
+      "video/mp4" = "mpv.desktop";
+      "video/x-matroska" = "mpv.desktop";
+      "video/avi" = "mpv.desktop";
+      "video/x-msvideo" = "mpv.desktop";
+      "video/quicktime" = "mpv.desktop";
+      "video/x-flv" = "mpv.desktop";
+      "video/ogg" = "mpv.desktop";
+      # Audio - mpv
+      "audio/mpeg" = "mpv.desktop";
+      "audio/mp3" = "mpv.desktop";
+      "audio/flac" = "mpv.desktop";
+      "audio/ogg" = "mpv.desktop";
+      "audio/wav" = "mpv.desktop";
+      "audio/x-wav" = "mpv.desktop";
+      "audio/aac" = "mpv.desktop";
+      "audio/mp4" = "mpv.desktop";
+      "audio/x-m4a" = "mpv.desktop";
     };
   };
 

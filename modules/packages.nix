@@ -32,6 +32,9 @@
     xdg-utils     # xdg-open for lf
     swayimg       # simple image viewer for sway
 
+    # Media
+    yt-dlp        # video downloader (mpv can use this for URLs)
+
     # Dev tools
     neovim
     git

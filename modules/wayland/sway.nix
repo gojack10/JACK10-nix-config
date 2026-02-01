@@ -116,10 +116,8 @@
         "XF86AudioLowerVolume" = "exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-";
         "XF86AudioMute" = "exec wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle";
 
-        # Speaker volume (F6 mute, F7 down, F8 up)
-        "F6" = "exec wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle";
-        "F7" = "exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-";
-        "F8" = "exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+";
+        # Gammastep toggle (Fn+F9)
+        "XF86Tools" = "exec pkill -USR1 gammastep";
 
         # Screenshot
         "Print" = "exec grim -g \"$(slurp)\" - | swappy -f -";

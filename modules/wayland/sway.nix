@@ -80,11 +80,19 @@
         "${modifier}+k" = "focus up; exec ~/.local/bin/sway-center-cursor window";
         "${modifier}+l" = "focus right; exec ~/.local/bin/sway-center-cursor window";
 
-        # Move (Shift+hjkl)
-        "${modifier}+Shift+h" = "move left";
-        "${modifier}+Shift+j" = "move down";
-        "${modifier}+Shift+k" = "move up";
-        "${modifier}+Shift+l" = "move right";
+        # Move window (Shift+hjkl) - center cursor on window after move
+        "${modifier}+Shift+h" = "move left; exec ~/.local/bin/sway-center-cursor window";
+        "${modifier}+Shift+j" = "move down; exec ~/.local/bin/sway-center-cursor window";
+        "${modifier}+Shift+k" = "move up; exec ~/.local/bin/sway-center-cursor window";
+        "${modifier}+Shift+l" = "move right; exec ~/.local/bin/sway-center-cursor window";
+
+        # Move window to other output (Ctrl+hjkl) - follow and center cursor
+        "${modifier}+Ctrl+h" = "move container to output left; focus output left; exec ~/.local/bin/sway-center-cursor window";
+        "${modifier}+Ctrl+l" = "move container to output right; focus output right; exec ~/.local/bin/sway-center-cursor window";
+
+        # Focus other output directly (Alt+hjkl)
+        "${modifier}+Alt+h" = "focus output left; exec ~/.local/bin/sway-center-cursor output";
+        "${modifier}+Alt+l" = "focus output right; exec ~/.local/bin/sway-center-cursor output";
 
         # Workspaces - center cursor on output
         "${modifier}+1" = "workspace 1; exec ~/.local/bin/sway-center-cursor output";
@@ -148,7 +156,6 @@
 
       startup = [
         { command = "waybar"; }
-        { command = "~/.local/bin/sway-workspace-outputs"; }
         { command = "mako"; }
         { command = "nm-applet --indicator"; }
         { command = "gammastep"; }
@@ -192,6 +199,10 @@
     };
 
     extraConfig = ''
+      # Default workspaces on login (not locked - just initial state)
+      workspace 1 output eDP-1
+      workspace 2 output HDMI-A-2
+      workspace 2
       workspace 1
       seat seat0 xcursor_theme retrosmart-xcursor-black 24
     '';

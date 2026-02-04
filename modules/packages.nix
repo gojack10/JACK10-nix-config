@@ -15,9 +15,7 @@
     # wl-screenrec - use system wf-recorder instead (Nix binary can't use system VAAPI)
     brightnessctl
     wev           # wayland event viewer (debug keybindings)
-    xdg-desktop-portal      # portal base
-    xdg-desktop-portal-wlr  # portal backend for sway (screen capture)
-    xdg-desktop-portal-gtk  # portal backend for file dialogs
+    # portals - use system xdg-desktop-portal-wlr/gtk (Nix versions lack D-Bus service files)
     dconf                   # GTK settings backend (needed for portal dark theme)
     gsettings-desktop-schemas  # schemas for GTK portal
 

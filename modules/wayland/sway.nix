@@ -156,9 +156,7 @@
         { command = "pipewire"; }
         { command = "pipewire-pulse"; }
         { command = "wireplumber"; }
-        { command = "${config.home.homeDirectory}/.nix-profile/libexec/xdg-desktop-portal-wlr"; }
-        { command = "${config.home.homeDirectory}/.nix-profile/libexec/xdg-desktop-portal-gtk"; }
-        { command = "${config.home.homeDirectory}/.nix-profile/libexec/xdg-desktop-portal"; }
+        # portals auto-start via D-Bus activation (installed via xbps, not nix)
         { command = "wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 30%"; }
         { command = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0%"; }
       ];

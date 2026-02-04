@@ -13,7 +13,7 @@
     # pointer_accel is a sensitivity multiplier (-1.0 to 1.0)
     input type:pointer {
       accel_profile flat
-      pointer_accel 0.0
+      pointer_accel 0.50
     }
   '';
 

@@ -8,7 +8,7 @@
       height = 18;
       modules-left = [ "sway/workspaces" "sway/mode" ];
       modules-center = [ "custom/deepwork" ];
-      modules-right = [ "cpu" "memory" "network" "battery" "custom/mic" "pulseaudio" "clock" ];
+      modules-right = [ "cpu" "memory" "custom/network" "battery" "custom/mic" "pulseaudio" "clock" ];
 
       "sway/workspaces" = {
         disable-scroll = true;
@@ -25,10 +25,8 @@
         interval = 2;
       };
 
-      network = {
-        interface = "wl*";
-        format-wifi = "{essid}";
-        format-disconnected = "disconnected";
+      "custom/network" = {
+        exec = "if ip link show enp4s0 2>/dev/null | grep -q 'state UP'; then echo 'ETHERNET'; elif iwctl station wlp0s20f3 show 2>/dev/null | grep -q 'Connected'; then iwctl station wlp0s20f3 show | grep 'Connected network' | sed 's/.*Connected network[[:space:]]*//; s/[[:space:]]*$//' ; else echo 'disconnected'; fi";
         interval = 3;
       };
 
@@ -94,7 +92,7 @@
         color: #ffffff;
       }
 
-      #cpu, #memory, #network, #battery, #pulseaudio, #clock, #custom-mic, #custom-deepwork {
+      #cpu, #memory, #custom-network, #battery, #pulseaudio, #clock, #custom-mic, #custom-deepwork {
         padding: 0 10px;
         color: #d0d0d0;
       }

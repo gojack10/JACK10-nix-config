@@ -186,8 +186,12 @@
           bg = "${config.home.homeDirectory}/.config/home-manager/bg.png fill";
           scale = "1.0";
         };
+        "eDP-1" = {
+          position = "0 0";
+        };
         "Sceptre Tech Inc Sceptre C32 0x00000001" = {
           mode = "1920x1080@120Hz";
+          position = "1920 0";
         };
       };
 

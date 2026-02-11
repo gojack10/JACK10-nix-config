@@ -8,7 +8,7 @@
       height = 18;
       modules-left = [ "sway/workspaces" "sway/mode" ];
       modules-center = [ "custom/deepwork" ];
-      modules-right = [ "cpu" "memory" "custom/network" "battery" "custom/mic" "pulseaudio" "clock" ];
+      modules-right = [ "cpu" "memory" "custom/network" "battery" "custom/mic" "pulseaudio" "custom/clock" ];
 
       "sway/workspaces" = {
         disable-scroll = true;
@@ -37,8 +37,8 @@
         interval = 5;
       };
 
-      clock = {
-        format = "{:%Y-%m-%d %H:%M}";
+      "custom/clock" = {
+        exec = "date '+%a %Y-%m-%d %H:%M:%S' | sed 's/^[^ ]*/\\U&/'";
         interval = 1;
       };
 
@@ -92,7 +92,7 @@
         color: #ffffff;
       }
 
-      #cpu, #memory, #custom-network, #battery, #pulseaudio, #clock, #custom-mic, #custom-deepwork {
+      #cpu, #memory, #custom-network, #battery, #pulseaudio, #custom-clock, #custom-mic, #custom-deepwork {
         padding: 0 10px;
         color: #d0d0d0;
       }

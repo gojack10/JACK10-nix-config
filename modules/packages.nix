@@ -33,6 +33,9 @@
     # Media
     yt-dlp        # video downloader (mpv can use this for URLs)
 
+    # Communication
+    zoom-us
+
     # Dev tools
     neovim
     git

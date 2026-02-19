@@ -1,6 +1,9 @@
-{ config, pkgs, fontSize, hostname, useSystemSway, ... }:
+{ config, pkgs, lib, fontSize, hostname, useSystemSway, ... }:
 
 {
+  nixpkgs.config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [
+    "zoom"
+  ];
   imports = [
     ./modules/packages.nix
     # Wayland
@@ -177,6 +180,18 @@
   home.file.".local/share/icons/retrosmart-xcursor-black".source = ./assets/cursors/retrosmart-xcursor-black;
 
   # Local scripts
+  # Zoom wrapper - Nix zoom can't use system Mesa GLX inside bwrap sandbox
+  home.file.".local/bin/zoom-wrapper" = {
+    executable = true;
+    text = ''
+      #!/bin/sh
+      export QT_OPENGL=software
+      export QT_QUICK_BACKEND=software
+      export QT_XCB_GL_INTEGRATION=none
+      exec zoom "$@"
+    '';
+  };
+
   home.file.".local/bin/askpass-wofi" = {
     executable = true;
     text = ''

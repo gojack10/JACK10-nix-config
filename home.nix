@@ -179,8 +179,19 @@
   # Cursor theme (Retrosmart black)
   home.file.".local/share/icons/retrosmart-xcursor-black".source = ./assets/cursors/retrosmart-xcursor-black;
 
+  # Zoom - Nix zoom can't use system Mesa GLX inside bwrap sandbox
+  xdg.desktopEntries.Zoom = {
+    name = "Zoom Workplace";
+    comment = "Zoom Video Conference";
+    exec = "zoom-wrapper %U";
+    icon = "Zoom";
+    terminal = false;
+    categories = [ "Network" "Application" ];
+    mimeType = [ "x-scheme-handler/zoommtg" "x-scheme-handler/zoomus" ];
+    settings.StartupWMClass = "zoom";
+  };
+
   # Local scripts
-  # Zoom wrapper - Nix zoom can't use system Mesa GLX inside bwrap sandbox
   home.file.".local/bin/zoom-wrapper" = {
     executable = true;
     text = ''
@@ -188,6 +199,7 @@
       export QT_OPENGL=software
       export QT_QUICK_BACKEND=software
       export QT_XCB_GL_INTEGRATION=none
+      export BROWSER=/usr/bin/brave-browser-stable
       exec zoom "$@"
     '';
   };

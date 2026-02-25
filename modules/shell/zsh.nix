@@ -28,13 +28,6 @@
       extended = true;
     };
 
-    oh-my-zsh = {
-      enable = true;
-      plugins = [ "git" "fzf" ];
-      theme = "eastwood-custom";
-      custom = "$HOME/.config/oh-my-zsh-custom";
-    };
-
     shellAliases = {
       open = "xdg-open";
       ts = "tmux attach \\; choose-tree -NNs";
@@ -47,6 +40,41 @@
       bye = "echo cya && sudo poweroff";
       rrr = "echo 'ok brb' && sudo reboot";
       fixnet = "echo 'Restarting iwd...' && sudo sv restart iwd && echo 'Done'";
+
+      # Git aliases (replaces oh-my-zsh git plugin)
+      g = "git";
+      ga = "git add";
+      gaa = "git add --all";
+      gau = "git add --update";
+      gapa = "git add --patch";
+      gb = "git branch";
+      gbd = "git branch --delete";
+      gbD = "git branch --delete --force";
+      gba = "git branch --all";
+      gbl = "git blame -w";
+      gc = "git commit --verbose";
+      gca = "git commit --verbose --all";
+      gcam = "git commit --all --message";
+      gcmsg = "git commit --message";
+      gco = "git checkout";
+      gcb = "git checkout -b";
+      gcp = "git cherry-pick";
+      gd = "git diff";
+      gds = "git diff --staged";
+      gf = "git fetch";
+      gl = "git pull";
+      glog = "git log --oneline --decorate --graph";
+      glg = "git log --stat";
+      glgg = "git log --graph";
+      gm = "git merge";
+      gp = "git push";
+      grb = "git rebase";
+      grbi = "git rebase --interactive";
+      grhh = "git reset --hard";
+      gss = "git status --short";
+      gst = "git status";
+      gsta = "git stash push";
+      gstp = "git stash pop";
     };
 
     # .zprofile - runs on login shell (XDG needed before sway starts)
@@ -126,6 +154,38 @@
 
       # Fix PATH order - /usr/bin before nix paths (fixes dlopen issues with libclang)
       export PATH="$HOME/.opencode/bin:$HOME/.cargo/bin:$HOME/.local/bin:/usr/bin:/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin"
+
+      # Git helper functions (replaces oh-my-zsh git lib)
+      git_main_branch() {
+        command git rev-parse --git-dir &>/dev/null || return
+        local ref
+        for ref in refs/{heads,remotes/{origin,upstream}}/{main,trunk,mainline,default,stable,master}; do
+          if command git show-ref -q --verify "$ref"; then
+            echo "''${ref:t}"
+            return 0
+          fi
+        done
+        echo master
+      }
+
+      gcm() { git checkout "$(git_main_branch)"; }
+
+      # Prompt - replaces oh-my-zsh eastwood-custom theme
+      autoload -Uz colors && colors
+
+      _git_prompt_info() {
+        local branch
+        branch=$(command git symbolic-ref --quiet --short HEAD 2>/dev/null) || \
+          branch=$(command git rev-parse --short HEAD 2>/dev/null) || return
+        local dirty=""
+        if [[ -n $(command git status --porcelain --ignore-submodules=dirty 2>/dev/null | tail -n 1) ]]; then
+          dirty="%{$fg[red]%}*%{$reset_color%}"
+        fi
+        echo "''${dirty}%{$fg[green]%}[''${branch}]%{$reset_color%}"
+      }
+
+      setopt PROMPT_SUBST
+      PROMPT='%F{green}%n@%m%f $(_git_prompt_info)%{$fg[cyan]%}[%~% ]%{$reset_color%}%B$%b '
     '';
   };
 
@@ -133,22 +193,4 @@
     enable = true;
     enableZshIntegration = true;
   };
-
-  # oh-my-zsh custom theme
-  home.file.".config/oh-my-zsh-custom/themes/eastwood-custom.zsh-theme".text = ''
-    # Customized git status - shows dirty marker before branch name
-    git_custom_status() {
-      local cb=$(git_current_branch)
-      if [ -n "$cb" ]; then
-        echo "$(parse_git_dirty)$ZSH_THEME_GIT_PROMPT_PREFIX$(git_current_branch)$ZSH_THEME_GIT_PROMPT_SUFFIX"
-      fi
-    }
-
-    ZSH_THEME_GIT_PROMPT_PREFIX="%{$reset_color%}%{$fg[green]%}["
-    ZSH_THEME_GIT_PROMPT_SUFFIX="]%{$reset_color%}"
-    ZSH_THEME_GIT_PROMPT_DIRTY="%{$fg[red]%}*%{$reset_color%}"
-    ZSH_THEME_GIT_PROMPT_CLEAN=""
-
-    PROMPT='%F{green}%n@%m%f $(git_custom_status)%{$fg[cyan]%}[%~% ]%{$reset_color%}%B$%b '
-  '';
 }

@@ -159,13 +159,13 @@
         { command = "mako"; }
         { command = "nm-applet --indicator"; }
         { command = "gammastep"; }
-        { command = "dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP=sway"; }
+        { command = "dbus-update-activation-environment --systemd DISPLAY WAYLAND_DISPLAY SWAYSOCK XDG_CURRENT_DESKTOP=sway DBUS_SESSION_BUS_ADDRESS"; }
         { command = "pipewire"; }
         { command = "pipewire-pulse"; }
         { command = "wireplumber"; }
-        # portals (installed via xbps, not nix)
-        { command = "/usr/libexec/xdg-desktop-portal-wlr"; }
-        { command = "/usr/libexec/xdg-desktop-portal -r"; }
+        # portals need dbus env + pipewire ready; wlr backend must start before main portal
+        { command = "sleep 1 && /usr/libexec/xdg-desktop-portal-wlr"; }
+        { command = "sleep 2 && /usr/libexec/xdg-desktop-portal -r"; }
         { command = "wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 30%"; }
         { command = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0%"; }
       ];

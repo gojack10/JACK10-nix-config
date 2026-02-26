@@ -19,6 +19,9 @@
     vim.opt.wrap = true
     vim.opt.linebreak = true
 
+    -- Keymaps
+    vim.keymap.set("n", "<leader>p", "0P")
+
     -- Bootstrap lazy.nvim
     local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"
     if not vim.uv.fs_stat(lazypath) then

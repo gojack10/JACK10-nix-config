@@ -55,6 +55,37 @@
     '';
   };
 
+  home.file.".local/bin/sway-swap-outputs" = {
+    executable = true;
+    text = ''
+      #!/bin/sh
+      # Swap all workspaces between two outputs
+      # Only operates when exactly 2 outputs are connected
+
+      outputs=$(swaymsg -t get_outputs | ${pkgs.jq}/bin/jq -r '.[].name')
+      count=$(echo "$outputs" | wc -l)
+
+      [ "$count" -ne 2 ] && exit 0
+
+      output1=$(echo "$outputs" | sed -n '1p')
+      output2=$(echo "$outputs" | sed -n '2p')
+
+      # Capture workspaces on each output before moving anything
+      ws_on_1=$(swaymsg -t get_workspaces | ${pkgs.jq}/bin/jq -r ".[] | select(.output == \"$output1\") | .name")
+      ws_on_2=$(swaymsg -t get_workspaces | ${pkgs.jq}/bin/jq -r ".[] | select(.output == \"$output2\") | .name")
+
+      # Move output1 workspaces to output2
+      for ws in $ws_on_1; do
+        swaymsg "workspace $ws; move workspace to output $output2"
+      done
+
+      # Move output2 workspaces to output1
+      for ws in $ws_on_2; do
+        swaymsg "workspace $ws; move workspace to output $output1"
+      done
+    '';
+  };
+
   home.file.".local/bin/sway-mouse-daemon" = {
     executable = true;
     text = ''

@@ -69,6 +69,7 @@
         "${modifier}+f" = "fullscreen toggle";
         "${modifier}+e" = "layout toggle split";
         "${modifier}+s" = "layout stacking";
+        "${modifier}+Shift+s" = "exec ~/.local/bin/sway-swap-outputs";
         "${modifier}+w" = "layout tabbed";
         "${modifier}+Shift+space" = "floating toggle";
         "${modifier}+Shift+r" = "reload";

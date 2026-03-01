@@ -175,7 +175,7 @@
           tap = "enabled";
           natural_scroll = "disabled";
           accel_profile = "adaptive";
-          pointer_accel = "0.5";
+          pointer_accel = "0.15";
         };
         "type:keyboard" = {
           repeat_delay = "300";

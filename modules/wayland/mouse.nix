@@ -70,6 +70,9 @@
       output1=$(echo "$outputs" | sed -n '1p')
       output2=$(echo "$outputs" | sed -n '2p')
 
+      # Remember which output has focus (where the user is looking)
+      focused=$(swaymsg -t get_outputs | ${pkgs.jq}/bin/jq -r '.[] | select(.focused) | .name')
+
       # Capture workspaces on each output before moving anything
       ws_on_1=$(swaymsg -t get_workspaces | ${pkgs.jq}/bin/jq -r ".[] | select(.output == \"$output1\") | .name")
       ws_on_2=$(swaymsg -t get_workspaces | ${pkgs.jq}/bin/jq -r ".[] | select(.output == \"$output2\") | .name")
@@ -83,6 +86,9 @@
       for ws in $ws_on_2; do
         swaymsg "workspace $ws; move workspace to output $output1"
       done
+
+      # Refocus the output the user was on so the new window there gets focus
+      swaymsg "focus output $focused"
     '';
   };
 

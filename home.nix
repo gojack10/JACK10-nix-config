@@ -86,6 +86,8 @@
     XCURSOR_SIZE = "24";
     # Disable OpenCode's default system prompt
     OPENCODE_DISABLE_SYSTEM_PROMPT = "true";
+    # Pinchtab: use Brave instead of google-chrome
+    CHROME_BINARY = "/usr/bin/brave-browser-stable";
   };
   home.sessionPath = [
     "$HOME/.local/bin"

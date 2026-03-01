@@ -86,9 +86,6 @@
         chmod 700 "$XDG_RUNTIME_DIR"
       fi
 
-      # Source home-manager session variables (GTK_USE_PORTAL, etc.)
-      . "$HOME/.nix-profile/etc/profile.d/hm-session-vars.sh"
-
       # Fix PATH order - /usr/bin before nix paths (fixes dlopen issues with libclang)
       export PATH="$HOME/.opencode/bin:$HOME/.cargo/bin:$HOME/.local/bin:/usr/bin:/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin"
     '';

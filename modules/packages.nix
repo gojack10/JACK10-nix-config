@@ -46,6 +46,9 @@
     # Audio - use system pipewire/wireplumber (Nix versions can't access system drivers)
     pavucontrol       # volume control (works with PipeWire)
 
+    # Bluetooth - use system bluez/bluetoothd (needs D-Bus system access)
+    bluetuith         # TUI bluetooth manager
+
     # Fonts
     nerd-fonts.jetbrains-mono
     nerd-fonts.symbols-only   # fallback for any missing NF glyphs

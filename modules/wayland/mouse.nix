@@ -70,8 +70,10 @@
       output1=$(echo "$outputs" | sed -n '1p')
       output2=$(echo "$outputs" | sed -n '2p')
 
-      # Remember which output has focus (where the user is looking)
+      # Remember which output has focus and which workspace is visible on each output
       focused=$(swaymsg -t get_outputs | ${pkgs.jq}/bin/jq -r '.[] | select(.focused) | .name')
+      visible_on_1=$(swaymsg -t get_workspaces | ${pkgs.jq}/bin/jq -r ".[] | select(.output == \"$output1\" and .visible) | .name")
+      visible_on_2=$(swaymsg -t get_workspaces | ${pkgs.jq}/bin/jq -r ".[] | select(.output == \"$output2\" and .visible) | .name")
 
       # Capture workspaces on each output before moving anything
       ws_on_1=$(swaymsg -t get_workspaces | ${pkgs.jq}/bin/jq -r ".[] | select(.output == \"$output1\") | .name")
@@ -87,7 +89,12 @@
         swaymsg "workspace $ws; move workspace to output $output1"
       done
 
-      # Refocus the output the user was on so the new window there gets focus
+      # Restore the previously visible workspace on each output
+      # (the last-moved workspace may not be the one the user had visible)
+      [ -n "$visible_on_1" ] && swaymsg "workspace $visible_on_1"
+      [ -n "$visible_on_2" ] && swaymsg "workspace $visible_on_2"
+
+      # Refocus the output the user was on
       swaymsg "focus output $focused"
     '';
   };

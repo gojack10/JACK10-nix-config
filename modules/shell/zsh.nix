@@ -6,6 +6,7 @@
     autosuggestion.enable = true;
     syntaxHighlighting.enable = true;
     historySubstringSearch.enable = true;
+    completionInit = "autoload -U compinit && compinit -C";
 
     plugins = [
       {
@@ -124,8 +125,14 @@
       setopt HIST_VERIFY
       setopt HIST_EXPIRE_DUPS_FIRST
 
-      # mise version manager (if installed)
-      [[ -x "$HOME/.local/bin/mise" ]] && eval "$($HOME/.local/bin/mise activate zsh)"
+      # mise version manager (lazy-load: activates on first use)
+      if [[ -x "$HOME/.local/bin/mise" ]]; then
+        mise() {
+          unfunction mise
+          eval "$($HOME/.local/bin/mise activate zsh)"
+          mise "$@"
+        }
+      fi
 
       # Editor
       export EDITOR=nvim

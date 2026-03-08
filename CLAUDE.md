@@ -27,6 +27,7 @@ sudo cp /tmp/myfile /etc/destination
 ## Git Commit Conventions
 
 Use Conventional Commits format. Max 100 char title.
+Do NOT add `Co-Authored-By` trailers to commits.
 
 ### Commit Types
 

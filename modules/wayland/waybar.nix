@@ -120,6 +120,13 @@
         color: #000000;
         padding: 0 4px;
       }
+
+      #battery.charging.warning,
+      #battery.charging.critical {
+        background: transparent;
+        color: #88cc88;
+        padding: 0 10px;
+      }
     '';
   };
 }

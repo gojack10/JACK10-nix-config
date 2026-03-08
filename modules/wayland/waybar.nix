@@ -35,6 +35,10 @@
         format-charging = "CHG {capacity}%";
         format-full = "FULL";
         interval = 5;
+        states = {
+          warning = 25;
+          critical = 10;
+        };
       };
 
       "custom/clock" = {
@@ -106,11 +110,15 @@
       }
 
       #battery.warning {
-        color: #ffcc00;
+        background: #ffcc00;
+        color: #000000;
+        padding: 0 4px;
       }
 
       #battery.critical {
-        color: #ff5555;
+        background: #ff3333;
+        color: #000000;
+        padding: 0 4px;
       }
     '';
   };

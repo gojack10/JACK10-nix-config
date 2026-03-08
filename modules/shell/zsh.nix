@@ -5,7 +5,11 @@
     enable = true;
     autosuggestion.enable = true;
     syntaxHighlighting.enable = true;
-    historySubstringSearch.enable = true;
+    historySubstringSearch = {
+      enable = true;
+      searchUpKey = [ "^[[A" "^[OA" ];
+      searchDownKey = [ "^[[B" "^[OB" ];
+    };
     completionInit = "autoload -U compinit && compinit -C";
 
     plugins = [

@@ -7,6 +7,7 @@
     wofi          # rofi replacement for wayland
     bemenu        # simpler dmenu for wayland (used for askpass)
     mako          # notification daemon
+    libnotify     # notify-send for battery alerts
     swaybg        # wallpaper
     wl-clipboard  # clipboard
     grim          # screenshot

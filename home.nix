@@ -13,6 +13,7 @@
     ./modules/wayland/wofi.nix
     ./modules/wayland/mako.nix
     ./modules/wayland/mouse.nix
+    ./modules/wayland/battery-monitor.nix
     # Shell
     ./modules/shell/zsh.nix
     ./modules/shell/tmux.nix

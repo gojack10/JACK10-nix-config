@@ -169,6 +169,7 @@
         { command = "sleep 2 && /usr/libexec/xdg-desktop-portal -r"; }
         { command = "wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 30%"; }
         { command = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0%"; }
+        { command = "~/.local/bin/battery-monitor"; }
       ];
 
       input = {

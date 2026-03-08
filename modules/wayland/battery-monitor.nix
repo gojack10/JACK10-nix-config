@@ -5,8 +5,9 @@
     executable = true;
     text = ''
       #!/bin/sh
-      # Battery monitor: notifications at 25%, 15%, 10% and auto-suspend at 3%
+      # Battery monitor: notifications at 25%, 15%, 10% and auto-hibernate at 5%
       # Also logs capacity every 5 minutes to ~/.local/share/battery.log
+      # Polls every 10s below 10%, every 30s otherwise
 
       INTERVAL=30
       NOTIFIED_25=0
@@ -44,13 +45,13 @@
           continue
         fi
 
-        if [ "$capacity" -le 3 ] && [ "$SUSPENDED" -eq 0 ]; then
-          notify-send -u critical -t 0 "BATTERY CRITICAL: ''${capacity}%" "Suspending NOW"
+        if [ "$capacity" -le 5 ] && [ "$SUSPENDED" -eq 0 ]; then
+          notify-send -u critical -t 0 "BATTERY CRITICAL: ''${capacity}%" "Hibernating NOW"
           sleep 2
           SUSPENDED=1
-          sudo zzz
+          loginctl hibernate
         elif [ "$capacity" -le 10 ] && [ "$NOTIFIED_10" -eq 0 ]; then
-          notify-send -u critical -t 0 "BATTERY: ''${capacity}%" "Plug in immediately or suspending at 3%"
+          notify-send -u critical -t 0 "BATTERY: ''${capacity}%" "Plug in immediately or hibernating at 5%"
           NOTIFIED_10=1
         elif [ "$capacity" -le 15 ] && [ "$NOTIFIED_15" -eq 0 ]; then
           notify-send -u critical -t 10000 "BATTERY: ''${capacity}%" "Find a charger"
@@ -60,7 +61,12 @@
           NOTIFIED_25=1
         fi
 
-        sleep "$INTERVAL"
+        # Poll faster when battery is low
+        if [ -n "$capacity" ] && [ "$capacity" -le 10 ]; then
+          sleep 10
+        else
+          sleep "$INTERVAL"
+        fi
       done
     '';
   };

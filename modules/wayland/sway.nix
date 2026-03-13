@@ -161,6 +161,7 @@
         { command = "nm-applet --indicator"; }
         { command = "gammastep"; }
         { command = "dbus-update-activation-environment --systemd DISPLAY WAYLAND_DISPLAY SWAYSOCK XDG_CURRENT_DESKTOP=sway DBUS_SESSION_BUS_ADDRESS"; }
+        { command = "dconf load / < ~/.config/dconf/hm-settings.ini"; }
         { command = "pipewire"; }
         { command = "pipewire-pulse"; }
         { command = "wireplumber"; }

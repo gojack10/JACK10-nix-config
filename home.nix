@@ -19,6 +19,7 @@
     ./modules/shell/tmux.nix
     ./modules/shell/git.nix
     ./modules/shell/lf.nix
+    ./modules/shell/fbterm.nix
     # Editor
     ./modules/editor/nvim.nix
   ];
@@ -63,16 +64,14 @@
     platformTheme.name = "gtk";
   };
 
-  # dconf settings (GTK portal reads theme from here)
-  dconf = {
-    enable = true;
-    settings = {
-      "org/gnome/desktop/interface" = {
-        color-scheme = "prefer-dark";
-        gtk-theme = "Adwaita-dark";
-      };
-    };
-  };
+  # dconf disabled — activation requires D-Bus which isn't available in TTY.
+  # Settings applied via sway startup instead (dconf load).
+  dconf.enable = false;
+  home.file.".config/dconf/hm-settings.ini".text = ''
+    [org/gnome/desktop/interface]
+    color-scheme='prefer-dark'
+    gtk-theme='Adwaita-dark'
+  '';
 
   home.sessionVariables = {
     LANG = "C.UTF-8";

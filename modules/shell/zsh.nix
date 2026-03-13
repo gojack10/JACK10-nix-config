@@ -94,6 +94,11 @@
 
       # Fix PATH order - /usr/bin before nix paths (fixes dlopen issues with libclang)
       export PATH="$HOME/.opencode/bin:$HOME/.cargo/bin:$HOME/.local/bin:/usr/bin:/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin"
+
+      # fbterm on tty2+ (tty1 reserved for sway)
+      if [[ $(tty) == /dev/tty[2-9] ]] && [[ -z "$FBTERM" ]] && command -v fbterm &>/dev/null; then
+        exec fbterm
+      fi
     '';
 
     initContent = ''

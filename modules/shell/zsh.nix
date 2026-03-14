@@ -102,6 +102,10 @@
     '';
 
     initContent = ''
+      # fbterm advertises TERM=fbterm which most apps don't recognize;
+      # override to xterm-256color so CLI tools get proper color support
+      [[ "$TERM" == "fbterm" ]] && export TERM=xterm-256color
+
       # home-manager update
       alias hmu="nix flake update --flake ~/.config/home-manager"
 

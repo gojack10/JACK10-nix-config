@@ -12,6 +12,6 @@
     color-foreground=7
     color-background=0
     cursor-shape=1
-    cursor-interval=500
+    cursor-interval=0
   '';
 }

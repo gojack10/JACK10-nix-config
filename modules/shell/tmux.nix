@@ -70,17 +70,14 @@
 
       # Status bar (basic 8 colors for TTY/framebuffer compatibility)
       set -g status-style 'bg=black fg=white'
-      set -g status-left '#[fg=white] #S '
-      set -g status-left-length 20
-      set -g status-right-length 100
-      set -g status-right '#{?#{==:#{client_key_table},off},#[fg=green]PASS#[fg=white],LOCAL} | #(~/.local/bin/tmux-status)'
       set -g status-interval 5
       set -g message-style 'bg=black fg=white'
 
-      # Window tabs
-      set -g window-status-format ' #I:#W '
-      set -g window-status-current-format '#[fg=green] #I:#W #[fg=white]'
-      set -g window-status-separator ""
+      # Force single status line (clears leftover status 2 from previous config)
+      set -g status 1
+
+      # Single status line: left=clock+session+windows, centre=deepwork, right=stats
+      set -g status-format[0] '#[align=left fg=white] #(date "+%a %Y-%m-%d %H:%M:%S" | sed "s/^[^ ]*/\U&/") | #S #{W:#{?window_active,#[fg=green] #I:#W #[fg=white], #I:#W }}#[align=centre fg=white]#(~/.local/bin/deepwork status 2>/dev/null || echo "󰔟 Ready")#[align=right fg=white]#{?#{==:#{client_key_table},off},#[fg=green]PASS#[fg=white],LOCAL} | #(~/.local/bin/tmux-status)'
     '';
   };
 
@@ -128,13 +125,10 @@
         fi
       fi
 
-      # Clock (matches waybar format)
-      clk=$(date '+%a %Y-%m-%d %H:%M:%S' | sed 's/^[^ ]*/\U&/')
-
       if [ -n "$bat" ]; then
-        printf "CPU %s%% | MEM %sG | %s | %s" "$cpu" "$mem" "$bat" "$clk"
+        printf "CPU %s%% | MEM %sG | %s" "$cpu" "$mem" "$bat"
       else
-        printf "CPU %s%% | MEM %sG | %s" "$cpu" "$mem" "$clk"
+        printf "CPU %s%% | MEM %sG" "$cpu" "$mem"
       fi
     '';
   };

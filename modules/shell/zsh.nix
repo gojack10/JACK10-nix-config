@@ -95,9 +95,27 @@
       # Fix PATH order - /usr/bin before nix paths (fixes dlopen issues with libclang)
       export PATH="$HOME/.opencode/bin:$HOME/.cargo/bin:$HOME/.local/bin:/usr/bin:/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin"
 
-      # fbterm on tty2+ (tty1 reserved for sway)
-      if [[ $(tty) == /dev/tty[2-9] ]] && [[ -z "$FBTERM" ]] && command -v fbterm &>/dev/null; then
-        exec fbterm
+      # Session selector on login (TTY or lidm shell session)
+      # Skip if: already in sway/fbterm, sway-session launching, SSH, or tmux
+      if [[ -o login ]] && [[ -z "$SWAY_SESSION" ]] && [[ -z "$WAYLAND_DISPLAY" ]] && [[ -z "$FBTERM" ]] && [[ -z "$SSH_CONNECTION" ]] && [[ -z "$TMUX" ]]; then
+        echo ""
+        echo "  1) sway"
+        echo "  2) fbterm"
+        echo ""
+        printf "  session: "
+        read -r session_choice
+        case "$session_choice" in
+          1|sway)
+            exec sway &> "''${HOME}/.local/share/sway.log"
+            ;;
+          2|fbterm|"")
+            if command -v fbterm &>/dev/null; then
+              exec fbterm
+            else
+              echo "fbterm not found"
+            fi
+            ;;
+        esac
       fi
     '';
 

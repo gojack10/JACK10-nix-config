@@ -107,6 +107,17 @@
     text = ''
       #!/bin/sh
 
+      # Network (ethernet > wifi > disconnected)
+      net=""
+      if ip link show enp4s0 2>/dev/null | grep -q 'state UP'; then
+        net="ETH"
+      elif ${pkgs.iwd}/bin/iwctl station wlp0s20f3 show 2>/dev/null | grep -q 'Connected'; then
+        ssid=$(${pkgs.iwd}/bin/iwctl station wlp0s20f3 show 2>/dev/null | grep 'Connected network' | sed 's/.*Connected network[[:space:]]*//; s/[[:space:]]*$//')
+        net="$ssid"
+      else
+        net="DISCONNECTED"
+      fi
+
       # CPU (delta between runs via /tmp cache)
       prev=/tmp/.tmux-cpu-prev
       # Read /proc/stat with shell builtins
@@ -162,9 +173,9 @@
       dt=$(date "+%^a %Y-%m-%d %H:%M:%S")
 
       if [ -n "$bat" ]; then
-        printf "CPU %s%% | MEM %sG | %s | %s" "$cpu" "$mem" "$bat" "$dt"
+        printf "%s | CPU %s%% | MEM %sG | %s | %s" "$net" "$cpu" "$mem" "$bat" "$dt"
       else
-        printf "CPU %s%% | MEM %sG | %s" "$cpu" "$mem" "$dt"
+        printf "%s | CPU %s%% | MEM %sG | %s" "$net" "$cpu" "$mem" "$dt"
       fi
     '';
   };

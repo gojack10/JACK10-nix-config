@@ -115,6 +115,52 @@
     '';
   };
 
+  home.file.".local/bin/sway-mirror-toggle" = {
+    executable = true;
+    text = ''
+      #!/bin/sh
+      # Toggle all outputs between mirror mode and extended mode
+      # Mirror = all outputs at position 0,0 (sway composites them)
+      # Extended = outputs placed side by side
+
+      STATE_FILE="/tmp/sway-mirror-state"
+      JQ="${pkgs.jq}/bin/jq"
+
+      outputs=$(swaymsg -t get_outputs | $JQ -r '.[].name')
+      count=$(echo "$outputs" | wc -l)
+
+      # Need at least 2 outputs
+      [ "$count" -lt 2 ] && exit 0
+
+      primary=$(echo "$outputs" | head -1)
+
+      if [ -f "$STATE_FILE" ] && [ "$(cat "$STATE_FILE")" = "mirror" ]; then
+        # Switch to EXTEND: place outputs side by side
+        x=0
+        for output in $outputs; do
+          swaymsg output "$output" enable
+          swaymsg output "$output" position "$x" 0
+          w=$(swaymsg -t get_outputs | $JQ -r ".[] | select(.name == \"$output\") | .rect.width")
+          x=$((x + w))
+        done
+        echo "extend" > "$STATE_FILE"
+      else
+        # Switch to MIRROR: move all workspaces to primary, disable others
+        # Move every workspace to the primary output
+        for ws in $(swaymsg -t get_workspaces | $JQ -r '.[].name'); do
+          swaymsg "workspace $ws; move workspace to output $primary"
+        done
+        swaymsg "focus output $primary"
+        # Disable all non-primary outputs (primary shows on all screens)
+        for output in $outputs; do
+          [ "$output" = "$primary" ] && continue
+          swaymsg output "$output" disable
+        done
+        echo "mirror" > "$STATE_FILE"
+      fi
+    '';
+  };
+
   # Start the mouse daemon with sway and center cursor on boot
   wayland.windowManager.sway.config.startup = [
     { command = "~/.local/bin/sway-mouse-daemon"; }

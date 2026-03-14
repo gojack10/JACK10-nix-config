@@ -11,7 +11,7 @@
     font-size=${toString (builtins.floor (fontSize + 3.5))}
     color-foreground=7
     color-background=0
-    cursor-shape=0
+    cursor-shape=1
     cursor-interval=500
   '';
 }

@@ -70,14 +70,35 @@
 
       # Status bar (basic 8 colors for TTY/framebuffer compatibility)
       set -g status-style 'bg=black fg=white'
-      set -g status-interval 5
+      set -g status-interval 1
       set -g message-style 'bg=black fg=white'
 
-      # Force single status line (clears leftover status 2 from previous config)
-      set -g status 1
+      # Two status lines
+      set -g status 2
 
-      # Single status line: left=clock+session+windows, centre=deepwork, right=stats
-      set -g status-format[0] '#[align=left fg=white] #(date "+%a %Y-%m-%d %H:%M:%S" | sed "s/^[^ ]*/\U&/") | #S #{W:#{?window_active,#[fg=green] #I:#W #[fg=white], #I:#W }}#[align=centre fg=white]#(~/.local/bin/deepwork status 2>/dev/null || echo "󰔟 Ready")#[align=right fg=white]#{?#{==:#{client_key_table},off},#[fg=green]PASS#[fg=white],LOCAL} | #(~/.local/bin/tmux-status)'
+      # Line 0: session+windows left, stats+date right
+      set -g status-format[0] '#[align=left fg=white] #S #{W:#{?window_active,#[fg=green] #I:#W #[fg=white], #I:#W }}#[align=right fg=white]#{?#{==:#{client_key_table},off},#[fg=green]PASS#[fg=white],LOCAL} | #(~/.local/bin/tmux-status) '
+
+      # Line 1: deepwork centered
+      set -g status-format[1] '#[align=centre fg=white]#(~/.local/bin/deepwork-status)'
+    '';
+  };
+
+  home.file.".local/bin/deepwork-status" = {
+    executable = true;
+    text = ''
+      #!/bin/sh
+      DW=$(~/.local/bin/deepwork status 2>/dev/null) || DW="Ready"
+      # Cache fbterm check (terminal won't change mid-session)
+      cache=/tmp/.tmux-is-fbterm
+      if [ ! -f "$cache" ]; then
+        tmux display-message -p '#{client_termname}' > "$cache"
+      fi
+      if [ "$(cat "$cache")" = "fbterm" ]; then
+        echo "$DW" | sed 's/󰔟/[DW]/g'
+      else
+        echo "$DW"
+      fi
     '';
   };
 
@@ -88,12 +109,13 @@
 
       # CPU (delta between runs via /tmp cache)
       prev=/tmp/.tmux-cpu-prev
-      curr=$(awk '/^cpu /{print $2,$3,$4,$5,$6,$7,$8}' /proc/stat)
+      # Read /proc/stat with shell builtins
+      read label cu cn cs ci cw cq csi _ < /proc/stat
+      curr="$cu $cn $cs $ci $cw $cq $csi"
       if [ -f "$prev" ]; then
         read pu pn ps pi pw pq psi < "$prev"
-        set -- $curr
-        idle=$(( ($4 - pi) + ($5 - pw) ))
-        total=$(( ($1-pu) + ($2-pn) + ($3-ps) + ($4-pi) + ($5-pw) + ($6-pq) + ($7-psi) ))
+        idle=$(( (ci - pi) + (cw - pw) ))
+        total=$(( (cu-pu) + (cn-pn) + (cs-ps) + (ci-pi) + (cw-pw) + (cq-pq) + (csi-psi) ))
         if [ "$total" -gt 0 ]; then
           cpu=$(( (total - idle) * 100 / total ))
         else
@@ -104,13 +126,24 @@
       fi
       echo "$curr" > "$prev"
 
-      # Memory
-      mem=$(awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{printf "%.1f", (t-a)/1048576}' /proc/meminfo)
+      # Memory (shell builtins, no awk)
+      while read key val _; do
+        case "$key" in
+          MemTotal:) mt=$val ;;
+          MemAvailable:) ma=$val; break ;;
+        esac
+      done < /proc/meminfo
+      used_mb=$(( (mt - ma) / 1024 ))
+      mem_int=$(( used_mb / 1024 ))
+      mem_dec=$(( (used_mb % 1024) * 10 / 1024 ))
+      mem="$mem_int.$mem_dec"
 
-      # Battery
+      # Battery (read builtins)
       bat=""
-      cap=$(cat /sys/class/power_supply/BAT0/capacity 2>/dev/null)
-      bstat=$(cat /sys/class/power_supply/BAT0/status 2>/dev/null)
+      cap=""
+      bstat=""
+      read cap < /sys/class/power_supply/BAT0/capacity 2>/dev/null
+      read bstat < /sys/class/power_supply/BAT0/status 2>/dev/null
       if [ "$bstat" = "Full" ]; then
         bat="FULL"
       elif [ "$bstat" = "Charging" ]; then
@@ -125,10 +158,13 @@
         fi
       fi
 
+      # Date (shell builtin, %^a for uppercase day)
+      dt=$(date "+%^a %Y-%m-%d %H:%M:%S")
+
       if [ -n "$bat" ]; then
-        printf "CPU %s%% | MEM %sG | %s" "$cpu" "$mem" "$bat"
+        printf "CPU %s%% | MEM %sG | %s | %s" "$cpu" "$mem" "$bat" "$dt"
       else
-        printf "CPU %s%% | MEM %sG" "$cpu" "$mem"
+        printf "CPU %s%% | MEM %sG | %s" "$cpu" "$mem" "$dt"
       fi
     '';
   };

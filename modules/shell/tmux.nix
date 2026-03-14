@@ -47,24 +47,20 @@
       bind X kill-window
       bind s choose-tree -NNs
 
-      # F12: toggle between passthrough (default) and local control
+      # F12: toggle between local (default) and passthrough
       # Passthrough: all keys go to inner/remote tmux
       # Local: prefix works on this tmux instance
       bind -T off F12 \
         set prefix C-Space \;\
-        set -u key-table \;\
-        set status-left '#[bg=white,fg=black] #S #[bg=black] ' \;\
+        set key-table root \;\
         refresh-client -S
       bind -T root F12 \
         set prefix None \;\
         set key-table off \;\
-        set status-left '#[fg=black,bg=green] PASS #[bg=black] ' \;\
         refresh-client -S
 
-      # Start in passthrough mode
-      set -g prefix None
-      set -g key-table off
-      set -g status-left '#[fg=black,bg=green] PASS #[bg=black] '
+      # Start in local mode (prefix works on this tmux instance)
+      # Press F12 to toggle to passthrough mode
 
       # Pane pip indicator (bottom-left of active pane only)
       set -g pane-border-status bottom
@@ -74,16 +70,16 @@
 
       # Status bar (basic 8 colors for TTY/framebuffer compatibility)
       set -g status-style 'bg=black fg=white'
-      set -g status-left '#[bg=white,fg=black] #S #[bg=black,fg=white] '
+      set -g status-left '#[fg=white] #S '
       set -g status-left-length 20
       set -g status-right-length 100
-      set -g status-right '#(~/.local/bin/tmux-status)'
+      set -g status-right '#{?#{==:#{client_key_table},off},#[fg=green]PASS#[fg=white],LOCAL} | #(~/.local/bin/tmux-status)'
       set -g status-interval 5
       set -g message-style 'bg=black fg=white'
 
       # Window tabs
       set -g window-status-format ' #I:#W '
-      set -g window-status-current-format '#[bg=white,fg=black] #I:#W #[bg=black,fg=white]'
+      set -g window-status-current-format '#[fg=green] #I:#W #[fg=white]'
       set -g window-status-separator ""
     '';
   };

@@ -1,4 +1,4 @@
-{ config, pkgs, ... }:
+{ config, pkgs, lib, ... }:
 
 {
   programs.tmux = {
@@ -84,7 +84,7 @@
     '';
   };
 
-  home.file.".local/bin/deepwork-status" = {
+  home.file.".local/bin/deepwork-status" = lib.mkIf pkgs.stdenv.isLinux {
     executable = true;
     text = ''
       #!/bin/sh
@@ -102,7 +102,7 @@
     '';
   };
 
-  home.file.".local/bin/tmux-status" = {
+  home.file.".local/bin/tmux-status" = lib.mkIf pkgs.stdenv.isLinux {
     executable = true;
     text = ''
       #!/bin/sh

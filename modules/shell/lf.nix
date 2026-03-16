@@ -1,5 +1,8 @@
-{ config, pkgs, ... }:
+{ config, pkgs, lib, ... }:
 
+let
+  opener = if pkgs.stdenv.isDarwin then "open" else "xdg-open";
+in
 {
   home.file.".config/lf/lfrc".text = ''
     # Basic settings
@@ -37,16 +40,16 @@
         Makefile|makefile|*.mk|CMakeLists.txt|\
         *.env|*.env.*|.gitignore|.gitattributes)
           nvim "$f" ;;
-        # Media -> xdg-open (uses mpv)
+        # Media -> open with default handler
         *.mp4|*.mkv|*.webm|*.avi|*.mov|*.flv|*.wmv|*.m4v|\
         *.mp3|*.flac|*.ogg|*.wav|*.m4a|*.aac|*.opus|*.wma)
-          xdg-open "$f" ;;
-        # Images -> xdg-open (uses swayimg)
+          ${opener} "$f" ;;
+        # Images -> open with default handler
         *.png|*.jpg|*.jpeg|*.gif|*.webp|*.bmp|*.svg|*.ico)
-          xdg-open "$f" ;;
-        # Documents -> xdg-open (uses brave)
+          ${opener} "$f" ;;
+        # Documents -> open with default handler
         *.pdf|*.epub)
-          xdg-open "$f" ;;
+          ${opener} "$f" ;;
         # Fallback to mime-type detection
         *)
           case $(file --mime-type -Lb "$f") in
@@ -55,7 +58,7 @@
             application/x-python|application/x-php|inode/x-empty)
               nvim "$f" ;;
             *)
-              xdg-open "$f" ;;
+              ${opener} "$f" ;;
           esac ;;
       esac
     }}

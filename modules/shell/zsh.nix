@@ -1,4 +1,4 @@
-{ config, pkgs, ... }:
+{ config, pkgs, lib, ... }:
 
 {
   programs.zsh = {
@@ -34,18 +34,10 @@
     };
 
     shellAliases = {
-      open = "xdg-open";
       ts = "tmux attach \\; choose-tree -NNs";
       claudeyolo = "claude --dangerously-skip-permissions";
       rsync = "rsync -ah --info=progress2 --no-i-r --stats";
       fastfetch = "fastfetch --logo-position top";
-      brave-update = "cd ~/void-packages && git -C ./srcpkgs/brave-bin pull && ./xbps-src pkg brave-bin && sudo xbps-install -R hostdir/binpkgs -u brave-bin && cd -";
-      # Power management (polkit authorizes wheel group)
-      zzz = "echo gn && loginctl suspend && echo 'im up bro'";
-      ZZZ = "echo gn && loginctl hibernate && echo 'im up bro'";
-      bye = "echo cya && loginctl poweroff";
-      rrr = "echo 'ok brb' && loginctl reboot";
-      fixnet = "echo 'Restarting iwd...' && sudo sv restart iwd && echo 'Done'";
 
       # Git aliases (replaces oh-my-zsh git plugin)
       g = "git";
@@ -81,10 +73,19 @@
       gst = "git status";
       gsta = "git stash push";
       gstp = "git stash pop";
+    } // lib.optionalAttrs pkgs.stdenv.isLinux {
+      open = "xdg-open";
+      brave-update = "cd ~/void-packages && git -C ./srcpkgs/brave-bin pull && ./xbps-src pkg brave-bin && sudo xbps-install -R hostdir/binpkgs -u brave-bin && cd -";
+      # Power management (polkit authorizes wheel group)
+      zzz = "echo gn && loginctl suspend && echo 'im up bro'";
+      ZZZ = "echo gn && loginctl hibernate && echo 'im up bro'";
+      bye = "echo cya && loginctl poweroff";
+      rrr = "echo 'ok brb' && loginctl reboot";
+      fixnet = "echo 'Restarting iwd...' && sudo sv restart iwd && echo 'Done'";
     };
 
-    # .zprofile - runs on login shell (XDG needed before sway starts)
-    profileExtra = ''
+    # .zprofile - runs on login shell
+    profileExtra = if pkgs.stdenv.isLinux then ''
       # XDG_RUNTIME_DIR for Wayland/Sway
       if [ -z "$XDG_RUNTIME_DIR" ]; then
         export XDG_RUNTIME_DIR=/tmp/$(id -u)-runtime-dir
@@ -117,12 +118,14 @@
             ;;
         esac
       fi
-    '';
+    '' else "";
 
     initContent = ''
+      ${lib.optionalString pkgs.stdenv.isLinux ''
       # fbterm advertises TERM=fbterm which most apps don't recognize;
       # override to xterm-256color so CLI tools get proper color support
       [[ "$TERM" == "fbterm" ]] && export TERM=xterm-256color
+      ''}
 
       # home-manager update
       alias hmu="nix flake update --flake ~/.config/home-manager"
@@ -169,8 +172,10 @@
       export EDITOR=nvim
       export VISUAL=nvim
 
+      ${lib.optionalString pkgs.stdenv.isLinux ''
       # Sudo askpass for GUI prompts (enables sudo -A)
       export SUDO_ASKPASS="$HOME/.local/bin/askpass-wofi"
+      ''}
 
       # pbcopy for OSC 52 clipboard (works in tmux, SSH, raw terminal)
       pbcopy() {
@@ -188,8 +193,10 @@
         fi
       }
 
+      ${lib.optionalString pkgs.stdenv.isLinux ''
       # Fix PATH order - /usr/bin before nix paths (fixes dlopen issues with libclang)
       export PATH="$HOME/.opencode/bin:$HOME/.cargo/bin:$HOME/.local/bin:/usr/bin:/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin"
+      ''}
 
       # Git helper functions (replaces oh-my-zsh git lib)
       git_main_branch() {

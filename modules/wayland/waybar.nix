@@ -33,9 +33,10 @@
       battery = {
         format = "BAT {capacity}%";
         format-charging = "CHG {capacity}%";
-        format-full = "FULL";
         interval = 5;
         states = {
+          good = 89;
+          full = 100;
           warning = 25;
           critical = 10;
         };
@@ -117,6 +118,12 @@
 
       #battery.critical {
         background: #ff3333;
+        color: #000000;
+        padding: 0 4px;
+      }
+
+      #battery.charging.full {
+        background: #33cc33;
         color: #000000;
         padding: 0 4px;
       }

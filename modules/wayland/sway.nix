@@ -106,7 +106,6 @@
         "${modifier}+7" = "workspace 7; exec ~/.local/bin/sway-center-cursor output";
         "${modifier}+8" = "workspace 8; exec ~/.local/bin/sway-center-cursor output";
         "${modifier}+9" = "workspace 9; exec ~/.local/bin/sway-center-cursor output";
-        "${modifier}+0" = "workspace 10; exec ~/.local/bin/sway-center-cursor output";
 
         "${modifier}+Shift+1" = "move container to workspace 1";
         "${modifier}+Shift+2" = "move container to workspace 2";
@@ -117,7 +116,6 @@
         "${modifier}+Shift+7" = "move container to workspace 7";
         "${modifier}+Shift+8" = "move container to workspace 8";
         "${modifier}+Shift+9" = "move container to workspace 9";
-        "${modifier}+Shift+0" = "move container to workspace 10";
 
         # Volume/brightness
         "XF86MonBrightnessUp" = "exec brightnessctl set +5%";

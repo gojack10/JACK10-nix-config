@@ -119,44 +119,55 @@
     executable = true;
     text = ''
       #!/bin/sh
-      # Toggle all outputs between mirror mode and extended mode
-      # Mirror = all outputs at position 0,0 (sway composites them)
-      # Extended = outputs placed side by side
+      # Toggle mirror mode:
+      #   ON:  save workspace layout, consolidate to laptop, mirror laptop to externals
+      #   OFF: kill mirrors, restore workspaces to original outputs
 
       STATE_FILE="/tmp/sway-mirror-state"
+      LAPTOP="eDP-1"
       JQ="${pkgs.jq}/bin/jq"
 
-      outputs=$(swaymsg -t get_outputs | $JQ -r '.[].name')
-      count=$(echo "$outputs" | wc -l)
+      if pgrep -x wl-mirror >/dev/null 2>&1; then
+        # === MIRROR OFF ===
+        pkill -x wl-mirror
 
-      # Need at least 2 outputs
-      [ "$count" -lt 2 ] && exit 0
+        if [ -f "$STATE_FILE" ]; then
+          # Get saved workspace names before restoring
+          saved_names=$($JQ -r '.workspaces[].name' "$STATE_FILE")
 
-      primary=$(echo "$outputs" | head -1)
+          focused_ws=$($JQ -r '.focused' "$STATE_FILE")
+          $JQ -r '.workspaces[] | "\(.name) \(.output)"' "$STATE_FILE" | while read -r ws output; do
+            swaymsg "workspace $ws; move workspace to output $output" 2>/dev/null
+          done
+          [ -n "$focused_ws" ] && swaymsg "workspace $focused_ws"
 
-      if [ -f "$STATE_FILE" ] && [ "$(cat "$STATE_FILE")" = "mirror" ]; then
-        # Switch to EXTEND: place outputs side by side
-        x=0
-        for output in $outputs; do
-          swaymsg output "$output" enable
-          swaymsg output "$output" position "$x" 0
-          w=$(swaymsg -t get_outputs | $JQ -r ".[] | select(.name == \"$output\") | .rect.width")
-          x=$((x + w))
-        done
-        echo "extend" > "$STATE_FILE"
+          # Remove any workspaces that didn't exist before mirroring (e.g. auto-created 10)
+          for ws in $(swaymsg -t get_workspaces | $JQ -r '.[].name'); do
+            if ! echo "$saved_names" | grep -qx "$ws"; then
+              swaymsg "workspace $ws; move workspace to output $LAPTOP" 2>/dev/null
+            fi
+          done
+
+          rm -f "$STATE_FILE"
+        fi
       else
-        # Switch to MIRROR: move all workspaces to primary, disable others
-        # Move every workspace to the primary output
-        for ws in $(swaymsg -t get_workspaces | $JQ -r '.[].name'); do
-          swaymsg "workspace $ws; move workspace to output $primary"
+        # === MIRROR ON ===
+        # Save state as JSON
+        focused=$(swaymsg -t get_workspaces | $JQ -r '.[] | select(.focused) | .name')
+        swaymsg -t get_workspaces | $JQ --arg f "$focused" \
+          '{focused: $f, workspaces: [.[] | {name, output}]}' > "$STATE_FILE"
+
+        # Move all workspaces to laptop
+        swaymsg -t get_workspaces | $JQ -r '.[].name' | while read -r ws; do
+          swaymsg "workspace $ws; move workspace to output $LAPTOP"
         done
-        swaymsg "focus output $primary"
-        # Disable all non-primary outputs (primary shows on all screens)
-        for output in $outputs; do
-          [ "$output" = "$primary" ] && continue
-          swaymsg output "$output" disable
+        swaymsg "workspace $focused"
+
+        # Mirror laptop fullscreen onto each external output
+        swaymsg -t get_outputs | $JQ -r '.[].name' | while read -r output; do
+          [ "$output" = "$LAPTOP" ] && continue
+          /usr/bin/wl-mirror --fullscreen-output "$output" "$LAPTOP" &
         done
-        echo "mirror" > "$STATE_FILE"
       fi
     '';
   };

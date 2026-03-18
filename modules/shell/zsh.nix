@@ -206,6 +206,10 @@
       # Fix PATH order - /usr/bin before nix paths (fixes dlopen issues with libclang)
       export PATH="$HOME/.opencode/bin:$HOME/.cargo/bin:$HOME/.local/bin:/usr/bin:/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin"
       ''}
+      ${lib.optionalString pkgs.stdenv.isDarwin ''
+      # Homebrew before system paths (macOS path_helper puts /usr/bin first)
+      export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
+      ''}
 
       # Git helper functions (replaces oh-my-zsh git lib)
       git_main_branch() {

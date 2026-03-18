@@ -193,6 +193,15 @@
         fi
       }
 
+      # Temporary passwordless sudo for 1 hour
+      tempsudo() {
+        local file="/etc/sudoers.d/temp-$(whoami)"
+        sudo bash -c "echo '$(whoami) ALL=(ALL) NOPASSWD: ALL' > $file && chmod 440 $file" && \
+        nohup bash -c "sleep 3600 && sudo rm -f $file" >/dev/null 2>&1 &
+        disown
+        echo "Passwordless sudo enabled for 1 hour."
+      }
+
       ${lib.optionalString pkgs.stdenv.isLinux ''
       # Fix PATH order - /usr/bin before nix paths (fixes dlopen issues with libclang)
       export PATH="$HOME/.opencode/bin:$HOME/.cargo/bin:$HOME/.local/bin:/usr/bin:/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin"

@@ -152,6 +152,12 @@
         fi
       }
 
+      # Word navigation in insert mode
+      bindkey '^[[1;5D' backward-word   # Ctrl+Left
+      bindkey '^[[1;5C' forward-word    # Ctrl+Right
+      bindkey '^[[1;3D' backward-word   # Alt+Left
+      bindkey '^[[1;3C' forward-word    # Alt+Right
+
       # Quality of life
       setopt AUTO_CD
       setopt NO_CORRECT

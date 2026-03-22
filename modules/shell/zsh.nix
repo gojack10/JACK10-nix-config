@@ -195,7 +195,7 @@
 
       # Temporary passwordless sudo for 1 hour
       tempsudo() {
-        local file="/etc/sudoers.d/temp-$(whoami)"
+        local file="/etc/sudoers.d/zz-tempsudo-$(whoami)"
         sudo bash -c "echo '$(whoami) ALL=(ALL) NOPASSWD: ALL' > $file && chmod 440 $file" && \
         nohup bash -c "sleep 3600 && sudo rm -f $file" >/dev/null 2>&1 &
         disown

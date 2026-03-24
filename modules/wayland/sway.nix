@@ -127,6 +127,9 @@
         # Gammastep toggle (Fn+F9)
         "XF86Tools" = "exec pkill -USR1 gammastep";
 
+        # Fan toggle (Fn+F12)
+        "XF86Favorites" = "exec ~/.local/bin/fan-toggle";
+
         # Screenshot (idempotent - won't spawn duplicates)
         "Print" = "exec pgrep -x slurp || grim -g \"$(slurp)\" - | swappy -f -";
 

@@ -84,6 +84,22 @@
     '';
   };
 
+  home.file.".local/bin/fan-toggle" = lib.mkIf pkgs.stdenv.isLinux {
+    executable = true;
+    text = ''
+      #!/bin/sh
+      if sudo sv status thinkpad-fan-min 2>/dev/null | grep -q '^run:'; then
+        sudo sv stop thinkpad-fan-min
+        sudo sh -c 'echo "level disengaged" > /proc/acpi/ibm/fan'
+        notify-send -t 2000 "Fan" "FULL BLAST" 2>/dev/null
+      else
+        sudo sh -c 'echo "level auto" > /proc/acpi/ibm/fan'
+        sudo sv start thinkpad-fan-min
+        notify-send -t 2000 "Fan" "Normal" 2>/dev/null
+      fi
+    '';
+  };
+
   home.file.".local/bin/deepwork-status" = lib.mkIf pkgs.stdenv.isLinux {
     executable = true;
     text = ''

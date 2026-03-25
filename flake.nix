@@ -32,7 +32,7 @@
       machines = {
         # Linux hosts
         litetop = linuxDefaults // { fontSize = 9.5; fontSizeWaybar = 9.5; };
-        "10top" = linuxDefaults // { fontSizeWaybar = 11.5; };
+        "10top" = linuxDefaults // { fontSizeFoot = 11.5; fontSizeWaybar = 11.5; };
         desktop = linuxDefaults;
         # Darwin hosts
         m2-air = darwinDefaults;

@@ -158,20 +158,19 @@
       bars = [];
 
       startup = [
-        { command = "waybar"; }
-        { command = "mako"; }
-        { command = "nm-applet --indicator"; }
-        { command = "gammastep"; }
         { command = "dbus-update-activation-environment --systemd DISPLAY WAYLAND_DISPLAY SWAYSOCK XDG_CURRENT_DESKTOP=sway DBUS_SESSION_BUS_ADDRESS"; }
         { command = "dconf load / < ~/.config/dconf/hm-settings.ini"; }
+        # audio stack first so waybar's pulseaudio module connects successfully
         { command = "pipewire"; }
         { command = "pipewire-pulse"; }
         { command = "wireplumber"; }
-        # portals: start wlr backend first, then main portal (needs dbus env + pipewire)
+        { command = "sleep 1 && waybar"; }
+        { command = "mako"; }
+        { command = "nm-applet --indicator"; }
+        { command = "gammastep"; }
+        # portals: need dbus env + pipewire up first
         { command = "sleep 1 && /usr/libexec/xdg-desktop-portal-wlr"; }
         { command = "sleep 2 && /usr/libexec/xdg-desktop-portal"; }
-        { command = "wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 30%"; }
-        { command = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0%"; }
         { command = "~/.local/bin/battery-monitor"; }
       ];
 

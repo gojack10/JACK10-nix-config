@@ -8,7 +8,7 @@
       height = 18;
       modules-left = [ "sway/workspaces" "sway/mode" ];
       modules-center = [ "custom/deepwork" ];
-      modules-right = [ "cpu" "memory" "custom/network" "battery" "custom/mic" "pulseaudio" "custom/clock" ];
+      modules-right = [ "cpu" "memory" "custom/network" "battery" "custom/mic" "custom/volume" "custom/clock" ];
 
       "sway/workspaces" = {
         disable-scroll = true;
@@ -47,11 +47,12 @@
         interval = 1;
       };
 
-      pulseaudio = {
-        format = "VOL {volume}%";
-        format-muted = "VOL MUTE";
+      "custom/volume" = {
+        exec = "bash -c 'result=$(wpctl get-volume @DEFAULT_AUDIO_SINK@); if echo \"$result\" | grep -q MUTED; then echo \"VOL MUTE\"; else echo \"VOL $(echo \"$result\" | awk \"{print int(\\$2*100)}\")%\"; fi'";
+        interval = 1;
         on-click = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle";
-        scroll-step = 5;
+        on-scroll-up = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+";
+        on-scroll-down = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-";
       };
 
       "custom/mic" = {
@@ -102,7 +103,7 @@
         color: #d0d0d0;
       }
 
-      #pulseaudio.muted, #custom-mic.muted {
+      #custom-volume.muted, #custom-mic.muted {
         color: #ff5555;
       }
 

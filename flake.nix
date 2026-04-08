@@ -42,6 +42,7 @@
       sharedModules = [
         ./home.nix
         ./modules/packages/common.nix
+        ./modules/scripts.nix
         ./modules/shell/zsh.nix
         ./modules/shell/tmux.nix
         ./modules/shell/git.nix

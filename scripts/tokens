@@ -1,0 +1,16 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# dependencies = ["tiktoken"]
+# ///
+import sys
+import tiktoken
+
+enc = tiktoken.get_encoding("cl100k_base")
+
+if len(sys.argv) > 1:
+    with open(sys.argv[1]) as f:
+        text = f.read()
+else:
+    text = sys.stdin.read()
+
+print(len(enc.encode(text)))

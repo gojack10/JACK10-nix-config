@@ -115,6 +115,47 @@
     '';
   };
 
+  home.file.".local/bin/sway-resume-pointer-fix" = {
+    executable = true;
+    text = ''
+      #!/bin/sh
+      # Fix focus-follows-mouse after resume from suspend/hibernate.
+      # Listens for logind's PrepareForSleep signal and cycles all pointer
+      # devices when resuming (signal transitions to false). Cycling
+      # send_events resets libinput's per-device event pipeline, which can
+      # otherwise get wedged across a hibernate/resume cycle and leave sway
+      # unable to track cursor motion for focus-follows-mouse.
+
+      cycle_pointers() {
+        ids=$(swaymsg -t get_inputs | ${pkgs.jq}/bin/jq -r \
+          '.[] | select(.type == "pointer" or .type == "touchpad") | .identifier')
+        echo "$ids" | while IFS= read -r id; do
+          [ -n "$id" ] && swaymsg "input \"$id\" events disabled" >/dev/null
+        done
+        sleep 0.3
+        echo "$ids" | while IFS= read -r id; do
+          [ -n "$id" ] && swaymsg "input \"$id\" events enabled" >/dev/null
+        done
+      }
+
+      expecting=0
+      /usr/bin/dbus-monitor --system \
+        "type='signal',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'" 2>/dev/null | \
+      while read -r line; do
+        case "$line" in
+          *member=PrepareForSleep*) expecting=1 ;;
+          *"boolean true"*)  expecting=0 ;;  # going to sleep, nothing to do
+          *"boolean false"*)
+            [ "$expecting" = 1 ] || continue
+            expecting=0
+            sleep 0.5  # let things settle after resume
+            cycle_pointers
+            ;;
+        esac
+      done
+    '';
+  };
+
   home.file.".local/bin/sway-mirror-toggle" = {
     executable = true;
     text = ''
@@ -175,6 +216,7 @@
   # Start the mouse daemon with sway and center cursor on boot
   wayland.windowManager.sway.config.startup = [
     { command = "~/.local/bin/sway-mouse-daemon"; }
+    { command = "~/.local/bin/sway-resume-pointer-fix"; }
     { command = "~/.local/bin/sway-center-cursor output"; }
   ];
 }

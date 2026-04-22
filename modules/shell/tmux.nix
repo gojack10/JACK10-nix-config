@@ -84,17 +84,20 @@
     '';
   };
 
+  # Depends on two root-owned files that live outside Nix (see scripts/system/
+  # for the committed copies and install instructions):
+  #   /usr/local/sbin/fan-mode     — privileged helper, takes {full|normal|status}
+  #   /etc/sudoers.d/fan-nopasswd  — NOPASSWD jack on the three fan-mode invocations
+  # Needed because sway bindsyms run without a TTY, so password-prompting sudo fails silently.
   home.file.".local/bin/fan-toggle" = lib.mkIf pkgs.stdenv.isLinux {
     executable = true;
     text = ''
       #!/bin/sh
-      if sudo sv status thinkpad-fan-min 2>/dev/null | grep -q '^run:'; then
-        sudo sv stop thinkpad-fan-min
-        sudo sh -c 'echo "level disengaged" > /proc/acpi/ibm/fan'
+      if sudo -n /usr/local/sbin/fan-mode status 2>/dev/null | grep -q '^run:'; then
+        sudo -n /usr/local/sbin/fan-mode full
         notify-send -t 2000 "Fan" "FULL BLAST" 2>/dev/null
       else
-        sudo sh -c 'echo "level auto" > /proc/acpi/ibm/fan'
-        sudo sv start thinkpad-fan-min
+        sudo -n /usr/local/sbin/fan-mode normal
         notify-send -t 2000 "Fan" "Normal" 2>/dev/null
       fi
     '';

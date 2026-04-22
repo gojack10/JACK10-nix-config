@@ -1,0 +1,25 @@
+#!/bin/sh
+# Install to: /usr/local/sbin/fan-mode  (root:root 0755)
+#   sudo install -m 0755 -o root -g root scripts/system/fan-mode /usr/local/sbin/fan-mode
+#
+# Privileged helper for ~/.local/bin/fan-toggle (see modules/shell/tmux.nix).
+# Paired with scripts/system/fan-nopasswd (a sudoers rule).
+set -eu
+
+case "${1:-}" in
+  full)
+    sv stop thinkpad-fan-min >/dev/null 2>&1 || true
+    echo "level disengaged" > /proc/acpi/ibm/fan
+    ;;
+  normal)
+    echo "level auto" > /proc/acpi/ibm/fan
+    sv start thinkpad-fan-min >/dev/null 2>&1 || true
+    ;;
+  status)
+    sv status thinkpad-fan-min
+    ;;
+  *)
+    echo "usage: $0 {full|normal|status}" >&2
+    exit 2
+    ;;
+esac

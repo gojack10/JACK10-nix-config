@@ -1,0 +1,7 @@
+# Install to: /etc/sudoers.d/fan-nopasswd  (root:root 0440)
+#   sudo install -m 0440 -o root -g root scripts/system/fan-nopasswd /etc/sudoers.d/fan-nopasswd
+#   sudo visudo -c -f /etc/sudoers.d/fan-nopasswd
+#
+# Allow jack to toggle thinkpad fan without password.
+# Paired with scripts/system/fan-mode (the privileged helper).
+jack ALL=(root) NOPASSWD: /usr/local/sbin/fan-mode full, /usr/local/sbin/fan-mode normal, /usr/local/sbin/fan-mode status

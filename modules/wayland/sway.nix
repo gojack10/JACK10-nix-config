@@ -1,6 +1,67 @@
 { config, pkgs, lib, fontSize, useSystemSway, ... }:
 
+let
+  # Chooser invoked by xdg-desktop-portal-wlr on every screencast request.
+  # Runs in `dmenu` mode (see xdg-desktop-portal-wlr(5)):
+  #   stdin  → one label per line, e.g. "Monitor: eDP-1 'BOE 0x0864'"
+  #            or "Window: <title> (<app-id>)"
+  #   stdout → the chosen label echoed back verbatim (xdpw does a strcmp)
+  # Verbose logging to ~/.local/state/xdpw-chooser.log — the portal swallows
+  # stderr, so explicit logging is the only way to see what happened.
+  xdpwChooser = pkgs.writeShellScript "xdpw-chooser" ''
+    set -o pipefail
+
+    LOG="''${XDG_STATE_HOME:-$HOME/.local/state}/xdpw-chooser.log"
+    mkdir -p "$(dirname "$LOG")"
+    log() { printf '[%s] [pid %d] %s\n' "$(date -Iseconds)" "$$" "$*" >> "$LOG"; }
+
+    log "=== invoked ==="
+    log "argv: $*"
+    log "ppid: $PPID"
+    log "env: WAYLAND_DISPLAY=''${WAYLAND_DISPLAY:-<unset>} XDG_RUNTIME_DIR=''${XDG_RUNTIME_DIR:-<unset>} SWAYSOCK=''${SWAYSOCK:-<unset>} DISPLAY=''${DISPLAY:-<unset>} DBUS_SESSION_BUS_ADDRESS=''${DBUS_SESSION_BUS_ADDRESS:-<unset>}"
+    log "PATH=$PATH"
+
+    WOFI=${pkgs.wofi}/bin/wofi
+
+    mapfile -t labels
+    log "received ''${#labels[@]} candidate(s)"
+    for l in "''${labels[@]}"; do log "  | $l"; done
+
+    if [ "''${#labels[@]}" -eq 0 ]; then
+      log "FAIL: no candidates on stdin"
+      exit 1
+    fi
+
+    if [ "''${#labels[@]}" -eq 1 ]; then
+      log "single candidate, returning verbatim: ''${labels[0]}"
+      printf '%s\n' "''${labels[0]}"
+      exit 0
+    fi
+
+    chosen=$(printf '%s\n' "''${labels[@]}" | "$WOFI" --dmenu --prompt "Screen to capture" 2>>"$LOG")
+    wofi_rc=$?
+    log "wofi exit=$wofi_rc chosen='$chosen'"
+
+    if [ -z "$chosen" ]; then
+      log "empty selection (user cancelled or wofi failed); exit 1"
+      exit 1
+    fi
+
+    log "returning verbatim: $chosen"
+    printf '%s\n' "$chosen"
+  '';
+in
+
 {
+  # xdg-desktop-portal-wlr config: prompt user on every screencast.
+  # `dmenu` mode pipes "Monitor: <name> <desc>" / "Window: <title> (<id>)"
+  # labels to chooser_cmd's stdin; chooser echoes one back verbatim.
+  xdg.configFile."xdg-desktop-portal-wlr/config".text = ''
+    [screencast]
+    chooser_type=dmenu
+    chooser_cmd=${xdpwChooser}
+  '';
+
   wayland.windowManager.sway = {
     enable = true;
     package = if useSystemSway then null else pkgs.sway;
@@ -68,7 +129,7 @@
         "${modifier}+Shift+q" = "kill";
         "${modifier}+f" = "fullscreen toggle";
         "${modifier}+e" = "layout toggle split";
-        "${modifier}+s" = "layout stacking";
+        "${modifier}+s" = "nop";
         "${modifier}+Shift+s" = "exec ~/.local/bin/sway-swap-outputs";
         "${modifier}+Shift+m" = "exec ~/.local/bin/sway-mirror-toggle";
         "${modifier}+w" = "layout tabbed";
@@ -168,9 +229,10 @@
         { command = "mako"; }
         { command = "nm-applet --indicator"; }
         { command = "gammastep"; }
-        # portals: need dbus env + pipewire up first
-        { command = "sleep 1 && /usr/libexec/xdg-desktop-portal-wlr"; }
-        { command = "sleep 2 && /usr/libexec/xdg-desktop-portal"; }
+        # portals start on demand via dbus activation (.service files in
+        # /usr/share/dbus-1/services/). No explicit launch needed — dbus-daemon
+        # respawns them if they die. The dbus-update-activation-environment
+        # line above is what gives those activations the right env.
         { command = "~/.local/bin/battery-monitor"; }
       ];
 

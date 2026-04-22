@@ -189,7 +189,7 @@
 
       output = {
         "*" = {
-          bg = "${config.home.homeDirectory}/.config/home-manager/bg.png fill";
+          bg = "${config.home.homeDirectory}/.local/share/JACK10-nix-config/bg.png fill";
           scale = "1.0";
         };
         "eDP-1" = {

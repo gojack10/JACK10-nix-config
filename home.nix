@@ -24,6 +24,10 @@
     "$HOME/.cargo/bin"
   ];
 
+  home.file.".local/share/JACK10-nix-config/bg.png" = lib.mkIf pkgs.stdenv.isLinux {
+    source = ./bg.png;
+  };
+
   # Nix settings (enable flakes)
   nix = {
     package = pkgs.nix;

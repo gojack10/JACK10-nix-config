@@ -12,7 +12,6 @@
 
     # Dev tools
     neovim
-    git
     ripgrep
     fd
     jq

@@ -127,13 +127,47 @@
       [[ "$TERM" == "fbterm" ]] && export TERM=xterm-256color
       ''}
 
-      # home-manager update
-      alias hmu="nix flake update --flake ~/.config/home-manager"
+      jack10_flake() {
+        local -a candidates
+        local candidate found
+
+        candidates=()
+        [[ -n "$JACK10_NIX_CONFIG_FLAKE" ]] && candidates+=("$JACK10_NIX_CONFIG_FLAKE")
+        candidates+=(
+          "$HOME/projects/JACK10-nix-config"
+          "$HOME/.config/home-manager"
+        )
+
+        for candidate in "${candidates[@]}"; do
+          if [[ -n "$candidate" && -f "$candidate/flake.nix" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+          fi
+        done
+
+        if [[ -d "$HOME/projects" ]]; then
+          found=$(find "$HOME/projects" -maxdepth 2 -type f -path '*/JACK10-nix-config/flake.nix' -print -quit 2>/dev/null)
+          if [[ -n "$found" ]]; then
+            dirname "$found"
+            return 0
+          fi
+        fi
+
+        echo "Could not find JACK10-nix-config. Set JACK10_NIX_CONFIG_FLAKE to the flake path." >&2
+        return 1
+      }
+
+      hmu() {
+        local flake
+        flake=$(jack10_flake) || return 1
+        nix flake update --flake "$flake"
+      }
 
       # home-manager switch helper
       hms() {
-        local flake="$HOME/.config/home-manager"
-        local hosts=$(nix eval "$flake#homeConfigurations" --apply 'x: builtins.attrNames x' 2>/dev/null | tr -d '[]"' | tr ' ' '\n' | grep -v '^$')
+        local flake hosts
+        flake=$(jack10_flake) || return 1
+        hosts=$(nix eval "$flake#homeConfigurations" --apply 'x: builtins.attrNames x' 2>/dev/null | tr -d '[]"' | tr ' ' '\n' | grep -v '^$')
 
         if [[ -z "$1" ]]; then
           echo "Usage: hms <hostname>"
@@ -166,10 +200,10 @@
       setopt HIST_EXPIRE_DUPS_FIRST
 
       # mise version manager (lazy-load: activates on first use)
-      if [[ -x "$HOME/.local/bin/mise" ]]; then
+      if command -v mise &>/dev/null; then
         mise() {
           unfunction mise
-          eval "$($HOME/.local/bin/mise activate zsh)"
+          eval "$(command mise activate zsh)"
           mise "$@"
         }
       fi
@@ -177,6 +211,11 @@
       # Editor
       export EDITOR=nvim
       export VISUAL=nvim
+
+      # Personal pi secrets, if present
+      if [[ -f "$HOME/.config/pi-secrets/env" ]]; then
+        source "$HOME/.config/pi-secrets/env"
+      fi
 
       ${lib.optionalString pkgs.stdenv.isLinux ''
       # Sudo askpass for GUI prompts (enables sudo -A)

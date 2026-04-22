@@ -1,0 +1,406 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# ///
+from __future__ import annotations
+
+import argparse
+import shlex
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+RSYNC_BASE = ["rsync", "-ah", "--info=progress2", "--no-i-r", "--stats"]
+REQUIRED_LOCAL_COMMANDS = ("ssh", "rsync", "node", "npm")
+SECRET_TARGET_REL = ".config/pi-secrets/env"
+SECRET_ENV_VAR = "SIFTTEXT_API_KEY"
+
+
+@dataclass(frozen=True)
+class SyncItem:
+    rel_path: str
+    kind: str  # dir | file
+    required: bool = False
+    delete: bool = False
+    excludes: tuple[str, ...] = ()
+    same_platform_only: bool = False
+
+
+SYNC_ITEMS = (
+    SyncItem(
+        ".pi/agent",
+        "dir",
+        required=True,
+        delete=True,
+        excludes=("extensions/sifttext-mcp/node_modules",),
+    ),
+    SyncItem(
+        ".local/share/pi-mono",
+        "dir",
+        required=True,
+        delete=True,
+        excludes=("node_modules",),
+    ),
+    SyncItem(".local/bin/pi", "file", required=True),
+    SyncItem(".local/bin/pi-update", "file", required=True),
+    SyncItem(".claude", "dir", delete=True),
+    SyncItem(".claude.json", "file"),
+    SyncItem(".claude.json.backup", "file"),
+    SyncItem(".codex", "dir", delete=True),
+    SyncItem(".local/share/claude", "dir", delete=True, same_platform_only=True),
+)
+
+
+class PiSetupError(RuntimeError):
+    pass
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Pull your personal pi setup from another machine over SSH.",
+    )
+    parser.add_argument("--source", help="Source in user@host form.")
+    parser.add_argument("--user", help="SSH username for the source machine.")
+    parser.add_argument("--host", help="SSH hostname for the source machine.")
+    parser.add_argument("--port", type=int, help="SSH port for the source machine.")
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the final confirmation prompt.",
+    )
+    parser.add_argument(
+        "--skip-claude-payload",
+        action="store_true",
+        help="Do not copy the Claude binary payload or rebuild ~/.local/bin/claude on matching platforms.",
+    )
+    return parser.parse_args()
+
+
+def prompt(label: str, default: str | None = None) -> str:
+    suffix = f" [{default}]" if default else ""
+    value = input(f"{label}{suffix}: ").strip()
+    if value:
+        return value
+    if default is not None:
+        return default
+    raise PiSetupError(f"{label} is required.")
+
+
+def confirm(label: str, default: bool = False) -> bool:
+    choices = "[Y/n]" if default else "[y/N]"
+    value = input(f"{label} {choices}: ").strip().lower()
+    if not value:
+        return default
+    return value in {"y", "yes"}
+
+
+def parse_source(args: argparse.Namespace) -> tuple[str, str, int]:
+    source_user = args.user
+    source_host = args.host
+    source_port = args.port
+
+    if args.source:
+        if "@" in args.source:
+            parsed_user, parsed_host = args.source.split("@", 1)
+            source_user = source_user or parsed_user
+            source_host = source_host or parsed_host
+        else:
+            source_host = source_host or args.source
+
+    local_user = Path.home().name
+    source_user = source_user or prompt("Source user", local_user)
+    source_host = source_host or prompt("Source host")
+
+    if source_port is None:
+        source_port = int(prompt("Source port", "22"))
+
+    return source_user, source_host, source_port
+
+
+def require_local_commands() -> None:
+    missing = [cmd for cmd in REQUIRED_LOCAL_COMMANDS if shutil.which(cmd) is None]
+    if missing:
+        joined = ", ".join(missing)
+        raise PiSetupError(f"Missing local commands: {joined}")
+
+
+def run(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    capture_output: bool = False,
+    check: bool = True,
+    announce: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    if announce:
+        print(f"+ {shlex.join(cmd)}")
+    return subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        capture_output=capture_output,
+        check=check,
+        text=True,
+    )
+
+
+def ssh_base(source: str, port: int) -> list[str]:
+    return ["ssh", "-p", str(port), "-o", "ConnectTimeout=10", source]
+
+
+def remote_command(base: list[str], script: str, *, capture_output: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return run(base + ["sh", "-lc", script], capture_output=capture_output, check=check)
+
+
+def remote_output(base: list[str], script: str) -> str:
+    result = remote_command(base, script, capture_output=True)
+    return result.stdout.strip()
+
+
+def remote_exists(base: list[str], remote_path: str) -> bool:
+    quoted = shlex.quote(remote_path)
+    result = remote_command(base, f"test -e {quoted}", check=False)
+    return result.returncode == 0
+
+
+def remote_readlink(base: list[str], remote_path: str) -> str | None:
+    quoted = shlex.quote(remote_path)
+    result = remote_command(base, f"readlink {quoted}", capture_output=True, check=False)
+    if result.returncode != 0:
+        return None
+    target = result.stdout.strip()
+    return target or None
+
+
+def local_platform() -> tuple[str, str]:
+    system = run(["uname", "-s"], capture_output=True).stdout.strip()
+    machine = run(["uname", "-m"], capture_output=True).stdout.strip()
+    return system, machine
+
+
+def backup_existing_path(local_path: Path, backup_root: Path) -> None:
+    if not local_path.exists() and not local_path.is_symlink():
+        return
+    destination_parent = backup_root / local_path.relative_to(Path.home()).parent
+    destination_parent.mkdir(parents=True, exist_ok=True)
+    run(["rsync", "-a", str(local_path), str(destination_parent) + "/"])
+
+
+def rsync_ssh_transport(port: int) -> str:
+    return f"ssh -p {port} -o ConnectTimeout=10"
+
+
+def sync_item(source: str, port: int, remote_path: str, local_path: Path, item: SyncItem) -> None:
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+
+    command = [*RSYNC_BASE, "-e", rsync_ssh_transport(port)]
+    for pattern in item.excludes:
+        command.extend(["--exclude", pattern])
+    if item.delete and item.kind == "dir":
+        command.append("--delete")
+
+    if item.kind == "dir":
+        local_path.mkdir(parents=True, exist_ok=True)
+        command.extend([f"{source}:{remote_path}/", f"{local_path}/"])
+    else:
+        command.extend([f"{source}:{remote_path}", str(local_path)])
+
+    run(command)
+
+
+def fetch_secret_material(base: list[str], remote_home: str) -> tuple[str, str]:
+    secret_file = f"{remote_home}/{SECRET_TARGET_REL}"
+    if remote_exists(base, secret_file):
+        raw = remote_output(base, f"cat {shlex.quote(secret_file)}")
+        if not any(SECRET_ENV_VAR in line and "=" in line for line in raw.splitlines()):
+            raise PiSetupError(f"{secret_file} exists but does not define {SECRET_ENV_VAR}.")
+        return "file", raw.rstrip("\n") + "\n"
+
+    zshrc = f"{remote_home}/.zshrc"
+    grep_script = (
+        f"grep -m1 -E '^[[:space:]]*(export[[:space:]]+)?{SECRET_ENV_VAR}=' {shlex.quote(zshrc)}"
+    )
+    result = remote_command(base, grep_script, capture_output=True, check=False)
+    if result.returncode == 0 and result.stdout.strip():
+        line = normalize_secret_line(result.stdout.strip())
+        return "zshrc", f"# Managed by pi-setup\n{line}\n"
+
+    raise PiSetupError(
+        f"Could not find {SECRET_ENV_VAR} in {secret_file} or {zshrc}."
+    )
+
+
+def normalize_secret_line(line: str) -> str:
+    stripped = line.strip()
+    if not stripped.startswith("export "):
+        stripped = f"export {stripped}"
+    return stripped
+
+
+def write_secret_file(target: Path, content: str) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content)
+    target.chmod(0o600)
+
+
+def rebuild_local_state(home: Path) -> None:
+    pi_repo = home / ".local/share/pi-mono"
+    if not pi_repo.is_dir():
+        raise PiSetupError(f"Expected pi repo at {pi_repo}")
+
+    sifttext_extension = home / ".pi/agent/extensions/sifttext-mcp"
+
+    run(["npm", "ci", "--ignore-scripts", "--silent"], cwd=pi_repo)
+    if (sifttext_extension / "package-lock.json").is_file():
+        run(["npm", "ci", "--ignore-scripts", "--silent"], cwd=sifttext_extension)
+    run(["npm", "run", "build", "--silent"], cwd=pi_repo)
+
+
+def ensure_executable(path: Path) -> None:
+    if path.exists():
+        path.chmod(path.stat().st_mode | 0o111)
+
+
+def find_local_claude_binary(local_share: Path) -> Path | None:
+    versions_dir = local_share / "versions"
+    if not versions_dir.is_dir():
+        return None
+
+    candidates = [
+        path for path in versions_dir.iterdir()
+        if path.is_file() and (path.stat().st_mode & 0o111)
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def relink_claude_binary(home: Path, remote_home: str, remote_target: str | None) -> bool:
+    local_share = home / ".local/share/claude"
+    local_link = home / ".local/bin/claude"
+    candidate: Path | None = None
+
+    if remote_target:
+        prefix = f"{remote_home}/.local/share/claude/"
+        if remote_target.startswith(prefix):
+            candidate = local_share / remote_target.removeprefix(prefix)
+
+    if candidate is None or not candidate.exists():
+        candidate = find_local_claude_binary(local_share)
+    if candidate is None or not candidate.exists():
+        return False
+
+    local_link.parent.mkdir(parents=True, exist_ok=True)
+    if local_link.exists() or local_link.is_symlink():
+        local_link.unlink()
+    local_link.symlink_to(candidate)
+    return True
+
+
+def main() -> int:
+    args = parse_args()
+    require_local_commands()
+
+    source_user, source_host, source_port = parse_source(args)
+    source = f"{source_user}@{source_host}"
+    ssh = ssh_base(source, source_port)
+
+    print(f"Source: {source} (port {source_port})")
+    remote_home = remote_output(ssh, 'printf %s "$HOME"')
+    remote_system = remote_output(ssh, "uname -s")
+    remote_machine = remote_output(ssh, "uname -m")
+    local_system, local_machine = local_platform()
+    same_platform = (remote_system, remote_machine) == (local_system, local_machine)
+    remote_claude_link = None
+    if same_platform and not args.skip_claude_payload:
+        remote_claude_link = remote_readlink(ssh, f"{remote_home}/.local/bin/claude")
+
+    missing_required: list[str] = []
+    available_items: list[tuple[SyncItem, str, Path]] = []
+    skipped_items: list[str] = []
+
+    for item in SYNC_ITEMS:
+        if args.skip_claude_payload and item.rel_path == ".local/share/claude":
+            skipped_items.append(f"{item.rel_path} (user skipped Claude payload)")
+            continue
+        if item.same_platform_only and not same_platform:
+            skipped_items.append(
+                f"{item.rel_path} (source {remote_system}/{remote_machine}, target {local_system}/{local_machine})"
+            )
+            continue
+
+        remote_path = f"{remote_home}/{item.rel_path}"
+        local_path = Path.home() / item.rel_path
+
+        if remote_exists(ssh, remote_path):
+            available_items.append((item, remote_path, local_path))
+        elif item.required:
+            missing_required.append(item.rel_path)
+        else:
+            skipped_items.append(f"{item.rel_path} (not present on source)")
+
+    if missing_required:
+        joined = ", ".join(missing_required)
+        raise PiSetupError(f"Missing required source paths: {joined}")
+
+    secret_source, secret_content = fetch_secret_material(ssh, remote_home)
+    secret_target = Path.home() / SECRET_TARGET_REL
+
+    print("Will sync:")
+    for item, _, _ in available_items:
+        label = "required" if item.required else "optional"
+        extra = " same-platform-only" if item.same_platform_only else ""
+        print(f"  - {item.rel_path} ({label}{extra})")
+    print(f"  - {SECRET_TARGET_REL} (secret from {secret_source})")
+    if skipped_items:
+        print("Will skip:")
+        for entry in skipped_items:
+            print(f"  - {entry}")
+
+    if not args.yes and not confirm("Proceed with backup, sync, and rebuild?", default=False):
+        print("Aborted.")
+        return 1
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    backup_root = Path.home() / ".local/state/pi-setup/backups" / timestamp
+    backup_root.mkdir(parents=True, exist_ok=True)
+    print(f"Backup root: {backup_root}")
+
+    for _, _, local_path in available_items:
+        backup_existing_path(local_path, backup_root)
+    backup_existing_path(secret_target, backup_root)
+    backup_existing_path(Path.home() / ".local/bin/claude", backup_root)
+
+    for item, remote_path, local_path in available_items:
+        sync_item(source, source_port, remote_path, local_path, item)
+
+    write_secret_file(secret_target, secret_content)
+
+    ensure_executable(Path.home() / ".local/bin/pi")
+    ensure_executable(Path.home() / ".local/bin/pi-update")
+
+    if same_platform and not args.skip_claude_payload:
+        if relink_claude_binary(Path.home(), remote_home, remote_claude_link):
+            print("Rebuilt ~/.local/bin/claude for the local machine.")
+        else:
+            print("Skipped rebuilding ~/.local/bin/claude because no local Claude binary was found.")
+
+    rebuild_local_state(Path.home())
+
+    run([str(Path.home() / ".local/bin/pi"), "--no-env", "--help"])
+
+    print("pi-setup complete.")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        raise SystemExit(130)
+    except PiSetupError as exc:
+        print(f"pi-setup error: {exc}", file=sys.stderr)
+        raise SystemExit(1)

@@ -41,6 +41,7 @@
       # Modules shared across all platforms
       sharedModules = [
         ./home.nix
+        ./modules/packages/bootstrap-tools.nix
         ./modules/packages/common.nix
         ./modules/scripts.nix
         ./modules/shell/zsh.nix

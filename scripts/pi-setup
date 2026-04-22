@@ -137,13 +137,23 @@ def run(
 ) -> subprocess.CompletedProcess[str]:
     if announce:
         print(f"+ {shlex.join(cmd)}")
-    return subprocess.run(
-        cmd,
-        cwd=str(cwd) if cwd else None,
-        capture_output=capture_output,
-        check=check,
-        text=True,
-    )
+    try:
+        return subprocess.run(
+            cmd,
+            cwd=str(cwd) if cwd else None,
+            capture_output=capture_output,
+            check=check,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        details: list[str] = [
+            f"Command failed with exit {exc.returncode}: {shlex.join(cmd)}"
+        ]
+        if exc.stdout:
+            details.append(f"stdout:\n{exc.stdout.rstrip()}")
+        if exc.stderr:
+            details.append(f"stderr:\n{exc.stderr.rstrip()}")
+        raise PiSetupError("\n".join(details)) from None
 
 
 def ssh_base(source: str, port: int) -> list[str]:
@@ -151,7 +161,8 @@ def ssh_base(source: str, port: int) -> list[str]:
 
 
 def remote_command(base: list[str], script: str, *, capture_output: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return run(base + ["sh", "-lc", script], capture_output=capture_output, check=check)
+    remote = f"sh -c {shlex.quote(script)}"
+    return run(base + [remote], capture_output=capture_output, check=check)
 
 
 def remote_output(base: list[str], script: str) -> str:

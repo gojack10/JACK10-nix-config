@@ -8,7 +8,7 @@
       height = 18;
       modules-left = [ "sway/workspaces" "sway/mode" ];
       modules-center = [ "custom/deepwork" ];
-      modules-right = [ "cpu" "memory" "custom/network" "battery" "custom/mic" "custom/volume" "custom/clock" ];
+      modules-right = [ "cpu" "custom/gpu" "memory" "custom/network" "battery" "custom/volume" "custom/clock" ];
 
       "sway/workspaces" = {
         disable-scroll = true;
@@ -16,13 +16,26 @@
       };
 
       cpu = {
-        format = "CPU {usage:2}%";
+        format = "[i5-10210U] CPU {usage:2}%";
         interval = 1;
       };
 
       memory = {
-        format = "MEM {used:0.1f}G";
+        format = "MEM {used:4.1f}G";
         interval = 2;
+      };
+
+      "custom/gpu" = {
+        exec = ''
+          while :; do
+            if command -v intel_gpu_top >/dev/null 2>&1; then
+              intel_gpu_top -l -s 1000 -o - 2>/dev/null \
+                | awk 'NR>2 && $9 ~ /^[0-9.]+$/ { rcs=$9; vcs=$15; m=(rcs>vcs)?rcs:vcs; printf "[CometLake-U GT2] GPU %2d%%\n", m+0.5; fflush() }'
+            fi
+            echo "[CometLake-U GT2] GPU --"
+            sleep 5
+          done
+        '';
       };
 
       "custom/network" = {
@@ -53,12 +66,6 @@
         on-click = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle";
         on-scroll-up = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+";
         on-scroll-down = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-";
-      };
-
-      "custom/mic" = {
-        exec = "bash -c 'vol=$(wpctl get-volume @DEFAULT_AUDIO_SOURCE@ | awk \"{print int(\\$2*100)}\"); mute=$(wpctl get-volume @DEFAULT_AUDIO_SOURCE@ | grep MUTED); if [ -n \"$mute\" ]; then echo \"MIC MUTE\"; else echo \"MIC $vol%\"; fi'";
-        interval = 1;
-        on-click = "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle";
       };
 
       "custom/deepwork" = {
@@ -98,12 +105,12 @@
         color: #ffffff;
       }
 
-      #cpu, #memory, #custom-network, #battery, #pulseaudio, #custom-clock, #custom-mic, #custom-deepwork {
+      #cpu, #custom-gpu, #memory, #custom-network, #battery, #custom-volume, #custom-clock, #custom-deepwork {
         padding: 0 10px;
         color: #d0d0d0;
       }
 
-      #custom-volume.muted, #custom-mic.muted {
+      #custom-volume.muted {
         color: #ff5555;
       }
 

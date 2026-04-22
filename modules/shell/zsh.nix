@@ -138,7 +138,7 @@
           "$HOME/.config/home-manager"
         )
 
-        for candidate in "${candidates[@]}"; do
+        for candidate in "''${candidates[@]}"; do
           if [[ -n "$candidate" && -f "$candidate/flake.nix" ]]; then
             printf '%s\n' "$candidate"
             return 0
@@ -163,28 +163,9 @@
         nix flake update --flake "$flake"
       }
 
-      # home-manager switch helper
-      hms() {
-        local flake hosts
-        flake=$(jack10_flake) || return 1
-        hosts=$(nix eval "$flake#homeConfigurations" --apply 'x: builtins.attrNames x' 2>/dev/null | tr -d '[]"' | tr ' ' '\n' | grep -v '^$')
-
-        if [[ -z "$1" ]]; then
-          echo "Usage: hms <hostname>"
-          echo "Available hosts:"
-          echo "$hosts" | sed 's/^/  /'
-          return 1
-        fi
-
-        if echo "$hosts" | grep -qx "$1"; then
-          home-manager switch --flake "$flake#$1"
-        else
-          echo "Unknown host: $1"
-          echo "Available:"
-          echo "$hosts" | sed 's/^/  /'
-          return 1
-        fi
-      }
+      # `hms` is installed as a script via modules/scripts.nix (source:
+      # scripts/hms). It's a checked-in file rather than a shell function so
+      # it's usable during bootstrap, before a first home-manager generation.
 
       # Word navigation in insert mode
       bindkey '^[[1;5D' backward-word   # Ctrl+Left

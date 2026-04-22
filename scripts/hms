@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# home-manager switch helper. Resolves the flake in the same places the
+# zsh jack10_flake function does, then delegates to `home-manager switch`.
+# Checked into the repo (not generated) so it can be used during bootstrap,
+# before a first home-manager generation exists.
+set -euo pipefail
+
+resolve_flake() {
+  local -a candidates=()
+  [[ -n "${JACK10_NIX_CONFIG_FLAKE:-}" ]] && candidates+=("$JACK10_NIX_CONFIG_FLAKE")
+  candidates+=(
+    "$HOME/projects/JACK10-nix-config"
+    "$HOME/.config/home-manager"
+  )
+
+  local c
+  for c in "${candidates[@]}"; do
+    [[ -n "$c" && -f "$c/flake.nix" ]] && { printf '%s\n' "$c"; return 0; }
+  done
+
+  if [[ -d "$HOME/projects" ]]; then
+    local found
+    found=$(find "$HOME/projects" -maxdepth 2 -type f -path '*/JACK10-nix-config/flake.nix' -print -quit 2>/dev/null || true)
+    [[ -n "$found" ]] && { dirname "$found"; return 0; }
+  fi
+
+  echo "hms: could not find JACK10-nix-config. Set JACK10_NIX_CONFIG_FLAKE to the flake path." >&2
+  return 1
+}
+
+list_hosts() {
+  local flake="$1"
+  nix eval "$flake#homeConfigurations" --apply 'x: builtins.attrNames x' 2>/dev/null \
+    | tr -d '[]"' | tr ' ' '\n' | grep -v '^$'
+}
+
+main() {
+  local flake hosts host
+  flake=$(resolve_flake)
+  hosts=$(list_hosts "$flake")
+
+  host="${1:-}"
+  if [[ -z "$host" ]]; then
+    echo "Usage: hms <hostname>"
+    echo "Available hosts:"
+    echo "$hosts" | sed 's/^/  /'
+    return 1
+  fi
+
+  if ! echo "$hosts" | grep -qx "$host"; then
+    echo "Unknown host: $host" >&2
+    echo "Available:" >&2
+    echo "$hosts" | sed 's/^/  /' >&2
+    return 1
+  fi
+
+  if command -v home-manager >/dev/null 2>&1; then
+    exec home-manager switch --flake "$flake#$host"
+  fi
+
+  # First-run path: no home-manager on PATH yet. Use `nix run` so bootstrap
+  # works before any generation has been built.
+  exec nix run home-manager/master -- switch --flake "$flake#$host"
+}
+
+main "$@"

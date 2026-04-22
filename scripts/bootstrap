@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Bootstrap a fresh machine up to a first `hms <host>` switch.
+#
+# Scope (intentionally small):
+#   1. Verify `nix` is on PATH. If missing, print the install command and stop.
+#      Installing Nix touches system internals (daemon, /nix, PAM on macOS);
+#      that is the user's call to make, not this script's.
+#   2. Ensure experimental-features (nix-command, flakes) are enabled via the
+#      user-scope ~/.config/nix/nix.conf. Never writes /etc/nix/nix.conf, so
+#      this is safe on NixOS, Determinate, and upstream multi-user installs.
+#   3. Delegate to ./scripts/hms <host>, which does the actual switch.
+#
+# Every step is check-then-act, so re-running converges.
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "$0")/.." && pwd)
+
+die() { echo "bootstrap: $*" >&2; exit 1; }
+info() { echo "bootstrap: $*"; }
+
+host="${1:-}"
+if [[ -z "$host" ]]; then
+  echo "Usage: scripts/bootstrap <hostname>" >&2
+  if [[ -f "$repo_root/flake.nix" ]]; then
+    echo "Hosts defined in flake.nix:" >&2
+    awk '/^      machines = \{/,/^      \};/' "$repo_root/flake.nix" \
+      | grep -E '^\s+[a-zA-Z0-9_"-]+ = ' | sed -E 's/^\s+([^ =]+).*/  \1/' >&2
+  fi
+  exit 1
+fi
+
+# 1. nix present?
+if ! command -v nix >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+bootstrap: `nix` not found on PATH.
+
+Install Nix first, then re-run this script. Recommended installers:
+
+  Determinate (flakes on by default, easiest uninstall):
+    curl -fsSL https://install.determinate.systems/nix | sh -s -- install
+
+  Upstream multi-user:
+    sh <(curl -L https://nixos.org/nix/install) --daemon
+
+On NixOS, nix is already present — this branch should not trigger.
+EOF
+  exit 1
+fi
+
+# 2. flakes enabled? user scope only.
+nix_conf_dir="${XDG_CONFIG_HOME:-$HOME/.config}/nix"
+nix_conf="$nix_conf_dir/nix.conf"
+needed="experimental-features = nix-command flakes"
+
+if ! nix --extra-experimental-features 'nix-command flakes' \
+      eval --raw --expr '"ok"' >/dev/null 2>&1; then
+  die "nix is installed but rejects flakes even with --extra-experimental-features; investigate before continuing"
+fi
+
+if ! grep -qxF "$needed" "$nix_conf" 2>/dev/null; then
+  info "enabling flakes in $nix_conf"
+  mkdir -p "$nix_conf_dir"
+  # Append rather than overwrite: user may have other settings here.
+  printf '%s\n' "$needed" >> "$nix_conf"
+else
+  info "flakes already enabled in $nix_conf"
+fi
+
+# 3. hand off to hms.
+hms="$repo_root/scripts/hms"
+[[ -x "$hms" ]] || die "$hms not found or not executable"
+
+info "running: hms $host"
+exec "$hms" "$host"

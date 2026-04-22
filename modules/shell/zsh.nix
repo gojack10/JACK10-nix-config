@@ -134,8 +134,9 @@
         candidates=()
         [[ -n "$JACK10_NIX_CONFIG_FLAKE" ]] && candidates+=("$JACK10_NIX_CONFIG_FLAKE")
         candidates+=(
-          "$HOME/projects/JACK10-nix-config"
+          "$HOME/.config/JACK10-nix-config"
           "$HOME/.config/home-manager"
+          "$HOME/projects/JACK10-nix-config"
         )
 
         for candidate in "''${candidates[@]}"; do
@@ -144,14 +145,6 @@
             return 0
           fi
         done
-
-        if [[ -d "$HOME/projects" ]]; then
-          found=$(find "$HOME/projects" -maxdepth 2 -type f -path '*/JACK10-nix-config/flake.nix' -print -quit 2>/dev/null)
-          if [[ -n "$found" ]]; then
-            dirname "$found"
-            return 0
-          fi
-        fi
 
         echo "Could not find JACK10-nix-config. Set JACK10_NIX_CONFIG_FLAKE to the flake path." >&2
         return 1

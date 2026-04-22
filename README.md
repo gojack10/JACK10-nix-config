@@ -5,8 +5,8 @@ JACK10-nix-config is my cross-machine configuration workflow, tracked in the ope
 ## Bootstrap
 
 ```sh
-git clone https://github.com/gojack10/JACK10-nix-config ~/projects/JACK10-nix-config
-cd ~/projects/JACK10-nix-config
+git clone https://github.com/gojack10/JACK10-nix-config ~/.config/JACK10-nix-config
+cd ~/.config/JACK10-nix-config
 ./scripts/bootstrap <host>   # e.g. litetop, 10top, desktop, m2-air
 ```
 
@@ -18,4 +18,4 @@ cd ~/projects/JACK10-nix-config
 
 Every step is check-then-act, so re-running is safe.
 
-After the first switch, `hms` is installed to `~/.local/bin/hms` and can be invoked from anywhere. The flake path is resolved in this order: `$JACK10_NIX_CONFIG_FLAKE`, `~/projects/JACK10-nix-config`, `~/.config/home-manager`, then a `find` under `~/projects`.
+After the first switch, `hms` is installed to `~/.local/bin/hms` and can be invoked from anywhere. The flake path is resolved in this order: `$JACK10_NIX_CONFIG_FLAKE`, `~/.config/JACK10-nix-config`, `~/.config/home-manager`, `~/projects/JACK10-nix-config`.

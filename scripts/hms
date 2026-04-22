@@ -9,20 +9,15 @@ resolve_flake() {
   local -a candidates=()
   [[ -n "${JACK10_NIX_CONFIG_FLAKE:-}" ]] && candidates+=("$JACK10_NIX_CONFIG_FLAKE")
   candidates+=(
-    "$HOME/projects/JACK10-nix-config"
+    "$HOME/.config/JACK10-nix-config"
     "$HOME/.config/home-manager"
+    "$HOME/projects/JACK10-nix-config"
   )
 
   local c
   for c in "${candidates[@]}"; do
     [[ -n "$c" && -f "$c/flake.nix" ]] && { printf '%s\n' "$c"; return 0; }
   done
-
-  if [[ -d "$HOME/projects" ]]; then
-    local found
-    found=$(find "$HOME/projects" -maxdepth 2 -type f -path '*/JACK10-nix-config/flake.nix' -print -quit 2>/dev/null || true)
-    [[ -n "$found" ]] && { dirname "$found"; return 0; }
-  fi
 
   echo "hms: could not find JACK10-nix-config. Set JACK10_NIX_CONFIG_FLAKE to the flake path." >&2
   return 1

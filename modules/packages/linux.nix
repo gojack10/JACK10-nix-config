@@ -6,6 +6,13 @@
   ];
 
   home.packages = with pkgs; [
+    # Fonts (macOS has system emoji, Linux needs these)
+    nerd-fonts.jetbrains-mono
+    nerd-fonts.symbols-only
+    font-awesome
+    noto-fonts
+    noto-fonts-color-emoji
+
     # Wayland & Desktop
     waybar
     wofi

@@ -267,6 +267,20 @@ def rebuild_local_state(home: Path) -> None:
     if (sifttext_extension / "package-lock.json").is_file():
         run(["npm", "ci", "--ignore-scripts", "--silent"], cwd=sifttext_extension)
     run(["npm", "run", "build", "--silent"], cwd=pi_repo)
+    run([
+        "npx",
+        "esbuild",
+        "packages/coding-agent/dist/cli.js",
+        "--bundle",
+        "--platform=node",
+        "--format=cjs",
+        "--outfile=packages/coding-agent/dist/pi-bundle.cjs",
+        f"--define:import.meta.url=\"file://{pi_repo}/packages/coding-agent/dist/pi-bundle.cjs\"",
+        f"--define:import.meta.dirname=\"{pi_repo}/packages/coding-agent/dist\"",
+        f"--define:import.meta.filename=\"{pi_repo}/packages/coding-agent/dist/pi-bundle.cjs\"",
+        "--log-limit=0",
+        "--log-level=warning",
+    ], cwd=pi_repo)
 
 
 def ensure_executable(path: Path) -> None:
@@ -358,6 +372,23 @@ def main() -> int:
 
     secret_source, secret_content = fetch_secret_material(ssh, remote_home)
     secret_target = Path.home() / SECRET_TARGET_REL
+
+    if not args.yes:
+        optional_items = [(item, rp, lp) for item, rp, lp in available_items if not item.required]
+        if optional_items:
+            print("Select optional items to sync (Enter = yes):")
+            selected_optional: set[str] = set()
+            for item, _, _ in optional_items:
+                extra = " same-platform-only" if item.same_platform_only else ""
+                if confirm(f"  {item.rel_path}{extra}?", default=True):
+                    selected_optional.add(item.rel_path)
+                else:
+                    skipped_items.append(f"{item.rel_path} (user skipped)")
+            available_items = [
+                (item, rp, lp)
+                for item, rp, lp in available_items
+                if item.required or item.rel_path in selected_optional
+            ]
 
     print("Will sync:")
     for item, _, _ in available_items:

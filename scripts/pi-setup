@@ -256,12 +256,40 @@ def write_secret_file(target: Path, content: str) -> None:
     target.chmod(0o600)
 
 
+def apply_local_pi_patches(pi_repo: Path) -> None:
+    loader = pi_repo / "packages/coding-agent/src/core/extensions/loader.ts"
+    if not loader.is_file():
+        print(f"Warning: {loader} missing; skipping local pi patches.")
+        return
+
+    old_text = "\t\treturn fileURLToPath(import.meta.resolve(specifier));"
+    new_text = (
+        "\t\ttry {\n"
+        "\t\t\treturn require.resolve(specifier);\n"
+        "\t\t} catch {\n"
+        "\t\t\treturn fileURLToPath(import.meta.resolve(specifier));\n"
+        "\t\t}"
+    )
+    src = loader.read_text()
+    if "return require.resolve(specifier);" in src:
+        print("Local pi patch already applied.")
+        return
+    if old_text not in src:
+        raise PiSetupError(
+            f"Local pi patch failed; expected import.meta.resolve line not found in {loader}."
+        )
+    loader.write_text(src.replace(old_text, new_text, 1))
+    print("Applied local pi patch: CJS bundle extension resolution.")
+
+
 def rebuild_local_state(home: Path) -> None:
     pi_repo = home / ".local/share/pi-mono"
     if not pi_repo.is_dir():
         raise PiSetupError(f"Expected pi repo at {pi_repo}")
 
     sifttext_extension = home / ".pi/agent/extensions/sifttext-mcp"
+
+    apply_local_pi_patches(pi_repo)
 
     run(["npm", "ci", "--ignore-scripts", "--silent"], cwd=pi_repo)
     if (sifttext_extension / "package-lock.json").is_file():

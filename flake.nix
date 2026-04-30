@@ -36,6 +36,7 @@
         desktop = linuxDefaults;
         # Darwin hosts
         m2-air = darwinDefaults;
+        m5-max = darwinDefaults;
       };
 
       # Modules shared across all platforms

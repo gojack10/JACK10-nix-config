@@ -15,12 +15,5 @@
     ripgrep
     fd
     jq
-
-    # Fonts
-    nerd-fonts.jetbrains-mono
-    nerd-fonts.symbols-only
-    font-awesome
-    noto-fonts
-    noto-fonts-color-emoji
   ];
 }

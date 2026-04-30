@@ -7,10 +7,13 @@
 
   programs.home-manager.enable = true;
 
-  fonts.fontconfig.enable = true;
-  fonts.fontconfig.defaultFonts = {
-    monospace = [ "JetBrainsMono Nerd Font Mono" "Symbols Nerd Font Mono" ];
-    emoji = [ "Noto Color Emoji" ];
+  # Fontconfig is Linux-specific (macOS uses its own font system)
+  fonts.fontconfig = lib.mkIf pkgs.stdenv.isLinux {
+    enable = true;
+    defaultFonts = {
+      monospace = [ "JetBrainsMono Nerd Font Mono" "Symbols Nerd Font Mono" ];
+      emoji = [ "Noto Color Emoji" ];
+    };
   };
 
   home.sessionVariables = {

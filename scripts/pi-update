@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO="$HOME/.local/share/pi-mono"
+BASELINE="$REPO/.audit-baseline.txt"
+NODE_BIN="${PI_NODE:-node}"
+NPM_BIN="npm"
+NPX_BIN="npx"
+if command -v mise >/dev/null 2>&1; then
+  NODE_BIN="mise exec node@24 -- node"
+  NPM_BIN="mise exec node@24 -- npm"
+  NPX_BIN="mise exec node@24 -- npx"
+elif [[ -x "$HOME/.local/bin/mise" ]]; then
+  NODE_BIN="$HOME/.local/bin/mise exec node@24 -- node"
+  NPM_BIN="$HOME/.local/bin/mise exec node@24 -- npm"
+  NPX_BIN="$HOME/.local/bin/mise exec node@24 -- npx"
+fi
+
+if [[ ! -d "$REPO/.git" ]]; then
+  echo "pi-mono not found at $REPO" >&2
+  exit 1
+fi
+
+cd "$REPO"
+
+apply_local_pi_patches() {
+  local loader="packages/coding-agent/src/core/extensions/loader.ts"
+  local old='\t\treturn fileURLToPath(import.meta.resolve(specifier));'
+  local new='\t\ttry {\n\t\t\treturn require.resolve(specifier);\n\t\t} catch {\n\t\t\treturn fileURLToPath(import.meta.resolve(specifier));\n\t\t}'
+
+  if [[ ! -f "$loader" ]]; then
+    echo "Warning: $loader missing; skipping local pi patches" >&2
+    return 0
+  fi
+  if grep -Fq 'return require.resolve(specifier);' "$loader"; then
+    echo "Local pi patch already applied."
+    return 0
+  fi
+  if ! grep -Fq "$old" "$loader"; then
+    echo "Error: local pi patch failed; expected import.meta.resolve line not found in $loader" >&2
+    return 1
+  fi
+  $NODE_BIN - <<'NODE'
+const fs = require('fs');
+const file = 'packages/coding-agent/src/core/extensions/loader.ts';
+const oldText = '\t\treturn fileURLToPath(import.meta.resolve(specifier));';
+const newText = '\t\ttry {\n\t\t\treturn require.resolve(specifier);\n\t\t} catch {\n\t\t\treturn fileURLToPath(import.meta.resolve(specifier));\n\t\t}';
+const src = fs.readFileSync(file, 'utf8');
+if (!src.includes(oldText)) process.exit(1);
+fs.writeFileSync(file, src.replace(oldText, newText));
+NODE
+  echo "Applied local pi patch: CJS bundle extension resolution."
+}
+
+ghsa_ids_from_audit() {
+  { $NPM_BIN audit --json 2>/dev/null || true; } | $NODE_BIN -e '
+    let input = ""; process.stdin.on("data", c => input += c);
+    process.stdin.on("end", () => {
+      let d; try { d = JSON.parse(input); } catch { process.exit(0); }
+      const ids = new Set();
+      for (const v of Object.values(d.vulnerabilities || {})) {
+        for (const via of v.via || []) {
+          if (typeof via === "object" && via.url) {
+            const m = via.url.match(/GHSA-[a-z0-9-]+/);
+            if (m) ids.add(m[0]);
+          }
+        }
+      }
+      console.log([...ids].sort().join("\n"));
+    });
+  '
+}
+
+describe_ghsas() {
+  local wanted_csv="$1"
+  { $NPM_BIN audit --json 2>/dev/null || true; } | $NODE_BIN -e '
+    let input = ""; process.stdin.on("data", c => input += c);
+    process.stdin.on("end", () => {
+      let d; try { d = JSON.parse(input); } catch { process.exit(0); }
+      const wanted = new Set((process.argv[1] || "").split(",").filter(Boolean));
+      const seen = new Set();
+      for (const [pkg, v] of Object.entries(d.vulnerabilities || {})) {
+        for (const via of v.via || []) {
+          if (typeof via !== "object" || !via.url) continue;
+          const m = via.url.match(/GHSA-[a-z0-9-]+/);
+          if (!m || !wanted.has(m[0]) || seen.has(m[0])) continue;
+          seen.add(m[0]);
+          console.log(`  [${via.severity}] ${pkg}: ${via.title}`);
+          console.log(`    ${via.url}`);
+        }
+      }
+    });
+  ' "$wanted_csv"
+}
+
+YES=false
+if [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]]; then
+  YES=true
+fi
+
+echo "Fetching tags from origin..."
+git fetch --tags --quiet origin
+
+CURRENT="$(git describe --tags --exact-match 2>/dev/null || echo '<detached>')"
+LATEST="$(git tag -l 'v*' --sort=-version:refname | head -1)"
+
+if [[ -z "$LATEST" ]]; then
+  echo "No version tags found." >&2
+  exit 1
+fi
+
+if [[ "$CURRENT" == "$LATEST" ]]; then
+  echo "Already on latest: $LATEST"
+else
+  echo "Current: $CURRENT"
+  echo "Latest:  $LATEST"
+  echo
+  echo "Changes since $CURRENT:"
+  if ! git log --oneline --no-decorate "${CURRENT}..${LATEST}" 2>/dev/null; then
+    echo "  (unable to diff; showing recent history for $LATEST)"
+    git log --oneline --no-decorate "$LATEST" -20
+  fi
+  echo
+
+  if ! $YES; then
+    read -rp "Upgrade to $LATEST? [y/N] " reply
+    if [[ ! "$reply" =~ ^[yY]$ ]]; then
+      echo "Aborted."
+      exit 1
+    fi
+  fi
+
+  echo "Checking out $LATEST..."
+  git checkout --quiet "$LATEST"
+
+  apply_local_pi_patches
+
+  echo "Installing locked deps (--ignore-scripts blocks third-party install hooks)..."
+  $NPM_BIN ci --ignore-scripts --silent
+
+  echo "Building workspace packages..."
+  $NPM_BIN run build --silent
+
+  echo "Building startup bundle..."
+  $NPX_BIN esbuild packages/coding-agent/dist/cli.js \
+    --bundle --platform=node --format=cjs \
+    --outfile=packages/coding-agent/dist/pi-bundle.cjs \
+    --define:import.meta.url=\"file://$REPO/packages/coding-agent/dist/pi-bundle.cjs\" \
+    --define:import.meta.dirname=\"$REPO/packages/coding-agent/dist\" \
+    --define:import.meta.filename=\"$REPO/packages/coding-agent/dist/pi-bundle.cjs\" \
+    --log-limit=0 --log-level=warning || echo "Warning: bundle build failed, using individual files"
+
+  echo
+  echo "Upgrade complete. pi is now at $LATEST"
+fi
+
+echo
+echo "Checking npm audit against reviewed baseline..."
+
+CURRENT_GHSAS="$(ghsa_ids_from_audit)"
+
+if [[ ! -f "$BASELINE" ]]; then
+  echo "No baseline file found — writing current state as initial baseline."
+  printf '%s\n' "$CURRENT_GHSAS" > "$BASELINE"
+  echo "Baseline: $BASELINE"
+  exit 0
+fi
+
+NEW_GHSAS="$(comm -23 <(printf '%s\n' "$CURRENT_GHSAS") <(sort "$BASELINE") | sed '/^$/d')"
+
+if [[ -z "$NEW_GHSAS" ]]; then
+  echo "No new GHSA advisories."
+  printf '%s\n' "$CURRENT_GHSAS" > "$BASELINE"
+  exit 0
+fi
+
+echo "New GHSA advisories detected:"
+printf '%s\n' "$NEW_GHSAS"
+echo
+describe_ghsas "$(printf '%s\n' "$NEW_GHSAS" | paste -sd, -)"
+echo
+
+if ! $YES; then
+  read -rp "Mark these advisories as reviewed and update baseline? [y/N] " reply
+  if [[ ! "$reply" =~ ^[yY]$ ]]; then
+    echo "Leaving baseline unchanged: $BASELINE"
+    exit 1
+  fi
+fi
+
+printf '%s\n' "$CURRENT_GHSAS" > "$BASELINE"
+echo "Baseline updated: $BASELINE"

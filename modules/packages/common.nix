@@ -11,9 +11,12 @@
     yt-dlp
 
     # Dev tools
+    fastfetch
+    htop
     neovim
     ripgrep
     fd
     jq
+    tree
   ];
 }

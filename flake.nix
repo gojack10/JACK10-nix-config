@@ -69,6 +69,7 @@
       # Darwin-only modules
       darwinModules = [
         ./modules/packages/darwin.nix
+        ./modules/packages/ghostty.nix
         ./modules/darwin/defaults.nix
       ];
 

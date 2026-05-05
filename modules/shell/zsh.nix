@@ -36,8 +36,13 @@
     shellAliases = {
       ts = "tmux attach \\; choose-tree -NNs";
       claudeyolo = "claude --dangerously-skip-permissions";
+      plainpi = "command pi --no-extensions --no-skills --no-prompt-templates --no-tools --system-prompt '' -e $HOME/.pi/agent/extensions/context-session-footer.ts -e $HOME/.pi/agent/extensions/plain.ts --plain";
       rsync = "rsync -ah --info=progress2 --no-i-r --stats";
       fastfetch = "fastfetch --logo-position top";
+
+      # Search — always exhaustive (gitignore, hidden files, binaries)
+      fd = "fd -u";
+      rg = "rg -uuu";
 
       # Git aliases (replaces oh-my-zsh git plugin)
       g = "git";
@@ -226,8 +231,9 @@
       export PATH="$HOME/.opencode/bin:$HOME/.cargo/bin:$HOME/.local/bin:/usr/bin:/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin"
       ''}
       ${lib.optionalString pkgs.stdenv.isDarwin ''
-      # Homebrew before system paths (macOS path_helper puts /usr/bin first)
-      export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
+      # Nix + Homebrew before system paths (macOS path_helper puts /usr/bin first,
+      # which shadows nix-installed tools like rsync 3.x with Apple's BSD rsync 2.6.9)
+      export PATH="$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
       ''}
 
       # Git helper functions (replaces oh-my-zsh git lib)

@@ -3,6 +3,7 @@ set -euo pipefail
 
 REPO="$HOME/.local/share/pi-mono"
 BASELINE="$REPO/.audit-baseline.txt"
+PATCHES_DIR="$HOME/.pi/agent/patches"
 NODE_BIN="${PI_NODE:-node}"
 NPM_BIN="npm"
 if command -v mise >/dev/null 2>&1; then
@@ -20,27 +21,7 @@ fi
 
 cd "$REPO"
 
-apply_pi_patches() {
-  local patches_dir="$HOME/.pi/agent/patches"
-  if [[ ! -d "$patches_dir" ]]; then
-    return 0
-  fi
-  local any=0
-  for patch in "$patches_dir"/*.patch; do
-    [[ -f "$patch" ]] || continue
-    any=1
-    echo "Applying patch: $(basename "$patch")"
-    if ! git apply --check "$patch" 2>/dev/null; then
-      echo "Error: patch $(basename "$patch") does not apply cleanly." >&2
-      echo "Upstream code may have changed. Regenerate and commit the updated patch." >&2
-      return 1
-    fi
-    git apply "$patch"
-  done
-  if [[ $any -eq 0 ]]; then
-    echo "No patch files found; skipping."
-  fi
-}
+# ── Helpers ──────────────────────────────────────────────────────────
 
 ghsa_ids_from_audit() {
   { $NPM_BIN audit --json 2>/dev/null || true; } | $NODE_BIN -e '
@@ -83,6 +64,8 @@ describe_ghsas() {
   ' "$wanted_csv"
 }
 
+# ── Sync pi-agent (patches, extensions, config) ─────────────────────
+
 sync_pi_agent() {
   local agent_dir="$HOME/.pi/agent"
   local git_url="ssh://jack@10server.net:7232/home/jack/git/pi-agent.git"
@@ -108,6 +91,42 @@ sync_pi_agent() {
     fi
   fi
 }
+
+# ── Report patches (no auto-apply) ──────────────────────────────────
+
+report_patches() {
+  if [[ ! -d "$PATCHES_DIR" ]]; then
+    echo "No patches directory at $PATCHES_DIR"
+    echo "Patches: none"
+    return 0
+  fi
+
+  local patches=("$PATCHES_DIR"/*.patch)
+  if [[ ! -f "${patches[0]}" ]]; then
+    echo "No patch files found in $PATCHES_DIR"
+    echo "Patches: none"
+    return 0
+  fi
+
+  echo "Patches available at $PATCHES_DIR:"
+  local any=0
+  for patch in "${patches[@]}"; do
+    local name; name="$(basename "$patch")"
+    if git apply --check "$patch" 2>/dev/null; then
+      echo "  ✅ $name  (applies cleanly)"
+    else
+      echo "  ❌ $name  (DOES NOT APPLY — upstream likely changed)"
+    fi
+    any=1
+  done
+  echo ""
+  echo "Action required: review each patch above."
+  echo "  - ✅ = remove if upstream has adopted the fix (check changelog)"
+  echo "  - ❌ = regenerate patch (git diff) or drop if superseded"
+  echo ""
+}
+
+# ── Main ─────────────────────────────────────────────────────────────
 
 YES=false
 if [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]]; then
@@ -149,9 +168,11 @@ else
   echo "Checking out $LATEST..."
   git checkout --force --quiet "$LATEST"
 
+  # Sync pi-agent first so patches are fresh
   sync_pi_agent
 
-  apply_pi_patches
+  # Report patch status — agent decides what to do
+  report_patches
 
   echo "Installing locked deps (--ignore-scripts blocks third-party install hooks)..."
   $NPM_BIN ci --ignore-scripts --silent

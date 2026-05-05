@@ -17,6 +17,7 @@
       setw -g pane-base-index 1
       set -g renumber-windows on
       set -g repeat-time 600
+      set -g extended-keys on
 
       # Copy mode bindings
       bind-key -T copy-mode-vi y send-keys -X copy-selection-and-cancel
@@ -42,6 +43,8 @@
       bind c new-window -c "#{pane_current_path}"
 
       # Quick actions
+      # NOTE: ~/.config/tmux/tmux.conf is a symlink to the Nix store —
+      # it's the same config home-manager generates from this file, not a separate copy.
       bind r source-file ~/.config/tmux/tmux.conf \; display "Config reloaded"
       bind x kill-pane
       bind X kill-window

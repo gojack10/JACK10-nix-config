@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 RSYNC_BASE = ["rsync", "-ah", "--info=progress2", "--no-i-r", "--stats"]
-REQUIRED_LOCAL_COMMANDS = ("ssh", "rsync", "node", "npm")
+REQUIRED_LOCAL_COMMANDS = ("ssh", "rsync", "node", "npm", "git")
 SECRET_TARGET_REL = ".config/pi-secrets/env"
 SECRET_ENV_VAR = "SIFTTEXT_API_KEY"
 
@@ -29,14 +29,10 @@ class SyncItem:
     same_platform_only: bool = False
 
 
+PI_AGENT_REL = ".pi/agent"
+PI_AGENT_GIT_REPO = "pi-agent.git"
+
 SYNC_ITEMS = (
-    SyncItem(
-        ".pi/agent",
-        "dir",
-        required=True,
-        delete=True,
-        excludes=("extensions/sifttext-mcp/node_modules",),
-    ),
     SyncItem(
         ".local/share/pi-mono",
         "dir",
@@ -46,6 +42,8 @@ SYNC_ITEMS = (
     ),
     SyncItem(".local/bin/pi", "file", required=True),
     SyncItem(".local/bin/pi-update", "file", required=True),
+    SyncItem(".local/bin/pi-subagent", "file"),
+    SyncItem(".local/bin/pi-subagent-sifttext", "file"),
     SyncItem(".claude", "dir", delete=True),
     SyncItem(".claude.json", "file"),
     SyncItem(".claude.json.backup", "file"),
@@ -256,30 +254,52 @@ def write_secret_file(target: Path, content: str) -> None:
     target.chmod(0o600)
 
 
-def apply_local_pi_patches(pi_repo: Path) -> None:
-    loader = pi_repo / "packages/coding-agent/src/core/extensions/loader.ts"
-    if not loader.is_file():
-        print(f"Warning: {loader} missing; skipping local pi patches.")
+def apply_local_pi_patches(pi_repo: Path, home: Path) -> None:
+    patches_dir = home / ".pi/agent/patches"
+    if not patches_dir.is_dir():
+        print("No patches directory; skipping.")
         return
 
-    old_text = "\t\treturn fileURLToPath(import.meta.resolve(specifier));"
-    new_text = (
-        "\t\ttry {\n"
-        "\t\t\treturn require.resolve(specifier);\n"
-        "\t\t} catch {\n"
-        "\t\t\treturn fileURLToPath(import.meta.resolve(specifier));\n"
-        "\t\t}"
-    )
-    src = loader.read_text()
-    if "return require.resolve(specifier);" in src:
-        print("Local pi patch already applied.")
+    patch_files = sorted(patches_dir.glob("*.patch"))
+    if not patch_files:
+        print("No patch files found; skipping.")
         return
-    if old_text not in src:
-        raise PiSetupError(
-            f"Local pi patch failed; expected import.meta.resolve line not found in {loader}."
+
+    for patch_file in patch_files:
+        print(f"Applying patch: {patch_file.name}")
+        check = run(
+            ["git", "apply", "--check", str(patch_file)],
+            cwd=pi_repo,
+            check=False,
+            announce=False,
         )
-    loader.write_text(src.replace(old_text, new_text, 1))
-    print("Applied local pi patch: CJS bundle extension resolution.")
+        if check.returncode != 0:
+            raise PiSetupError(
+                f"Patch {patch_file.name} does not apply cleanly. "
+                f"Upstream code may have changed. "
+                f"Regenerate and commit the updated patch to ~/.pi/agent/patches/."
+            )
+        run(["git", "apply", str(patch_file)], cwd=pi_repo)
+
+
+def sync_pi_agent(source: str, port: int, remote_home: str, home: Path) -> None:
+    local_path = home / PI_AGENT_REL
+    git_url = f"ssh://{source}:{port}{remote_home}/git/{PI_AGENT_GIT_REPO}"
+
+    if (local_path / ".git").is_dir():
+        print(f"Pulling {PI_AGENT_REL} from git...")
+        run(["git", "pull", "--rebase", "--quiet"], cwd=local_path)
+    elif remote_exists(ssh_base(source, port), f"{remote_home}/git/{PI_AGENT_GIT_REPO}/HEAD"):
+        print(f"Cloning {PI_AGENT_REL} from {git_url}...")
+        if local_path.exists():
+            backup_existing_path(local_path, home / ".local/state/pi-setup/backups/pre-clone")
+            shutil.rmtree(local_path)
+        run(["git", "clone", "--quiet", git_url, str(local_path)])
+    else:
+        raise PiSetupError(
+            f"Git repo {git_url} not found on server. "
+            f"Initialize it first: ssh {source} 'git init --bare ~/git/{PI_AGENT_GIT_REPO}'"
+        )
 
 
 def rebuild_local_state(home: Path) -> None:
@@ -289,26 +309,12 @@ def rebuild_local_state(home: Path) -> None:
 
     sifttext_extension = home / ".pi/agent/extensions/sifttext-mcp"
 
-    apply_local_pi_patches(pi_repo)
+    apply_local_pi_patches(pi_repo, home)
 
     run(["npm", "ci", "--ignore-scripts", "--silent"], cwd=pi_repo)
     if (sifttext_extension / "package-lock.json").is_file():
         run(["npm", "ci", "--ignore-scripts", "--silent"], cwd=sifttext_extension)
     run(["npm", "run", "build", "--silent"], cwd=pi_repo)
-    run([
-        "npx",
-        "esbuild",
-        "packages/coding-agent/dist/cli.js",
-        "--bundle",
-        "--platform=node",
-        "--format=cjs",
-        "--outfile=packages/coding-agent/dist/pi-bundle.cjs",
-        f"--define:import.meta.url=\"file://{pi_repo}/packages/coding-agent/dist/pi-bundle.cjs\"",
-        f"--define:import.meta.dirname=\"{pi_repo}/packages/coding-agent/dist\"",
-        f"--define:import.meta.filename=\"{pi_repo}/packages/coding-agent/dist/pi-bundle.cjs\"",
-        "--log-limit=0",
-        "--log-level=warning",
-    ], cwd=pi_repo)
 
 
 def ensure_executable(path: Path) -> None:
@@ -419,6 +425,7 @@ def main() -> int:
             ]
 
     print("Will sync:")
+    print(f"  - {PI_AGENT_REL} (git clone/pull from {source})")
     for item, _, _ in available_items:
         label = "required" if item.required else "optional"
         extra = " same-platform-only" if item.same_platform_only else ""
@@ -442,6 +449,9 @@ def main() -> int:
         backup_existing_path(local_path, backup_root)
     backup_existing_path(secret_target, backup_root)
     backup_existing_path(Path.home() / ".local/bin/claude", backup_root)
+    backup_existing_path(Path.home() / PI_AGENT_REL, backup_root)
+
+    sync_pi_agent(source, source_port, remote_home, Path.home())
 
     for item, remote_path, local_path in available_items:
         sync_item(source, source_port, remote_path, local_path, item)
@@ -450,6 +460,8 @@ def main() -> int:
 
     ensure_executable(Path.home() / ".local/bin/pi")
     ensure_executable(Path.home() / ".local/bin/pi-update")
+    ensure_executable(Path.home() / ".local/bin/pi-subagent")
+    ensure_executable(Path.home() / ".local/bin/pi-subagent-sifttext")
 
     if same_platform and not args.skip_claude_payload:
         if relink_claude_binary(Path.home(), remote_home, remote_claude_link):

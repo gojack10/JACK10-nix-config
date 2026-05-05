@@ -7,5 +7,7 @@
     nerd-fonts.symbols-only
     ghostty-bin
     rustup
+    docker
+    colima
   ];
 }

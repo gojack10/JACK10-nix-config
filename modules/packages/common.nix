@@ -12,11 +12,13 @@
 
     # Dev tools
     fastfetch
+    python3Packages.huggingface-hub
     htop
     neovim
     ripgrep
     fd
     jq
     tree
+    git-filter-repo
   ];
 }

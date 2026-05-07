@@ -7,9 +7,6 @@
     fzf
     lf
 
-    # Media
-    yt-dlp
-
     # Dev tools
     fastfetch
     python3Packages.huggingface-hub

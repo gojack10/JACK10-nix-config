@@ -49,13 +49,18 @@ main() {
     return 1
   fi
 
-  if command -v home-manager >/dev/null 2>&1; then
-    exec home-manager switch --flake "$flake#$host"
-  fi
+  # Always update flake inputs and rebuild before switching
+  nix flake update "$flake" &>/dev/null || true
+  local result="/tmp/hms-activation-$host"
+  nix build --option pure-eval false "$flake#homeConfigurations.$host.activationPackage" -o "$result"
 
-  # First-run path: no home-manager on PATH yet. Use `nix run` so bootstrap
-  # works before any generation has been built.
-  exec nix run home-manager/master -- switch --flake "$flake#$host"
+  if command -v home-manager >/dev/null 2>&1; then
+    exec "$result/activate"
+  else
+    # First-run path: no home-manager on PATH yet. Use `nix run` so bootstrap
+    # works before any generation has been built.
+    exec nix run home-manager/master -- switch --flake "$flake#$host"
+  fi
 }
 
 main "$@"

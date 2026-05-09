@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# fan — macOS fan control via AppleSMC. Requires sudo for write ops.
+# Paired with scripts/system/smc.c (the userspace SMC client).
+#
+# Usage:
+#   fan status      show current RPM, target, mode for both fans
+#   fan max         force both fans past firmware F0Mx cap to mechanical max
+#   fan rpm N       force both fans to N RPM (manual mode)
+#   fan auto        return both fans to firmware auto control
+#
+# Note: macOS resets fans to auto on sleep/wake. Re-run after resume.
+set -euo pipefail
+
+# Resolve smc to an absolute path so sudo can find it (root's PATH ≠ user's).
+SMC="$(command -v smc || true)"
+if [[ -z "$SMC" ]]; then
+    echo "fan: 'smc' binary not on PATH. Did the nix package fail to build?" >&2
+    exit 1
+fi
+
+float_le_hex() {
+    python3 -c "import struct,sys; print(struct.pack('<f', float(sys.argv[1])).hex())" "$1"
+}
+read_float() { "$SMC" read "$1" | awk 'NR==1 {print $3}'; }
+read_u8()    { "$SMC" read "$1" | awk 'NR==1 {print $3}'; }
+
+# At idle on AC, the M5 Max parks both fans completely off (0 RPM). Brushless
+# DC fans need ~5-6s of motor commutation lock-in before they start spinning,
+# regardless of target — so a single high-target write looks like "10s of
+# nothing then sudden roar." Prime to a low target first; once the rotor's
+# moving, jumps are ~1s. Skips the prime if fans are already running.
+prime_if_stopped() {
+    local ac0 ac1
+    ac0=$(read_float F0Ac); ac1=$(read_float F1Ac)
+    if (( ${ac0%.*} > 100 && ${ac1%.*} > 100 )); then return; fi
+    local prime; prime=$(float_le_hex 2000.0)
+    sudo "$SMC" write F0Tg "$prime"
+    sudo "$SMC" write F1Tg "$prime"
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        sleep 0.5
+        ac0=$(read_float F0Ac); ac1=$(read_float F1Ac)
+        (( ${ac0%.*} > 500 && ${ac1%.*} > 500 )) && return
+    done
+}
+
+case "${1:-status}" in
+    status)
+        for n in 0 1; do
+            ac=$(read_float F${n}Ac)
+            tg=$(read_float F${n}Tg)
+            mn=$(read_float F${n}Mn)
+            mx=$(read_float F${n}Mx)
+            md=$(read_u8    F${n}md)
+            mode=$([[ "$md" == "1" ]] && echo manual || echo auto)
+            printf "fan%d: %s RPM (target %s, range %s-%s, mode=%s)\n" \
+                "$n" "$ac" "$tg" "$mn" "$mx" "$mode"
+        done
+        ;;
+    max)
+        # F0Mx is a soft cap; firmware accepts higher F0Tg and saturates PWM.
+        # 20000 RPM is well past any real ceiling — drives both fans to mechanical max.
+        boost=$(float_le_hex 20000.0)
+        sudo "$SMC" write F0md 01
+        sudo "$SMC" write F1md 01
+        prime_if_stopped
+        sudo "$SMC" write F0Tg "$boost"
+        sudo "$SMC" write F1Tg "$boost"
+        echo "fans pinned to mechanical max (past firmware F0Mx cap)"
+        ;;
+    rpm)
+        rpm="${2:?rpm: need an RPM value}"
+        hex=$(float_le_hex "$rpm")
+        sudo "$SMC" write F0md 01
+        sudo "$SMC" write F1md 01
+        prime_if_stopped
+        sudo "$SMC" write F0Tg "$hex"
+        sudo "$SMC" write F1Tg "$hex"
+        echo "fans pinned to $rpm RPM"
+        ;;
+    auto)
+        sudo "$SMC" write F0md 00
+        sudo "$SMC" write F1md 00
+        echo "fans returned to auto"
+        ;;
+    *) echo "usage: $0 {status|max|rpm N|auto}" >&2; exit 1 ;;
+esac

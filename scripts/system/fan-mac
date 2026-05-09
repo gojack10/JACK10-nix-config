@@ -3,16 +3,25 @@
 # Paired with scripts/system/smc.c (the userspace SMC client).
 #
 # Usage:
-#   fan status      show current RPM, target, mode for both fans
-#   fan max         force both fans past firmware F0Mx cap to mechanical max
-#   fan rpm N       force both fans to N RPM (manual mode)
-#   fan auto        return both fans to firmware auto control
+#   fan status        show current RPM, target, mode for both fans
+#   fan max           force both fans past firmware F0Mx cap to mechanical max
+#   fan rpm N         force both fans to N RPM (manual mode)
+#   fan auto          start custom temperature-based fan controller
+#   fan auto-default  stop custom controller and return to firmware auto control
 #
 # Note: macOS resets fans to auto on sleep/wake. Re-run after resume.
 set -euo pipefail
 
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+PID_FILE="${XDG_RUNTIME_DIR:-/tmp}/fan-mac-auto.pid"
+SENSORS=(TCDX TCHP TCMb TPDX TRDX TUDX TS0P)
+POLL_SECONDS=2
+MAX_TEMP_C=75
+EXIT_MAX_TEMP_C=68
+MAX_RPM=20000
+
 # Resolve smc to an absolute path so sudo can find it (root's PATH ≠ user's).
-SMC="$(command -v smc || true)"
+SMC="${SMC:-$(command -v smc || true)}"
 if [[ -z "$SMC" ]]; then
     echo "fan: 'smc' binary not on PATH. Did the nix package fail to build?" >&2
     exit 1
@@ -43,8 +52,144 @@ prime_if_stopped() {
     done
 }
 
+pid_running() {
+    [[ -f "$PID_FILE" ]] || return 1
+    pid="$(cat "$PID_FILE")"
+    [[ -n "$pid" ]] && ps -p "$pid" >/dev/null 2>&1
+}
+
+stop_custom_auto() {
+    if pid_running; then
+        pid="$(cat "$PID_FILE")"
+        if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+            kill "$pid" 2>/dev/null || true
+        else
+            sudo kill "$pid" 2>/dev/null || true
+        fi
+        sleep 0.2
+    fi
+    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+        rm -f "$PID_FILE"
+    else
+        sudo rm -f "$PID_FILE" 2>/dev/null || true
+    fi
+}
+
+set_firmware_auto() {
+    sudo "$SMC" write F0md 00
+    sudo "$SMC" write F1md 00
+}
+
+set_manual_rpm() {
+    rpm="$1"
+    hex=$(float_le_hex "$rpm")
+    sudo "$SMC" write F0md 01
+    sudo "$SMC" write F1md 01
+    prime_if_stopped
+    sudo "$SMC" write F0Tg "$hex"
+    sudo "$SMC" write F1Tg "$hex"
+}
+
+read_control_temp() {
+    for key in "${SENSORS[@]}"; do
+        read_float "$key" 2>/dev/null || true
+    done | python3 -c '
+import math, sys
+vals=[]
+for line in sys.stdin:
+    try:
+        v=float(line.strip())
+        if 0.0 < v < 120.0:
+            vals.append(v)
+    except ValueError:
+        pass
+if not vals:
+    sys.exit(1)
+print(f"{max(vals):.3f}")
+'
+}
+
+rpm_for_temp() {
+    python3 - "$1" "$MAX_RPM" <<'PY'
+import sys
+
+t = float(sys.argv[1])
+max_rpm = int(float(sys.argv[2]))
+points = [
+    (0.0, 2000),
+    (44.999, 2000),
+    (45.0, 2500),
+    (50.0, 3500),
+    (55.0, 4500),
+    (60.0, 5500),
+    (65.0, 6500),
+    (70.0, 7000),
+]
+if t >= 75.0:
+    print(max_rpm)
+    raise SystemExit
+for (t0, r0), (t1, r1) in zip(points, points[1:]):
+    if t <= t1:
+        ratio = 0 if t1 == t0 else (t - t0) / (t1 - t0)
+        print(int(round(r0 + ratio * (r1 - r0))))
+        raise SystemExit
+print(7000)
+PY
+}
+
+auto_loop() {
+    trap '"$SMC" write F0md 00 >/dev/null 2>&1 || true; "$SMC" write F1md 00 >/dev/null 2>&1 || true; rm -f "$PID_FILE"; exit' INT TERM EXIT
+    echo $$ > "$PID_FILE"
+    "$SMC" write F0md 01 >/dev/null
+    "$SMC" write F1md 01 >/dev/null
+    prime_if_stopped
+
+    in_max=0
+    while true; do
+        temp="$(read_control_temp)" || {
+            echo "fan: no valid thermal sensor reading; returning to firmware auto" >&2
+            exit 1
+        }
+
+        if python3 - "$temp" "$MAX_TEMP_C" <<'PY'
+import sys
+sys.exit(0 if float(sys.argv[1]) >= float(sys.argv[2]) else 1)
+PY
+        then
+            in_max=1
+        elif [[ "$in_max" == 1 ]] && python3 - "$temp" "$EXIT_MAX_TEMP_C" <<'PY'
+import sys
+sys.exit(0 if float(sys.argv[1]) <= float(sys.argv[2]) else 1)
+PY
+        then
+            in_max=0
+        fi
+
+        if [[ "$in_max" == 1 ]]; then
+            rpm="$MAX_RPM"
+        else
+            rpm="$(rpm_for_temp "$temp")"
+        fi
+
+        hex=$(float_le_hex "$rpm")
+        "$SMC" write F0md 01 >/dev/null
+        "$SMC" write F1md 01 >/dev/null
+        "$SMC" write F0Tg "$hex" >/dev/null
+        "$SMC" write F1Tg "$hex" >/dev/null
+        sleep "$POLL_SECONDS"
+    done
+}
+
 case "${1:-status}" in
     status)
+        if pid_running; then
+            echo "custom auto: running (pid $(cat "$PID_FILE"))"
+        else
+            echo "custom auto: stopped"
+        fi
+        if temp="$(read_control_temp 2>/dev/null)"; then
+            echo "control temp: ${temp} C"
+        fi
         for n in 0 1; do
             ac=$(read_float F${n}Ac)
             tg=$(read_float F${n}Tg)
@@ -57,30 +202,41 @@ case "${1:-status}" in
         done
         ;;
     max)
+        stop_custom_auto
         # F0Mx is a soft cap; firmware accepts higher F0Tg and saturates PWM.
         # 20000 RPM is well past any real ceiling — drives both fans to mechanical max.
-        boost=$(float_le_hex 20000.0)
-        sudo "$SMC" write F0md 01
-        sudo "$SMC" write F1md 01
-        prime_if_stopped
-        sudo "$SMC" write F0Tg "$boost"
-        sudo "$SMC" write F1Tg "$boost"
+        set_manual_rpm "$MAX_RPM"
         echo "fans pinned to mechanical max (past firmware F0Mx cap)"
         ;;
     rpm)
+        stop_custom_auto
         rpm="${2:?rpm: need an RPM value}"
-        hex=$(float_le_hex "$rpm")
-        sudo "$SMC" write F0md 01
-        sudo "$SMC" write F1md 01
-        prime_if_stopped
-        sudo "$SMC" write F0Tg "$hex"
-        sudo "$SMC" write F1Tg "$hex"
+        set_manual_rpm "$rpm"
         echo "fans pinned to $rpm RPM"
         ;;
     auto)
-        sudo "$SMC" write F0md 00
-        sudo "$SMC" write F1md 00
-        echo "fans returned to auto"
+        stop_custom_auto
+        sudo -v
+        nohup sudo env SMC="$SMC" "$SELF" __auto-loop >/tmp/fan-mac-auto.log 2>&1 &
+        sleep 0.3
+        if pid_running; then
+            echo "custom fan auto started (pid $(cat "$PID_FILE"), log /tmp/fan-mac-auto.log)"
+        else
+            echo "fan: custom auto failed to start; see /tmp/fan-mac-auto.log" >&2
+            exit 1
+        fi
         ;;
-    *) echo "usage: $0 {status|max|rpm N|auto}" >&2; exit 1 ;;
+    auto-default)
+        stop_custom_auto
+        set_firmware_auto
+        echo "fans returned to Apple firmware auto"
+        ;;
+    __auto-loop)
+        if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+            echo "fan: __auto-loop must run as root" >&2
+            exit 1
+        fi
+        auto_loop
+        ;;
+    *) echo "usage: $0 {status|max|rpm N|auto|auto-default}" >&2; exit 1 ;;
 esac

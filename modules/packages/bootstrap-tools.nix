@@ -16,5 +16,6 @@ in {
   home.activation.install-uv-tools = lib.hm.dag.entryAfter ["writeBoundary"] ''
     ${pkgs.uv}/bin/uv tool install yt-dlp --force
     ${pkgs.uv}/bin/uv tool install duckdb-cli --force
+    ${pkgs.uv}/bin/uv tool install huggingface-hub --force
   '';
 }

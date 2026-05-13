@@ -1,0 +1,56 @@
+#!/bin/sh
+
+# macOS tmux-status script
+
+# Network
+net=""
+if ifconfig en0 2>/dev/null | grep -q 'status: active'; then
+  wifi_ssid=$(airport -I 2>/dev/null | grep 'SSID' | awk '{print $2}')
+  if [ -n "$wifi_ssid" ]; then
+    net="$wifi_ssid"
+  else
+    net="WIFI"
+  fi
+elif ifconfig en1 2>/dev/null | grep -q 'status: active'; then
+  net="ETHERNET"
+else
+  net="DISCONNECTED"
+fi
+
+# CPU (top one-shot, show user+sys as total usage)
+cpu=$(top -l 1 2>/dev/null | grep 'CPU usage' | head -1 | sed 's/.*: *\([0-9.]*\)% *user.*/\1/' || echo "-")
+
+# Memory (vm_stat, page size 16384 on Apple Silicon)
+vmstat=$(vm_stat 2>/dev/null)
+pages_active=$(echo "$vmstat" | grep 'Pages active' | awk '{print $3}' | tr -d '.')
+pages_wired=$(echo "$vmstat" | grep 'Pages wired down' | awk '{print $4}' | tr -d '.')
+# Used = active + wired (pages that are in use)
+used_pages=$((pages_active + pages_wired))
+used_mb=$((used_pages * 16384 / 1024 / 1024))
+used_gb_int=$((used_mb / 1024))
+used_gb_dec=$(( (used_mb % 1024) * 10 / 1024 ))
+
+# Battery
+bat=""
+charge=$(system_profiler SPPowerDataType 2>/dev/null | grep 'State of Charge' | sed 's/.*: *//' | tr -d '%')
+charge_status=$(system_profiler SPPowerDataType 2>/dev/null | grep 'Condition' | sed 's/.*: *//')
+if [ -n "$charge" ]; then
+  if [ "$charge_status" = "Replace Soon" ] || [ "$charge_status" = "Service Recommended" ]; then
+    bat="#[bg=red,fg=black] BAT $charge% #[bg=black,fg=white]"
+  elif [ "$charge" -le 10 ] 2>/dev/null; then
+    bat="#[bg=red,fg=black] BAT $charge% #[bg=black,fg=white]"
+  elif [ "$charge" -le 25 ] 2>/dev/null; then
+    bat="#[bg=yellow,fg=black] BAT $charge% #[bg=black,fg=white]"
+  else
+    bat="BAT $charge%"
+  fi
+fi
+
+# Date
+dt="$(date "+%A" | cut -c1-3 | tr '[:lower:]' '[:upper:]') $(date "+%Y-%m-%d %H:%M:%S")"
+
+if [ -n "$bat" ]; then
+  printf "%s | CPU %s%% | MEM %s.%sG | %s | %s" "$net" "$cpu" "$used_gb_int" "$used_gb_dec" "$bat" "$dt"
+else
+  printf "%s | CPU %s%% | MEM %s.%sG | %s" "$net" "$cpu" "$used_gb_int" "$used_gb_dec" "$dt"
+fi

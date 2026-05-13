@@ -1,6 +1,18 @@
 { config, pkgs, ... }:
 
 {
+  home.file.".local/bin/tmux-status" = {
+    source = ../scripts/tmux-status;
+    executable = true;
+    force = true;
+  };
+
+  home.file.".local/bin/deepwork-status" = {
+    source = ../scripts/deepwork-status;
+    executable = true;
+    force = true;
+  };
+
   home.file.".local/bin/tokens" = {
     source = ../scripts/tokens;
     executable = true;

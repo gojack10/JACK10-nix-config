@@ -50,6 +50,9 @@
       bind X kill-window
       bind s choose-tree -NNs
 
+      # Deepwork toggle: prefix + I
+      bind -r u run-shell 'deepwork toggle >/dev/null 2>&1'
+
       # F12: toggle between local (default) and passthrough
       # Passthrough: all keys go to inner/remote tmux
       # Local: prefix works on this tmux instance

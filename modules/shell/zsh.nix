@@ -234,6 +234,9 @@
       # Nix + Homebrew before system paths (macOS path_helper puts /usr/bin first,
       # which shadows nix-installed tools like rsync 3.x with Apple's BSD rsync 2.6.9)
       export PATH="$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
+
+      # Fast Rust-backed HF downloads (XET transfer backend)
+      export HF_XET_HIGH_PERFORMANCE=1
       ''}
 
       # Git helper functions (replaces oh-my-zsh git lib)

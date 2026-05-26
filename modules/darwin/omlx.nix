@@ -25,18 +25,18 @@ in {
     if [ -d ${lib.escapeShellArg omlxDir}/.git ]; then
       cd ${lib.escapeShellArg omlxDir}
 
+      ${pkgs.git}/bin/git config user.name 'Jack nix config'
+      ${pkgs.git}/bin/git config user.email 'jack@localhost'
+
       if [ -d .git/rebase-apply ]; then
-        ${pkgs.git}/bin/git am --abort || true
+        ${pkgs.git}/bin/git am --abort || rm -rf .git/rebase-apply .git/rebase-merge
       fi
 
       if ! ${pkgs.git}/bin/git rev-parse --verify --quiet ${lib.escapeShellArg patchedBranch} >/dev/null \
         || [ "$(${pkgs.git}/bin/git log -1 --format=%s ${lib.escapeShellArg patchedBranch} 2>/dev/null || true)" != ${lib.escapeShellArg finalPatchSubject} ]; then
         ${pkgs.git}/bin/git fetch origin main
         ${pkgs.git}/bin/git checkout -B ${lib.escapeShellArg patchedBranch} ${lib.escapeShellArg patchBaseRev}
-        ${pkgs.git}/bin/git \
-          -c user.name='Jack nix config' \
-          -c user.email='jack@localhost' \
-          am ${patchDir}/*.patch
+        ${pkgs.git}/bin/git am ${patchDir}/*.patch
       else
         ${pkgs.git}/bin/git checkout ${lib.escapeShellArg patchedBranch}
       fi

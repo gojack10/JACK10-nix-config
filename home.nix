@@ -36,8 +36,6 @@
     package = pkgs.nix;
     settings = {
       experimental-features = [ "nix-command" "flakes" ];
-      # Allow dynamic fetching (needed for PyPI version lookup)
-      pure-eval = false;
     };
   };
 }

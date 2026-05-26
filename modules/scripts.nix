@@ -36,4 +36,10 @@
     executable = true;
     force = true;
   };
+
+  home.file.".local/bin/music" = {
+    source = ../scripts/music;
+    executable = true;
+    force = true;
+  };
 }

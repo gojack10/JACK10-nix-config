@@ -3,6 +3,20 @@
 {
   programs.tmux = {
     enable = true;
+    # tmux 3.6a is crashing this machine's long-lived server when entering
+    # copy-mode (macOS crash reports show invalid free in grid_clear_lines via
+    # cmd_copy_mode_exec). Pin to the previous stable release until upstream or
+    # nixpkgs carries a fix.
+    package = pkgs.tmux.overrideAttrs (old: rec {
+      version = "3.5a";
+      src = pkgs.fetchurl {
+        url = "https://github.com/tmux/tmux/releases/download/${version}/tmux-${version}.tar.gz";
+        hash = "sha256-FiFr0IdxcN/MZBVwhbqQE2ELErCCVIx8lULMAQMZiVE=";
+      };
+      patches = (old.patches or []) ++ [
+        ./patches/tmux-choose-tree-preview.patch
+      ];
+    });
     prefix = "C-Space";
     mouse = true;
     baseIndex = 1;
@@ -48,7 +62,29 @@
       bind r source-file ~/.config/tmux/tmux.conf \; display "Config reloaded"
       bind x kill-pane
       bind X kill-window
-      bind s choose-tree -NNs
+      # Keep choose-tree's terminal preview visible; -N starts hidden.
+      # -Z zooms tree mode so the preview can use the whole client.
+      bind s choose-tree -Zs
+
+      # Theme toggle: prefix + t flips between riced theme and tmux defaults
+      # (replaces the built-in clock-mode binding).
+      bind t if-shell -F '#{@theme_default}' {
+        set -gu @theme_default
+        source-file ~/.config/tmux/tmux.conf
+        display "Theme: riced"
+      } {
+        set -g @theme_default 1
+        set -gu pane-border-status
+        set -gu pane-border-style
+        set -gu pane-active-border-style
+        set -gu pane-border-format
+        set -gu status-style
+        set -gu status-interval
+        set -gu message-style
+        set -gu status
+        set -gu status-format
+        display "Theme: default"
+      }
 
       # Deepwork toggle: prefix + I
       bind -r u run-shell 'deepwork toggle >/dev/null 2>&1'

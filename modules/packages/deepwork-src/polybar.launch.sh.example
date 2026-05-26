@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+killall -q polybar
+while pgrep -u $UID -x polybar >/dev/null; do sleep 0.2; done
+
+LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/polybar"
+mkdir -p "$LOG_DIR"
+
+if command -v xrandr >/dev/null 2>&1; then
+  # prefer external over internal if you want only one bar, otherwise spawn on all
+  while read -r m state rest; do
+    [ "$state" = "connected" ] || continue
+    if ! MONITOR="$m" polybar --reload main >"$LOG_DIR/${m}.log" 2>&1 & then
+      echo "failed to start polybar on $m" >>"$LOG_DIR/error.log"
+    fi
+  done < <(xrandr --query | awk '/ connected/{print $1, $2, $3}')
+else
+  polybar --reload main >"$LOG_DIR/default.log" 2>&1 &
+fi

@@ -11,6 +11,7 @@
     fastfetch
     htop
     neovim
+    mpv
     ripgrep
     fd
     jq

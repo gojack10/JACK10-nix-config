@@ -1,0 +1,74 @@
+From bda99839aad8ffb32c2da99b516455746640a792 Mon Sep 17 00:00:00 2001
+From: jack <gojack10@gmail.com>
+Date: Mon, 18 May 2026 18:58:37 -0700
+Subject: [PATCH 8/8] Enable MTP eligibility for VLM adapters
+
+---
+ omlx/patches/mlx_lm_mtp/batch_generator.py |  8 +++++++-
+ tests/test_mlx_lm_mtp_patch.py             | 15 +++++++++++++++
+ 2 files changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/omlx/patches/mlx_lm_mtp/batch_generator.py b/omlx/patches/mlx_lm_mtp/batch_generator.py
+index c751c98..dad4e33 100644
+--- a/omlx/patches/mlx_lm_mtp/batch_generator.py
++++ b/omlx/patches/mlx_lm_mtp/batch_generator.py
+@@ -197,7 +197,13 @@ def _model_has_mtp_module(model: Any) -> bool:
+     ``mtp_forward`` call would AttributeError, so we gate eligibility on
+     the actual module's presence.
+     """
+-    inner = getattr(model, "language_model", model)
++    inner = getattr(model, "language_model", None)
++    if inner is None:
++        # oMLX's VLMModelAdapter wraps mlx-vlm models as ``_language_model``
++        # so BatchGenerator can decode through a text-only interface. Native
++        # MTP runtime patches attach the head to that wrapped language model,
++        # not to the adapter itself.
++        inner = getattr(model, "_language_model", model)
+     return hasattr(inner, "mtp") and getattr(inner, "mtp", None) is not None
+ 
+ 
+diff --git a/tests/test_mlx_lm_mtp_patch.py b/tests/test_mlx_lm_mtp_patch.py
+index 1856289..e8ba980 100644
+--- a/tests/test_mlx_lm_mtp_patch.py
++++ b/tests/test_mlx_lm_mtp_patch.py
+@@ -331,8 +331,11 @@ class TestBatchGeneratorDispatch:
+         assert hasattr(GenerationBatch, "_omlx_mtp_patched")
+ 
+     def test_is_mtp_eligible_requires_mtp_forward_and_solo_batch(self):
++        from omlx.patches.mlx_lm_mtp import set_mtp_active
+         from omlx.patches.mlx_lm_mtp.batch_generator import _is_mtp_eligible
+ 
++        set_mtp_active(True)
++
+         class _NonMtpModel:
+             pass
+ 
+@@ -353,6 +356,16 @@ class TestBatchGeneratorDispatch:
+             def mtp_forward(self, *_):
+                 pass
+ 
++        class _VlmAdapterMtpModel:
++            """oMLX VLMModelAdapter keeps the real language model under
++            _language_model; the MTP head is attached there."""
++
++            def __init__(self):
++                self._language_model = _MtpModel()
++
++            def mtp_forward(self, *_):
++                pass
++
+         class _GenBatch:
+             def __init__(self, model, uids):
+                 self.model = model
+@@ -366,6 +379,8 @@ class TestBatchGeneratorDispatch:
+         )
+         # Has both method and head + batch=1 → triggers the path.
+         assert _is_mtp_eligible(_GenBatch(_MtpModel(), uids=[1])) is True
++        # VLM adapter wrapper with head on _language_model also triggers.
++        assert _is_mtp_eligible(_GenBatch(_VlmAdapterMtpModel(), uids=[1])) is True
+         # MTP model with batch=2 falls back to standard step.
+         assert _is_mtp_eligible(_GenBatch(_MtpModel(), uids=[1, 2])) is False
+         # Empty batch never triggers.
+-- 
+2.53.0
+

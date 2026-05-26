@@ -75,6 +75,7 @@
         ./modules/packages/ghostty.nix
         ./modules/darwin/defaults.nix
         ./modules/darwin/fan.nix
+        ./modules/darwin/omlx.nix
       ];
 
       mkHome = hostname: settings:

@@ -7,6 +7,8 @@ let
   modelDir = "${home}/.omlx/models";
   logFile = "${home}/.omlx/omlx.log";
   patchedBranch = "mtplx-sidecar-mtp-support";
+  patchBaseRev = "9749c40";
+  finalPatchSubject = "Enable MTP eligibility for VLM adapters";
   patchDir = ./omlx-patches;
 in {
   # oMLX is currently a mutable git checkout installed with uv in ~/omlx.
@@ -23,8 +25,14 @@ in {
     if [ -d ${lib.escapeShellArg omlxDir}/.git ]; then
       cd ${lib.escapeShellArg omlxDir}
 
-      if ! ${pkgs.git}/bin/git rev-parse --verify --quiet ${lib.escapeShellArg patchedBranch} >/dev/null; then
-        ${pkgs.git}/bin/git checkout -B ${lib.escapeShellArg patchedBranch} origin/main
+      if [ -d .git/rebase-apply ]; then
+        ${pkgs.git}/bin/git am --abort || true
+      fi
+
+      if ! ${pkgs.git}/bin/git rev-parse --verify --quiet ${lib.escapeShellArg patchedBranch} >/dev/null \
+        || [ "$(${pkgs.git}/bin/git log -1 --format=%s ${lib.escapeShellArg patchedBranch} 2>/dev/null || true)" != ${lib.escapeShellArg finalPatchSubject} ]; then
+        ${pkgs.git}/bin/git fetch origin main
+        ${pkgs.git}/bin/git checkout -B ${lib.escapeShellArg patchedBranch} ${lib.escapeShellArg patchBaseRev}
         ${pkgs.git}/bin/git \
           -c user.name='Jack nix config' \
           -c user.email='jack@localhost' \

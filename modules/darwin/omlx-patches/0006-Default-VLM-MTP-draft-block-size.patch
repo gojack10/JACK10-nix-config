@@ -1,0 +1,34 @@
+From 91a2be4a3ca9ffcba18f12a6157a4f86b4d3fe1a Mon Sep 17 00:00:00 2001
+From: jack <gojack10@gmail.com>
+Date: Mon, 18 May 2026 18:47:50 -0700
+Subject: [PATCH 6/8] Default VLM MTP draft block size
+
+---
+ omlx/model_settings.py | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/omlx/model_settings.py b/omlx/model_settings.py
+index 6103106..4ddb7b5 100644
+--- a/omlx/model_settings.py
++++ b/omlx/model_settings.py
+@@ -80,7 +80,7 @@ class ModelSettings:
+             drafter (mlx-vlm 191d7c8+). Target = Gemma4 VLM body, drafter must be a
+             "gemma4_assistant" model.
+         vlm_mtp_draft_model: Path/repo of the assistant drafter (e.g. "gemma-4-26B-A4B-it-assistant").
+-        vlm_mtp_draft_block_size: Tokens drafted per round (None = mlx-vlm default).
++        vlm_mtp_draft_block_size: Tokens drafted per round (default 2).
+         is_pinned: Keep model loaded in memory.
+         is_default: Use this model when no model is specified.
+         display_name: Human-readable name for UI display.
+@@ -148,7 +148,7 @@ class ModelSettings:
+     # paths because the wrapper bypasses mlx-lm BatchGenerator at decode time.
+     vlm_mtp_enabled: bool = False
+     vlm_mtp_draft_model: Optional[str] = None  # Path / model id of the assistant drafter
+-    vlm_mtp_draft_block_size: Optional[int] = None  # Tokens per draft round (None = mlx-vlm default)
++    vlm_mtp_draft_block_size: Optional[int] = 2  # Tokens per draft round
+ 
+     # Model management flags
+     is_pinned: bool = False
+-- 
+2.53.0
+

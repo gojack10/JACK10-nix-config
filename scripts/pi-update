@@ -66,9 +66,43 @@ describe_ghsas() {
 
 # ── Sync pi-agent (patches, extensions, config) ─────────────────────
 
+prompt_pi_agent_git_url() {
+  if [[ -n "${PI_AGENT_GIT_URL:-}" ]]; then
+    printf '%s\n' "$PI_AGENT_GIT_URL"
+    return 0
+  fi
+
+  local default_user default_port default_path user host port path
+  default_user="$(whoami)"
+  default_port="22"
+  default_path="git/pi-agent.git"
+
+  read -rp "pi-agent SSH user [$default_user]: " user
+  user="${user:-$default_user}"
+
+  read -rp "pi-agent SSH host: " host
+  if [[ -z "$host" ]]; then
+    echo "pi-agent SSH host is required." >&2
+    return 1
+  fi
+
+  read -rp "pi-agent SSH port [$default_port]: " port
+  port="${port:-$default_port}"
+
+  read -rp "pi-agent repo path on host [$default_path]: " path
+  path="${path:-$default_path}"
+
+  if [[ "$path" = /* ]]; then
+    printf 'ssh://%s@%s:%s%s\n' "$user" "$host" "$port" "$path"
+  else
+    printf 'ssh://%s@%s:%s/%s\n' "$user" "$host" "$port" "$path"
+  fi
+}
+
 sync_pi_agent() {
   local agent_dir="$HOME/.pi/agent"
-  local git_url="ssh://USER@HOST:22/PATH/TO/pi-agent.git"
+  local git_url
+  git_url="$(prompt_pi_agent_git_url)"
 
   if [[ -d "$agent_dir/.git" ]]; then
     echo "Pulling pi-agent from git..."

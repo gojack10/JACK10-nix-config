@@ -23,15 +23,38 @@
     escapeTime = 0;
     terminal = "tmux-256color";
     keyMode = "vi";
+    plugins = with pkgs.tmuxPlugins; [
+      {
+        plugin = resurrect;
+        extraConfig = ''
+          set -g @resurrect-capture-pane-contents 'on'
+          set -g @resurrect-strategy-nvim 'session'
+          set -g @resurrect-strategy-vim 'session'
+        '';
+      }
+      {
+        plugin = continuum;
+        extraConfig = ''
+          set -g @continuum-save-interval '15'
+          set -g @continuum-restore 'on'
+          set -g @continuum-boot 'on'
+        '';
+      }
+    ];
     extraConfig = ''
       # Clipboard
       set -as terminal-features ',*:clipboard'
       set -g set-clipboard on
-      set -g allow-passthrough on
       setw -g pane-base-index 1
       set -g renumber-windows on
       set -g repeat-time 600
       set -g extended-keys on
+
+      # Session/pane persistence (tmux-resurrect + tmux-continuum)
+      # Plugins auto-save every 15 minutes and restore panes when a new tmux
+      # server starts. Manual save/restore are available with prefix+S/R.
+      bind S run-shell '${pkgs.tmuxPlugins.resurrect}/share/tmux-plugins/resurrect/scripts/save.sh'
+      bind R run-shell '${pkgs.tmuxPlugins.resurrect}/share/tmux-plugins/resurrect/scripts/restore.sh'
 
       # Copy mode bindings
       bind-key -T copy-mode-vi y send-keys -X copy-selection-and-cancel

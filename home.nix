@@ -31,7 +31,10 @@
     source = ./bg.png;
   };
 
-  # Nix settings (enable flakes)
+  # Nix settings (enable flakes). Bootstrap may create this file before the
+  # first activation, so force Home Manager to take ownership afterwards.
+  xdg.configFile."nix/nix.conf".force = true;
+
   nix = {
     package = pkgs.nix;
     settings = {

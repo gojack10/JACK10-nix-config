@@ -1,0 +1,5 @@
+# Deep work timer toggle (start if idle, stop if running)
+bindsym $mod+Shift+d exec --no-startup-id ~/.local/bin/deepwork toggle
+
+# For sway, use:
+# bindsym $mod+Shift+d exec ~/.local/bin/deepwork toggle

@@ -1,0 +1,127 @@
+--- tmux-patch-orig/screen-write.c	2024-10-04 22:57:07
++++ tmux-patch-gen/screen-write.c	2026-05-24 19:23:43
+@@ -810,14 +810,18 @@
+ {
+ 	struct screen		*s = ctx->s;
+ 	struct grid_cell	 gc;
+-	u_int			 cx, cy, px, py;
++	u_int			 cx, cy, px, py, dx, dy, copy_nx, copy_ny;
++	u_int			 src_sx, src_sy;
+ 
+ 	cx = s->cx;
+ 	cy = s->cy;
++	dx = dy = 0;
++	src_sx = screen_size_x(src);
++	src_sy = screen_size_y(src);
+ 
+ 	/*
+-	 * If the cursor is on, pick the area around the cursor, otherwise use
+-	 * the top left.
++	 * If the cursor is on, pick the horizontal area around the cursor,
++	 * otherwise use the left edge.
+ 	 */
+ 	if (src->mode & MODE_CURSOR) {
+ 		px = src->cx;
+@@ -825,35 +829,47 @@
+ 			px = 0;
+ 		else
+ 			px = px - nx / 3;
+-		if (px + nx > screen_size_x(src)) {
+-			if (nx > screen_size_x(src))
++		if (px + nx > src_sx) {
++			if (nx > src_sx)
+ 				px = 0;
+ 			else
+-				px = screen_size_x(src) - nx;
++				px = src_sx - nx;
+ 		}
+-		py = src->cy;
+-		if (py < ny / 3)
+-			py = 0;
+-		else
+-			py = py - ny / 3;
+-		if (py + ny > screen_size_y(src)) {
+-			if (ny > screen_size_y(src))
+-				py = 0;
+-			else
+-				py = screen_size_y(src) - ny;
+-		}
+-	} else {
++	} else
+ 		px = 0;
++
++	/*
++	 * In choose-tree, the latest terminal output and prompt are the useful
++	 * part, so always anchor previews to the bottom of the source pane. If
++	 * the preview is taller than the source pane, bottom-align the source
++	 * pane inside the preview instead of leaving it at the top.
++	 */
++	if (ny > src_sy) {
+ 		py = 0;
++		copy_ny = src_sy;
++		dy = ny - src_sy;
++	} else {
++		py = src_sy - ny;
++		copy_ny = ny;
+ 	}
++	copy_nx = nx;
++	if (copy_nx > src_sx)
++		copy_nx = src_sx;
+ 
+-	screen_write_fast_copy(ctx, src, px, src->grid->hsize + py, nx, ny);
++	if (copy_nx == 0 || copy_ny == 0)
++		return;
+ 
+-	if (src->mode & MODE_CURSOR) {
++	screen_write_cursormove(ctx, cx + dx, cy + dy, 0);
++	screen_write_fast_copy(ctx, src, px, src->grid->hsize + py, copy_nx,
++	    copy_ny);
++
++	if ((src->mode & MODE_CURSOR) &&
++	    src->cx >= px && src->cx < px + copy_nx &&
++	    src->cy >= py && src->cy < py + copy_ny) {
+ 		grid_view_get_cell(src->grid, src->cx, src->cy, &gc);
+ 		gc.attr |= GRID_ATTR_REVERSE;
+-		screen_write_set_cursor(ctx, cx + (src->cx - px),
+-		    cy + (src->cy - py));
++		screen_write_set_cursor(ctx, cx + dx + (src->cx - px),
++		    cy + dy + (src->cy - py));
+ 		screen_write_cell(ctx, &gc);
+ 	}
+ }
+--- tmux-patch-orig/window-tree.c	2024-10-04 22:57:07
++++ tmux-patch-gen/window-tree.c	2026-05-24 19:23:43
+@@ -33,6 +33,7 @@
+ static void		 window_tree_key(struct window_mode_entry *,
+ 			     struct client *, struct session *,
+ 			     struct winlink *, key_code, struct mouse_event *);
++static u_int		 window_tree_height(void *, u_int);
+ 
+ #define WINDOW_TREE_DEFAULT_COMMAND "switch-client -Zt '%%'"
+ 
+@@ -899,6 +900,15 @@
+ 	free(expanded);
+ 	format_free(ft);
+ 	return (key);
++}
++
++static u_int
++window_tree_height(__unused void *modedata, u_int height)
++{
++	/* Leave the smallest list area tmux allows; preview gets the rest. */
++	if (height <= 10)
++		return (0);
++	return (height - 10);
+ }
+ 
+ static struct screen *
+@@ -936,8 +946,8 @@
+ 	data->squash_groups = !args_has(args, 'G');
+ 
+ 	data->data = mode_tree_start(wp, args, window_tree_build,
+-	    window_tree_draw, window_tree_search, window_tree_menu, NULL,
+-	    window_tree_get_key, data, window_tree_menu_items,
++	    window_tree_draw, window_tree_search, window_tree_menu,
++	    window_tree_height, window_tree_get_key, data, window_tree_menu_items,
+ 	    window_tree_sort_list, nitems(window_tree_sort_list), &s);
+ 	mode_tree_zoom(data->data, args);

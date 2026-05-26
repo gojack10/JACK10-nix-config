@@ -1,0 +1,136 @@
+[colors]
+bg = #0f0f0f
+bg-alt = #151515
+fg = #d0d0d0
+fg-alt = #8a8a8a
+primary = #6f6f6f
+urgent = #ff5555
+battery-low = #ff5555
+battery-warn = #ffcc00
+battery-good = #d0d0d0
+
+[bar/main]
+; use monitor from env if set; no fallback string here
+monitor = ${env:MONITOR:}
+monitor-strict = true
+width = 100%
+height = 26
+background = ${colors.bg}
+foreground = ${colors.fg}
+padding = 1
+
+; font-0 is for all normal text
+font-0 = "JetBrainsMono Nerd Font:size=10;2"
+
+; font-1 is the fallback for icons that are not in font-0
+; IMPORTANT: Replace "Font Awesome 5 Free" with the name you found using `fc-list`!
+; The style may be Regular, Solid, etc. Adjust if needed.
+font-1 = "FontAwesome:style=Regular:size=10;3"
+
+modules-left = i3
+modules-center = deepwork
+modules-right = pulseaudio cpu memory wlan battery date
+cursor-click = pointer
+
+; Add a small space between modules for readability
+separator = " "
+separator-foreground = ${colors.bg}
+
+[module/i3]
+type = internal/i3
+pin-workspaces = true
+format = <label-state> <label-mode>
+label-focused = %index%
+label-focused-foreground = ${colors.fg}
+label-focused-background = ${colors.primary}
+label-focused-padding = 1
+label-unfocused = %index%
+label-unfocused-padding = 1
+label-visible = %index%
+label-visible-padding = 1
+label-urgent = %index%
+label-urgent-background = ${colors.urgent}
+label-urgent-padding = 1
+
+[module/pulseaudio]
+type = internal/pulseaudio
+format-volume = <label-volume>
+label-volume = 󰕾 %percentage%%
+label-muted = muted
+label-muted-foreground = ${colors.fg-alt}
+
+[module/cpu]
+type = internal/cpu
+interval = 1
+format = <label>
+label = CPU %percentage:2%%
+
+[module/memory]
+type = internal/memory
+interval = 2
+format = <label>
+label = MEM %gb_used%
+
+[module/wlan]
+type = internal/network
+; Corrected key from your original log
+interface = wlp4s0
+interval = 3.0
+format-connected = <label-connected>
+label-connected = 󰖩 %essid%
+
+[module/battery]
+type = internal/battery
+battery = BAT0
+adapter = AC
+poll-interval = 5
+
+; Charging - green tint
+format-charging = <label-charging>
+label-charging = 󱐋 %percentage%%
+format-charging-foreground = #88cc88
+
+; Discharging - color changes with level via ramp
+format-discharging = <ramp-capacity> <label-discharging>
+label-discharging = %percentage%%
+
+; 10 levels (0-9): each covers 10% of battery
+; 0-10% = red, 10-20% = red, 20-30% = yellow, 30%+ = normal
+ramp-capacity-0 = 󰁺
+ramp-capacity-0-foreground = ${colors.battery-low}
+ramp-capacity-1 = 󰁻
+ramp-capacity-1-foreground = ${colors.battery-low}
+ramp-capacity-2 = 󰁼
+ramp-capacity-2-foreground = ${colors.battery-warn}
+ramp-capacity-3 = 󰁽
+ramp-capacity-3-foreground = ${colors.battery-good}
+ramp-capacity-4 = 󰁾
+ramp-capacity-4-foreground = ${colors.battery-good}
+ramp-capacity-5 = 󰁿
+ramp-capacity-5-foreground = ${colors.battery-good}
+ramp-capacity-6 = 󰂀
+ramp-capacity-6-foreground = ${colors.battery-good}
+ramp-capacity-7 = 󰂁
+ramp-capacity-7-foreground = ${colors.battery-good}
+ramp-capacity-8 = 󰂂
+ramp-capacity-8-foreground = ${colors.battery-good}
+ramp-capacity-9 = 󰁹
+ramp-capacity-9-foreground = ${colors.battery-good}
+
+; Full - green
+format-full = <label-full>
+label-full = 󰁹 Full
+format-full-foreground = #88cc88
+
+[module/date]
+type = internal/date
+interval = 1
+date = %Y-%m-%d %H:%M
+label = 󰃰 %date%
+
+[module/deepwork]
+type = custom/script
+exec = ~/.local/bin/deepwork status --polybar 2>/dev/null || echo "󰔟 ──────────── Ready (0)"
+interval = 1
+click-left = kitty --class deepwork-stats ~/.local/bin/deepwork stats
+format-foreground = ${colors.fg}

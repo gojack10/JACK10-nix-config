@@ -1,10 +1,8 @@
 { config, pkgs, lib, ... }:
 
 let
-  src = builtins.path {
-    name = "deepwork-src";
-    path = /Users/jack/git/deepwork;
-  };
+  # Vendored so the flake is self-contained on new machines.
+  src = ./deepwork-src;
 
   deepwork = pkgs.rustPlatform.buildRustPackage {
     pname = "deepwork";

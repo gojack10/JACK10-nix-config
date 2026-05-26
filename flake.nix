@@ -44,6 +44,7 @@
         ./home.nix
         ./modules/packages/bootstrap-tools.nix
         ./modules/packages/common.nix
+        ./modules/packages/notion-cli.nix
         ./modules/scripts.nix
         ./modules/shell/zsh.nix
         ./modules/shell/tmux.nix

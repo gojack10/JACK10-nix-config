@@ -1,11 +1,16 @@
-{ config, pkgs, ... }:
+{ config, pkgs, lib, settings, ... }:
 
-{
+let
+  personalIdentity = settings.gitName != null && settings.gitEmail != null;
+in {
   programs.git = {
     enable = true;
-    settings.user.name = "jack";
-    settings.user.email = "gojack10@gmail.com";
-    settings.init.defaultBranch = "main";
-    settings.credential."https://github.com".helper = "!${pkgs.gh}/bin/gh auth git-credential";
+    settings = {
+      init.defaultBranch = "main";
+      credential."https://github.com".helper = "!${pkgs.gh}/bin/gh auth git-credential";
+    } // lib.optionalAttrs personalIdentity {
+      user.name = settings.gitName;
+      user.email = settings.gitEmail;
+    };
   };
 }

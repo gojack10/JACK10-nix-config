@@ -15,6 +15,10 @@
       # Each machine has a `system` field and optional font/sway overrides.
       linuxDefaults = {
         system = "x86_64-linux";
+        username = "jack";
+        homeDirectory = "/home/jack";
+        gitName = "jack";
+        gitEmail = "gojack10@gmail.com";
         fontSize = 11.0;
         fontSizeFoot = 11.5;
         fontSizeWaybar = 11.0;
@@ -23,6 +27,10 @@
 
       darwinDefaults = {
         system = "aarch64-darwin";
+        username = "jack";
+        homeDirectory = "/Users/jack";
+        gitName = "jack";
+        gitEmail = "gojack10@gmail.com";
         fontSize = 11.0;
         fontSizeFoot = 11.5;
         fontSizeWaybar = 11.0;
@@ -37,6 +45,12 @@
         # Darwin hosts
         m2-air = darwinDefaults;
         m5-max = darwinDefaults;
+        work-mac = darwinDefaults // {
+          username = "jack.tenbosch";
+          homeDirectory = "/Users/jack.tenbosch";
+          gitName = null;
+          gitEmail = null;
+        };
       };
 
       # Modules shared across all platforms
@@ -86,7 +100,7 @@
         in home-manager.lib.homeManagerConfiguration {
           inherit pkgs;
           extraSpecialArgs = {
-            inherit hostname;
+            inherit hostname settings;
             inherit (settings) fontSize fontSizeFoot fontSizeWaybar useSystemSway;
           };
           modules = sharedModules ++ platformModules;

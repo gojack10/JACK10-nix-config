@@ -45,7 +45,8 @@ in {
     if [ -f ${lib.escapeShellArg omlxDir}/pyproject.toml ] && [ ! -x ${lib.escapeShellArg omlxBin} ]; then
       cd ${lib.escapeShellArg omlxDir}
       ${pkgs.uv}/bin/uv venv --python 3.14
-      ${pkgs.uv}/bin/uv pip install -e '.[audio,grammar]'
+      PATH=${pkgs.git}/bin:${pkgs.openssh}/bin:${pkgs.coreutils}/bin:$PATH \
+        ${pkgs.uv}/bin/uv pip install -e '.[audio,grammar]'
     fi
   '';
 

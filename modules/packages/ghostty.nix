@@ -1,6 +1,6 @@
-{ config, pkgs, ... }:
+{ config, pkgs, settings, ... }:
 
-let fontSizeGhostty = 14; in
+let fontSizeGhostty = settings.fontSizeGhostty or 14; in
 {
   home.file.".config/ghostty/config".text = ''
     # Font

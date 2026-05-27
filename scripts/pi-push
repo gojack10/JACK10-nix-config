@@ -131,6 +131,8 @@ else
   git -C "$HOME/.pi/agent" push "$remote_bare_url" main:main
 fi
 
+run_remote "if [ -d '$remote_home/.pi/agent/.git' ]; then git -C '$remote_home/.pi/agent' fetch --quiet origin && git -C '$remote_home/.pi/agent' reset --hard origin/main >/dev/null; elif [ ! -e '$remote_home/.pi/agent/.git' ]; then rm -rf '$remote_home/.pi/agent' && git clone --quiet '$remote_bare' '$remote_home/.pi/agent'; fi"
+
 sync_path "$HOME/.local/share/pi-mono/" "$remote_home/.local/share/pi-mono/" --delete --exclude node_modules
 sync_path "$HOME/.config/JACK10-nix-config/scripts/pi-setup" "$remote_home/.local/bin/pi-setup"
 sync_path "$HOME/.config/JACK10-nix-config/scripts/pi-update" "$remote_home/.local/bin/pi-update"

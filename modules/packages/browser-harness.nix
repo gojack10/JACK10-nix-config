@@ -3,9 +3,12 @@
 {
   home.activation.cloneBrowserHarness =
     lib.hm.dag.entryAfter [ "writeBoundary" ] ''
-      browser_harness_git_url() {
+      browser_harness_git_url=""
+      browser_harness_ssh_command="${pkgs.openssh}/bin/ssh"
+
+      browser_harness_resolve_git_url() {
         if [ -n "''${BROWSER_HARNESS_GIT_URL:-}" ]; then
-          printf '%s\n' "$BROWSER_HARNESS_GIT_URL"
+          browser_harness_git_url="$BROWSER_HARNESS_GIT_URL"
           return 0
         fi
 
@@ -59,17 +62,18 @@
           fi
         fi
 
+        browser_harness_ssh_command="${pkgs.openssh}/bin/ssh -p $port"
         case "$path" in
-          /*) printf 'ssh://%s@%s:%s%s\n' "$user" "$host" "$port" "$path" ;;
-          *)  printf 'ssh://%s@%s:%s/%s\n' "$user" "$host" "$port" "$path" ;;
+          /*) browser_harness_git_url="ssh://$user@$host:$port$path" ;;
+          *)  browser_harness_git_url="$user@$host:$path" ;;
         esac
       }
 
       target="$HOME/projects/browser-harness"
       if [ ! -d "$target/.git" ]; then
-        if git_url="$(browser_harness_git_url)"; then
+        if browser_harness_resolve_git_url; then
           $DRY_RUN_CMD mkdir -p "$HOME/projects"
-          if $DRY_RUN_CMD env GIT_SSH_COMMAND="${pkgs.openssh}/bin/ssh" ${pkgs.git}/bin/git clone --quiet "$git_url" "$target"; then
+          if $DRY_RUN_CMD env GIT_SSH_COMMAND="$browser_harness_ssh_command" ${pkgs.git}/bin/git clone --quiet "$browser_harness_git_url" "$target"; then
             echo "browser-harness: cloned to $target"
           else
             echo "browser-harness: clone failed; check SSH host/port/path or set BROWSER_HARNESS_GIT_URL" >&2

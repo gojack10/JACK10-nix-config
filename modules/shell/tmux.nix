@@ -49,6 +49,9 @@
       set -g renumber-windows on
       set -g repeat-time 600
       set -g extended-keys on
+      # Keep tmux extended keys in CSI-u form; xterm form can leak
+      # sequences like [27;5;106~ into Pi's editor during paste/newlines.
+      set -g extended-keys-format csi-u
 
       # Session/pane persistence (tmux-resurrect + tmux-continuum)
       # Plugins auto-save every 15 minutes and restore panes when a new tmux

@@ -23,6 +23,42 @@ cd "$REPO"
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
+write_pi_launcher() {
+  local launcher="$HOME/.local/bin/pi"
+  mkdir -p "$(dirname "$launcher")"
+  cat > "$launcher" <<'EOF'
+#!/usr/bin/env bash
+# pi — launcher using compiled JS from the local checkout.
+REPO="$HOME/.local/share/pi-mono"
+CLI="$REPO/packages/coding-agent/dist/cli.js"
+export PI_PACKAGE_DIR="$REPO/packages/coding-agent"
+NODE_BIN="${PI_NODE:-node}"
+if command -v mise >/dev/null 2>&1; then
+	NODE_BIN="mise exec node@24 -- node"
+elif [[ -x "$HOME/.local/bin/mise" ]]; then
+	NODE_BIN="$HOME/.local/bin/mise exec node@24 -- node"
+fi
+
+exec $NODE_BIN "$CLI" "$@"
+EOF
+  chmod +x "$launcher"
+}
+
+needs_rebuild() {
+  [[ ! -d "$REPO/node_modules" ]] && return 0
+  [[ ! -f "$REPO/node_modules/undici/package.json" ]] && return 0
+  [[ ! -f "$REPO/packages/coding-agent/dist/cli.js" ]] && return 0
+  return 1
+}
+
+install_and_build() {
+  echo "Installing locked deps (--ignore-scripts blocks third-party install hooks)..."
+  $NPM_BIN ci --ignore-scripts --silent
+
+  echo "Building workspace packages..."
+  $NPM_BIN run build --silent
+}
+
 ghsa_ids_from_audit() {
   { $NPM_BIN audit --json 2>/dev/null || true; } | $NODE_BIN -e '
     let input = ""; process.stdin.on("data", c => input += c);
@@ -163,9 +199,30 @@ report_patches() {
 # ── Main ─────────────────────────────────────────────────────────────
 
 YES=false
-if [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]]; then
-  YES=true
-fi
+REPAIR=false
+for arg in "$@"; do
+  case "$arg" in
+    -y|--yes) YES=true ;;
+    --repair) REPAIR=true ;;
+    -h|--help)
+      cat <<'EOF'
+Usage: pi-update [--yes] [--repair]
+
+Updates the local pi checkout to the latest release tag, syncs ~/.pi/agent,
+reports local patch status, rewrites the machine-local launcher, and checks npm
+audit against the reviewed baseline.
+
+  --yes     Do not prompt for upgrade/audit baseline confirmation
+  --repair  Reinstall dependencies and rebuild even if already on latest tag
+EOF
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $arg" >&2
+      exit 2
+      ;;
+  esac
+done
 
 echo "Fetching tags from origin..."
 git fetch --tags --quiet origin
@@ -202,20 +259,25 @@ else
   echo "Checking out $LATEST..."
   git checkout --force --quiet "$LATEST"
 
-  # Sync pi-agent first so patches are fresh
-  sync_pi_agent
+  REPAIR=true
+fi
 
-  # Report patch status — agent decides what to do
-  report_patches
+# Sync pi-agent even when pi-mono is already on latest. Extensions, patches,
+# settings, and auth-adjacent config can change independently of release tags.
+sync_pi_agent
 
-  echo "Installing locked deps (--ignore-scripts blocks third-party install hooks)..."
-  $NPM_BIN ci --ignore-scripts --silent
+# Report patch status only. Patch reconciliation belongs to a live pi agent,
+# not this bootstrap/update script.
+report_patches
 
-  echo "Building workspace packages..."
-  $NPM_BIN run build --silent
+write_pi_launcher
 
+if $REPAIR || needs_rebuild; then
+  install_and_build
   echo
-  echo "Upgrade complete. pi is now at $LATEST"
+  echo "pi install/build complete. pi is at $LATEST"
+else
+  echo "Dependencies/build look present. Use --repair to force npm ci + build."
 fi
 
 echo

@@ -31,6 +31,12 @@
     force = true;
   };
 
+  home.file.".local/bin/pi-push" = {
+    source = ../scripts/pi-push;
+    executable = true;
+    force = true;
+  };
+
   home.file.".local/bin/hms" = {
     source = ../scripts/hms;
     executable = true;

@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TARGET=""
+PORT="22"
+YES=false
+DRY_RUN=false
+
+usage() {
+  cat <<'EOF'
+Usage: pi-push --target user@host [--port 22] [--yes] [--dry-run]
+
+Push this machine's pi setup to an SSH source machine used by pi-setup.
+
+What it does:
+  - ensures ~/git/pi-agent.git exists on the target
+  - pushes local ~/.pi/agent main to that bare repo
+  - rsyncs ~/.local/share/pi-mono without node_modules
+  - rsyncs pi helper launch/update scripts
+  - rsyncs auth/session material needed for Codex/Claude login carry-over
+
+This intentionally does not run npm/build remotely. pi-setup on the receiving
+machine does npm ci + build locally after pulling from this source.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -t|--target)
+      TARGET="${2:-}"
+      shift 2
+      ;;
+    -p|--port)
+      PORT="${2:-}"
+      shift 2
+      ;;
+    -y|--yes)
+      YES=true
+      shift
+      ;;
+    -n|--dry-run)
+      DRY_RUN=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$TARGET" ]]; then
+  echo "--target user@host is required." >&2
+  usage >&2
+  exit 2
+fi
+
+if [[ ! -d "$HOME/.pi/agent/.git" ]]; then
+  echo "Missing ~/.pi/agent git repo." >&2
+  exit 1
+fi
+
+if [[ ! -d "$HOME/.local/share/pi-mono/.git" ]]; then
+  echo "Missing ~/.local/share/pi-mono git repo." >&2
+  exit 1
+fi
+
+SSH=(ssh -p "$PORT" -o ConnectTimeout=10 "$TARGET")
+RSYNC=(rsync -ah --info=progress2 --no-i-r --stats -e "ssh -p $PORT -o ConnectTimeout=10")
+if $DRY_RUN; then
+  RSYNC+=(--dry-run)
+fi
+
+run_remote() {
+  if $DRY_RUN; then
+    echo "+ ssh -p $PORT $TARGET $*"
+  else
+    "${SSH[@]}" "$@"
+  fi
+}
+
+sync_path() {
+  local src="$1"
+  local dst="$2"
+  shift 2
+  if [[ ! -e "$src" && ! -L "$src" ]]; then
+    echo "skip missing: $src"
+    return 0
+  fi
+  echo "rsync: $src -> $TARGET:$dst"
+  "${RSYNC[@]}" "$@" "$src" "$TARGET:$dst"
+}
+
+if ! $YES; then
+  echo "Will push pi setup from this machine to $TARGET (port $PORT)."
+  echo "This includes auth/session material such as ~/.pi/agent/auth.json and ~/.codex."
+  read -rp "Proceed? [y/N] " reply
+  if [[ ! "$reply" =~ ^[yY]$ ]]; then
+    echo "Aborted."
+    exit 1
+  fi
+fi
+
+remote_home="$("${SSH[@]}" 'printf %s "$HOME"')"
+remote_bare="$remote_home/git/pi-agent.git"
+remote_bare_url="ssh://$TARGET:$PORT$remote_bare"
+
+if [[ -n "$(git -C "$HOME/.pi/agent" status --short)" ]]; then
+  echo "~/.pi/agent has uncommitted tracked changes; commit or revert before pi-push." >&2
+  git -C "$HOME/.pi/agent" status --short >&2
+  exit 1
+fi
+
+if [[ -n "$(git -C "$HOME/.config/JACK10-nix-config" status --short)" ]]; then
+  echo "Warning: ~/.config/JACK10-nix-config has uncommitted changes; pi-push will continue but scripts may not match git." >&2
+  git -C "$HOME/.config/JACK10-nix-config" status --short >&2
+fi
+
+run_remote "mkdir -p '$remote_home/git' '$remote_home/.local/bin' '$remote_home/.local/share' '$remote_home/.pi/agent' '$remote_home/.config/pi-secrets'"
+run_remote "test -d '$remote_bare' || git init --bare '$remote_bare' >/dev/null"
+
+echo "Pushing ~/.pi/agent main -> $remote_bare_url"
+if $DRY_RUN; then
+  echo "+ git -C ~/.pi/agent push $remote_bare_url main:main"
+else
+  git -C "$HOME/.pi/agent" push "$remote_bare_url" main:main
+fi
+
+sync_path "$HOME/.local/share/pi-mono/" "$remote_home/.local/share/pi-mono/" --delete --exclude node_modules
+sync_path "$HOME/.config/JACK10-nix-config/scripts/pi-setup" "$remote_home/.local/bin/pi-setup"
+sync_path "$HOME/.config/JACK10-nix-config/scripts/pi-update" "$remote_home/.local/bin/pi-update"
+sync_path "$HOME/.local/bin/pi-subagent" "$remote_home/.local/bin/pi-subagent"
+sync_path "$HOME/.local/bin/pi-subagent-sifttext" "$remote_home/.local/bin/pi-subagent-sifttext"
+sync_path "$HOME/.codex/" "$remote_home/.codex/" --delete
+sync_path "$HOME/.claude/" "$remote_home/.claude/" --delete
+sync_path "$HOME/.claude.json" "$remote_home/.claude.json"
+sync_path "$HOME/.claude.json.backup" "$remote_home/.claude.json.backup"
+sync_path "$HOME/.pi/agent/auth.json" "$remote_home/.pi/agent/auth.json"
+sync_path "$HOME/.config/pi-secrets/env" "$remote_home/.config/pi-secrets/env"
+
+run_remote "chmod +x '$remote_home/.local/bin/pi-setup' '$remote_home/.local/bin/pi-update' 2>/dev/null || true; chmod 600 '$remote_home/.pi/agent/auth.json' '$remote_home/.config/pi-secrets/env' 2>/dev/null || true"
+
+echo "pi-push complete. Target can now be used as a pi-setup source."

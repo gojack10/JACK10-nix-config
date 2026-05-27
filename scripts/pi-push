@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TARGET=""
-PORT="22"
+TARGET="${PI_PUSH_TARGET:-}"
+PORT="${PI_PUSH_PORT:-22}"
 YES=false
 DRY_RUN=false
 
 usage() {
   cat <<'EOF'
-Usage: pi-push --target user@host [--port 22] [--yes] [--dry-run]
+Usage: pi-push [--target user@host] [--port 22] [--yes] [--dry-run]
 
 Push this machine's pi setup to an SSH source machine used by pi-setup.
 
@@ -22,6 +22,42 @@ What it does:
 This intentionally does not run npm/build remotely. pi-setup on the receiving
 machine does npm ci + build locally after pulling from this source.
 EOF
+}
+
+prompt_missing_target() {
+  if [[ -n "$TARGET" ]]; then
+    if [[ "$TARGET" != *@* ]]; then
+      TARGET="$(whoami)@$TARGET"
+    fi
+    return 0
+  fi
+
+  if $YES; then
+    echo "--target user@host is required with --yes (or set PI_PUSH_TARGET)." >&2
+    return 1
+  fi
+
+  local default_user default_host user host port
+  default_user="$(whoami)"
+  default_host="${PI_PUSH_HOST:-USER_DEFINED_SSH_HOST}"
+
+  read -rp "pi-push SSH user [$default_user]: " user
+  user="${user:-$default_user}"
+
+  if [[ -n "$default_host" ]]; then
+    read -rp "pi-push SSH host [$default_host]: " host
+    host="${host:-$default_host}"
+  else
+    read -rp "pi-push SSH host: " host
+  fi
+  if [[ -z "$host" ]]; then
+    echo "pi-push SSH host is required." >&2
+    return 1
+  fi
+
+  read -rp "pi-push SSH port [$PORT]: " port
+  PORT="${port:-$PORT}"
+  TARGET="$user@$host"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -54,11 +90,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$TARGET" ]]; then
-  echo "--target user@host is required." >&2
-  usage >&2
-  exit 2
-fi
+prompt_missing_target
 
 if [[ ! -d "$HOME/.pi/agent/.git" ]]; then
   echo "Missing ~/.pi/agent git repo." >&2

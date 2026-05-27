@@ -61,6 +61,7 @@
       sharedModules = [
         ./home.nix
         ./modules/packages/bootstrap-tools.nix
+        ./modules/packages/browser-harness.nix
         ./modules/packages/common.nix
         ./modules/packages/notion-cli.nix
         ./modules/packages/salesforce-cli.nix

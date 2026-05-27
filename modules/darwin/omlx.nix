@@ -1,4 +1,4 @@
-{ config, pkgs, lib, ... }:
+{ config, pkgs, lib, settings, ... }:
 
 let
   home = config.home.homeDirectory;
@@ -10,13 +10,24 @@ let
   patchBaseRev = "9749c40";
   finalPatchSubject = "Enable MTP eligibility for VLM adapters";
   patchDir = ./omlx-patches;
+  proxyScript = "${home}/.pi/agent/local-proxy.py";
+  proxyLog = "${home}/.pi/agent/local-proxy.log";
+  proxyLauncher = pkgs.writeShellScript "local-llm-proxy-launch" ''
+    set -eu
+    mkdir -p ${lib.escapeShellArg home}/.pi/agent
+    while [ ! -f ${lib.escapeShellArg proxyScript} ]; do
+      echo "local-proxy.py not found at ${lib.escapeShellArg proxyScript}; waiting..."
+      sleep 300
+    done
+    exec ${lib.escapeShellArg omlxDir}/.venv/bin/python3 ${lib.escapeShellArg proxyScript}
+  '';
 in {
   # oMLX is currently a mutable git checkout installed with uv in ~/omlx.
   # Local commits from ~/omlx are captured in ./omlx-patches and applied on fresh machines.
   home.packages = with pkgs; [ uv git ];
 
   home.activation.setup-omlx = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
-    mkdir -p ${lib.escapeShellArg modelDir}
+    mkdir -p ${lib.escapeShellArg modelDir} ${lib.escapeShellArg home}/.pi/agent
 
     if [ ! -d ${lib.escapeShellArg omlxDir}/.git ]; then
       ${pkgs.git}/bin/git clone https://github.com/jundot/omlx.git ${lib.escapeShellArg omlxDir}
@@ -32,6 +43,7 @@ in {
         ${pkgs.git}/bin/git am --abort || rm -rf .git/rebase-apply .git/rebase-merge
       fi
 
+      ${lib.optionalString settings.omlxPatched ''
       if ! ${pkgs.git}/bin/git rev-parse --verify --quiet ${lib.escapeShellArg patchedBranch} >/dev/null \
         || [ "$(${pkgs.git}/bin/git log -1 --format=%s ${lib.escapeShellArg patchedBranch} 2>/dev/null || true)" != ${lib.escapeShellArg finalPatchSubject} ]; then
         ${pkgs.git}/bin/git fetch origin main
@@ -40,6 +52,11 @@ in {
       else
         ${pkgs.git}/bin/git checkout ${lib.escapeShellArg patchedBranch}
       fi
+      ''}
+      ${lib.optionalString (!settings.omlxPatched) ''
+      ${pkgs.git}/bin/git fetch origin main
+      ${pkgs.git}/bin/git checkout -B main origin/main
+      ''}
     fi
 
     if [ -f ${lib.escapeShellArg omlxDir}/pyproject.toml ] && [ ! -x ${lib.escapeShellArg omlxBin} ]; then
@@ -50,10 +67,10 @@ in {
         SDKROOT="$sdkroot" \
         CPATH="$sdkroot/usr/include''${CPATH:+:$CPATH}" \
         PATH=${pkgs.git}/bin:${pkgs.openssh}/bin:${pkgs.coreutils}/bin:$PATH \
-          ${pkgs.uv}/bin/uv pip install -e '.[audio,grammar]'
+          ${pkgs.uv}/bin/uv pip install -e '.[audio,grammar]' aiohttp
       else
         PATH=${pkgs.git}/bin:${pkgs.openssh}/bin:${pkgs.coreutils}/bin:$PATH \
-          ${pkgs.uv}/bin/uv pip install -e '.[audio,grammar]'
+          ${pkgs.uv}/bin/uv pip install -e '.[audio,grammar]' aiohttp
       fi
     fi
   '';
@@ -86,6 +103,23 @@ in {
       };
       StandardOutPath = logFile;
       StandardErrorPath = logFile;
+      RunAtLoad = true;
+      KeepAlive = true;
+    };
+  };
+
+  launchd.agents.local-llm-proxy = {
+    enable = true;
+    config = {
+      Label = "com.local.llm.proxy";
+      ProgramArguments = [ "${proxyLauncher}" ];
+      WorkingDirectory = home;
+      EnvironmentVariables = {
+        HOME = home;
+        PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
+      };
+      StandardOutPath = proxyLog;
+      StandardErrorPath = proxyLog;
       RunAtLoad = true;
       KeepAlive = true;
     };

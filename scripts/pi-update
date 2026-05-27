@@ -137,8 +137,6 @@ prompt_pi_agent_git_url() {
 
 sync_pi_agent() {
   local agent_dir="$HOME/.pi/agent"
-  local git_url
-  git_url="$(prompt_pi_agent_git_url)"
 
   if [[ -d "$agent_dir/.git" ]]; then
     echo "Pulling pi-agent from git..."
@@ -147,6 +145,8 @@ sync_pi_agent() {
       return 1
     fi
   else
+    local git_url
+    git_url="$(prompt_pi_agent_git_url)"
     echo "Cloning pi-agent from $git_url ..."
     if [[ -e "$agent_dir" ]]; then
       local backup="$HOME/.local/state/pi-update/backups/pi-agent-$(date +%Y%m%d-%H%M%S)"

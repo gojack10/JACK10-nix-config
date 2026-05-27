@@ -48,6 +48,7 @@ SYNC_ITEMS = (
     SyncItem(".claude.json", "file"),
     SyncItem(".claude.json.backup", "file"),
     SyncItem(".codex", "dir", delete=True),
+    SyncItem(".pi/agent/auth.json", "file"),
     SyncItem(".local/share/claude", "dir", delete=True, same_platform_only=True),
 )
 
@@ -469,6 +470,10 @@ def main() -> int:
         sync_item(source, source_port, remote_path, local_path, item)
 
     write_secret_file(secret_target, secret_content)
+
+    pi_auth = Path.home() / ".pi/agent/auth.json"
+    if pi_auth.exists():
+        pi_auth.chmod(0o600)
 
     ensure_executable(Path.home() / ".local/bin/pi")
     ensure_executable(Path.home() / ".local/bin/pi-update")

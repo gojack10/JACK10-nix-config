@@ -36,7 +36,9 @@ let fontSizeGhostty = 14; in
     cursor-style = block
     cursor-style-blink = false
 
-    # Shell integration: keep everything except the prompt cursor override
-    shell-integration-features = no-cursor
+    # Shell integration: keep everything except the prompt cursor override.
+    # Enable Ghostty's SSH wrapper so SSH sessions either install xterm-ghostty
+    # terminfo on the remote host or safely fall back to xterm-256color.
+    shell-integration-features = no-cursor,ssh-env,ssh-terminfo
   '';
 }

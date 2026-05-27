@@ -45,8 +45,16 @@ in {
     if [ -f ${lib.escapeShellArg omlxDir}/pyproject.toml ] && [ ! -x ${lib.escapeShellArg omlxBin} ]; then
       cd ${lib.escapeShellArg omlxDir}
       ${pkgs.uv}/bin/uv venv --python 3.14
-      PATH=${pkgs.git}/bin:${pkgs.openssh}/bin:${pkgs.coreutils}/bin:$PATH \
-        ${pkgs.uv}/bin/uv pip install -e '.[audio,grammar]'
+      sdkroot="$(/usr/bin/xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+      if [ -n "$sdkroot" ]; then
+        SDKROOT="$sdkroot" \
+        CPATH="$sdkroot/usr/include''${CPATH:+:$CPATH}" \
+        PATH=${pkgs.git}/bin:${pkgs.openssh}/bin:${pkgs.coreutils}/bin:$PATH \
+          ${pkgs.uv}/bin/uv pip install -e '.[audio,grammar]'
+      else
+        PATH=${pkgs.git}/bin:${pkgs.openssh}/bin:${pkgs.coreutils}/bin:$PATH \
+          ${pkgs.uv}/bin/uv pip install -e '.[audio,grammar]'
+      fi
     fi
   '';
 

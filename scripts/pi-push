@@ -39,7 +39,7 @@ prompt_missing_target() {
 
   local default_user default_host user host port
   default_user="$(whoami)"
-  default_host="${PI_PUSH_HOST:-USER_DEFINED_SSH_HOST}"
+  default_host="${PI_PUSH_HOST:-}"
 
   read -rp "pi-push SSH user [$default_user]: " user
   user="${user:-$default_user}"

@@ -69,7 +69,7 @@
       if [ ! -d "$target/.git" ]; then
         if git_url="$(browser_harness_git_url)"; then
           $DRY_RUN_CMD mkdir -p "$HOME/projects"
-          if $DRY_RUN_CMD ${pkgs.git}/bin/git clone --quiet "$git_url" "$target"; then
+          if $DRY_RUN_CMD env GIT_SSH_COMMAND="${pkgs.openssh}/bin/ssh" ${pkgs.git}/bin/git clone --quiet "$git_url" "$target"; then
             echo "browser-harness: cloned to $target"
           else
             echo "browser-harness: clone failed; check SSH host/port/path or set BROWSER_HARNESS_GIT_URL" >&2

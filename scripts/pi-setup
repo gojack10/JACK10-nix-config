@@ -255,6 +255,36 @@ def write_secret_file(target: Path, content: str) -> None:
     target.chmod(0o600)
 
 
+def patch_added_lines_present(pi_repo: Path, patch_file: Path) -> bool:
+    """Best-effort idempotence check for patches already present with shifted context."""
+    additions_by_file: dict[Path, set[str]] = {}
+    current_file: Path | None = None
+
+    for line in patch_file.read_text(errors="replace").splitlines():
+        if line.startswith("+++ b/"):
+            current_file = pi_repo / line.removeprefix("+++ b/")
+            additions_by_file.setdefault(current_file, set())
+            continue
+        if current_file is None or not line.startswith("+") or line.startswith("+++"):
+            continue
+
+        added = line[1:]
+        if added.strip():
+            additions_by_file[current_file].add(added)
+
+    if not additions_by_file:
+        return False
+
+    for target, additions in additions_by_file.items():
+        if not target.is_file():
+            return False
+        existing_lines = set(target.read_text(errors="replace").splitlines())
+        if not additions.issubset(existing_lines):
+            return False
+
+    return True
+
+
 def apply_local_pi_patches(pi_repo: Path, home: Path) -> None:
     patches_dir = home / ".pi/agent/patches"
     if not patches_dir.is_dir():
@@ -271,6 +301,7 @@ def apply_local_pi_patches(pi_repo: Path, home: Path) -> None:
         check = run(
             ["git", "apply", "--check", str(patch_file)],
             cwd=pi_repo,
+            capture_output=True,
             check=False,
             announce=False,
         )
@@ -281,11 +312,16 @@ def apply_local_pi_patches(pi_repo: Path, home: Path) -> None:
         reverse_check = run(
             ["git", "apply", "--reverse", "--check", str(patch_file)],
             cwd=pi_repo,
+            capture_output=True,
             check=False,
             announce=False,
         )
         if reverse_check.returncode == 0:
             print(f"Patch already applied; skipping: {patch_file.name}")
+            continue
+
+        if patch_added_lines_present(pi_repo, patch_file):
+            print(f"Patch content already present; skipping: {patch_file.name}")
             continue
 
         raise PiSetupError(

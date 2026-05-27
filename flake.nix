@@ -19,6 +19,7 @@
         homeDirectory = "/home/jack";
         gitName = "jack";
         gitEmail = "gojack10@gmail.com";
+        omlxPatched = true;
         fontSize = 11.0;
         fontSizeFoot = 11.5;
         fontSizeWaybar = 11.0;
@@ -31,6 +32,7 @@
         homeDirectory = "/Users/jack";
         gitName = "jack";
         gitEmail = "gojack10@gmail.com";
+        omlxPatched = true;
         fontSize = 11.0;
         fontSizeFoot = 11.5;
         fontSizeWaybar = 11.0;
@@ -50,6 +52,7 @@
           homeDirectory = "/Users/jack.tenbosch";
           gitName = null;
           gitEmail = null;
+          omlxPatched = false;
         };
       };
 

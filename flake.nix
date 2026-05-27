@@ -53,6 +53,7 @@
           gitName = null;
           gitEmail = null;
           omlxPatched = false;
+          fontSizeGhostty = 12;
         };
       };
 

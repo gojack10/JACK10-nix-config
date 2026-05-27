@@ -273,13 +273,25 @@ def apply_local_pi_patches(pi_repo: Path, home: Path) -> None:
             check=False,
             announce=False,
         )
-        if check.returncode != 0:
-            raise PiSetupError(
-                f"Patch {patch_file.name} does not apply cleanly. "
-                f"Upstream code may have changed. "
-                f"Regenerate and commit the updated patch to ~/.pi/agent/patches/."
-            )
-        run(["git", "apply", str(patch_file)], cwd=pi_repo)
+        if check.returncode == 0:
+            run(["git", "apply", str(patch_file)], cwd=pi_repo)
+            continue
+
+        reverse_check = run(
+            ["git", "apply", "--reverse", "--check", str(patch_file)],
+            cwd=pi_repo,
+            check=False,
+            announce=False,
+        )
+        if reverse_check.returncode == 0:
+            print(f"Patch already applied; skipping: {patch_file.name}")
+            continue
+
+        raise PiSetupError(
+            f"Patch {patch_file.name} does not apply cleanly. "
+            f"Upstream code may have changed. "
+            f"Regenerate and commit the updated patch to ~/.pi/agent/patches/."
+        )
 
 
 def sync_pi_agent(source: str, port: int, remote_home: str, home: Path) -> None:

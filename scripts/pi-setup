@@ -295,13 +295,9 @@ def rebuild_local_state(home: Path) -> None:
     if not pi_repo.is_dir():
         raise PiSetupError(f"Expected pi repo at {pi_repo}")
 
-    sifttext_extension = home / ".pi/agent/extensions/sifttext-mcp"
-
     report_local_pi_patches(home)
 
     run(["npm", "ci", "--ignore-scripts", "--silent"], cwd=pi_repo)
-    if (sifttext_extension / "package-lock.json").is_file():
-        run(["npm", "ci", "--ignore-scripts", "--silent"], cwd=sifttext_extension)
     run(["npm", "run", "build", "--silent"], cwd=pi_repo)
 
 

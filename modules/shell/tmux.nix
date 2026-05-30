@@ -54,8 +54,8 @@
       set -g extended-keys-format csi-u
 
       # Session/pane persistence (tmux-resurrect + tmux-continuum)
-      # Plugins auto-save every 15 minutes and restore panes when a new tmux
-      # server starts. Manual save/restore are available with prefix+S/R.
+      # Auto-save every 15 minutes and restore panes when a new tmux server
+      # starts. Manual save/restore are available with prefix+S/R.
       bind S run-shell '${pkgs.tmuxPlugins.resurrect}/share/tmux-plugins/resurrect/scripts/save.sh'
       bind R run-shell '${pkgs.tmuxPlugins.resurrect}/share/tmux-plugins/resurrect/scripts/restore.sh'
 
@@ -145,7 +145,9 @@
       set -g status 2
 
       # Line 0: session+windows left, stats+date right
-      set -g status-format[0] '#[align=left fg=white] #S #{W:#{?window_active,#[fg=green] #I:#W #[fg=white], #I:#W }}#[align=right fg=white]#{?#{==:#{client_key_table},off},#[fg=green]PASS#[fg=white],LOCAL} | #(~/.local/bin/tmux-status) '
+      # tmux-continuum normally injects its save hook into status-right, but
+      # status-format[] bypasses status-right. Run the same hook invisibly here.
+      set -g status-format[0] '#(${pkgs.tmuxPlugins.continuum}/share/tmux-plugins/continuum/scripts/continuum_save.sh)#[align=left fg=white] #S #{W:#{?window_active,#[fg=green] #I:#W #[fg=white], #I:#W }}#[align=right fg=white]#{?#{==:#{client_key_table},off},#[fg=green]PASS#[fg=white],LOCAL} | #(~/.local/bin/tmux-status) '
 
       # Line 1: deepwork centered
       set -g status-format[1] '#[align=centre fg=white]#(~/.local/bin/deepwork-status)'

@@ -122,6 +122,11 @@ let
         awk -v re="$re" '
           /CoreAudio devices:/ { audio=1; next }
           audio && /\[[0-9]+\]/ {
+            # Duplex (Bluetooth) devices are listed twice, suffixed :input and
+            # :output. We are choosing a *playback* sink, so skip the capture
+            # side; otherwise the first match (e.g. AirPods :input) wins and
+            # AudioQueueStart fails because you cannot play into an input.
+            if ($0 ~ /:input *$/) next
             idx=$0; sub(/^.*\[/, "", idx); sub(/\].*$/, "", idx)
             name=$0; sub(/^.*\] */, "", name); sub(/, .*$/, "", name); gsub(/^ +| +$/, "", name)
             lname=tolower(name)
@@ -309,7 +314,8 @@ let
         -thread_queue_size 1024 -f avfoundation -i ":$mic_idx" \
         -thread_queue_size 1024 -f avfoundation -i ":$blackhole_idx" \
         -filter_complex "[0:a]aresample=48000:async=1:first_pts=0,pan=stereo|c0=c0|c1=c0[mic];[1:a]aresample=48000:async=1:first_pts=0,pan=stereo|c0=c0|c1=c1,asplit=2[sys_rec][sys_mon];[mic][sys_rec]amix=inputs=2:duration=longest:dropout_transition=0:normalize=1,alimiter=limit=0.95[rec]" \
-        -map "[rec]" -ar 48000 -c:a aac -b:a 192k "$out" \
+        -map "[rec]" -ar 48000 -c:a aac -b:a 192k \
+        -movflags +empty_moov+default_base_moof -frag_duration 1000000 "$out" \
         -map "[sys_mon]" -ar 48000 -c:a pcm_s16le -audio_device_index "$monitor_idx" -f audiotoolbox - &
       ffmpeg_pid="$!"
       set +e

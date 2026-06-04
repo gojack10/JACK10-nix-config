@@ -1,0 +1,621 @@
+#!/usr/bin/env python3
+"""
+rip - opinionated media downloader and converter
+
+download:
+  rip URL                    download as opus audio (default)
+  rip -m URL                 download as mp3 audio
+  rip -w URL                 download as wav audio (lossless)
+  rip -v URL                 download as mp4 video
+  rip -s URL                 force single video (strip playlist)
+  rip -p URL                 force full playlist
+
+convert:
+  rip -c FILE                convert to opus audio
+  rip -c -m FILE             convert to mp3 audio
+  rip -c -w FILE             convert to wav audio
+  rip -cv FILE               convert to optimized mp4
+
+update:
+  rip -u                     update yt-dlp (uv tool)
+"""
+
+import argparse
+import subprocess
+import sys
+import re
+import shutil
+from pathlib import Path
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+
+
+# --- ANSI Colors ---
+class C:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    RED = "\033[31m"
+    CYAN = "\033[36m"
+
+
+def log_action(msg):
+    print(f"\n{C.CYAN}→{C.RESET} {msg}")
+
+
+def log_detail(msg):
+    print(f"  {C.DIM}↳ {msg}{C.RESET}")
+
+
+def log_ok(msg):
+    print(f"  {C.GREEN}✓{C.RESET} {C.DIM}{msg}{C.RESET}")
+
+
+def log_success(msg):
+    print(f"\n{C.GREEN}✓{C.RESET} {C.BOLD}{msg}{C.RESET}")
+
+
+def log_error(msg):
+    print(f"\n{C.RED}✗{C.RESET} {msg}")
+
+
+def log_warn(msg):
+    print(f"\n{C.YELLOW}!{C.RESET} {msg}")
+
+
+# --- Dependency Check ---
+def check_deps(spotify_mode=False):
+    missing = []
+    if not spotify_mode:
+        if not shutil.which('yt-dlp'):
+            missing.append('yt-dlp')
+    if not shutil.which('ffmpeg'):
+        missing.append('ffmpeg')
+    if spotify_mode and not shutil.which('spotdl'):
+        missing.append('spotdl')
+    if missing:
+        log_error(f"missing dependencies: {', '.join(missing)}")
+        if spotify_mode:
+            print(f"  {C.DIM}install with: uv tool install spotdl{C.RESET}")
+        else:
+            print(f"  {C.DIM}install with: sudo apt install {' '.join(missing)}{C.RESET}")
+            print(f"  {C.DIM}or: pip install yt-dlp / brew install ffmpeg{C.RESET}")
+        sys.exit(1)
+
+
+# --- URL Cleaning ---
+TRACKING_PARAMS = {
+    'youtube.com': ['si', 'pp', 'feature', 'cbrd', 'ucbcb', 'ab_channel'],
+    'youtu.be': ['si', 'pp', 'feature'],
+    'twitter.com': ['s', 't', 'ref_src', 'ref_url'],
+    'x.com': ['s', 't', 'ref_src', 'ref_url'],
+    'soundcloud.com': ['si', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_content'],
+    'tiktok.com': ['is_copy_url', 'is_from_webapp', 'sender_device', 'sender_web_id', '_r', '_t'],
+    'bandcamp.com': ['from', 'search_item_id', 'search_item_type', 'search_match_part',
+                     'search_page_id', 'search_page_no', 'search_rank', 'search_sig'],
+    'twitch.tv': ['tt_medium', 'tt_content'],
+    'spotify.com': ['si', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_content'],
+}
+
+
+def is_spotify(url, cleaned=False):
+    """check if URL is a Spotify link"""
+    target = cleaned if cleaned else url
+    return any(s in target.lower() for s in ('spotify.com', 'open.spotify.com'))
+
+
+def clean_url(url):
+    """normalize and strip tracking params from URL"""
+    changes = []
+
+    # unescape shell escapes like \? \& \=
+    cleaned = re.sub(r'\\([?&=])', r'\1', url)
+    if cleaned != url:
+        changes.append("unescaped shell chars")
+        url = cleaned
+
+    # parse
+    parsed = urlparse(url)
+    if not parsed.scheme:
+        url = 'https://' + url
+        parsed = urlparse(url)
+        changes.append("added https://")
+
+    query = parse_qs(parsed.query, keep_blank_values=True)
+
+    # find domain and its tracking params
+    domain = parsed.netloc.lower().replace('www.', '').replace('m.', '')
+    params_to_remove = []
+    for d, params in TRACKING_PARAMS.items():
+        if d in domain:
+            params_to_remove = params
+            break
+
+    # remove tracking params
+    removed = []
+    for param in params_to_remove:
+        if param in query:
+            removed.append(param)
+            del query[param]
+
+    if removed:
+        changes.append(f"removed {', '.join(removed)}")
+
+    # rebuild URL
+    new_query = urlencode(query, doseq=True)
+    cleaned_url = urlunparse((
+        parsed.scheme,
+        parsed.netloc,
+        parsed.path,
+        parsed.params,
+        new_query,
+        ''
+    ))
+
+    if cleaned_url.endswith('?'):
+        cleaned_url = cleaned_url[:-1]
+
+    return cleaned_url, changes
+
+
+def has_playlist(url):
+    """check if URL has playlist param"""
+    query = parse_qs(urlparse(url).query)
+    return 'list' in query
+
+
+def strip_playlist_params(url):
+    """remove playlist params from URL"""
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query, keep_blank_values=True)
+
+    for param in ['list', 'index', 'start_radio']:
+        query.pop(param, None)
+
+    new_query = urlencode(query, doseq=True)
+    result = urlunparse((parsed.scheme, parsed.netloc, parsed.path,
+                         parsed.params, new_query, ''))
+    return result.rstrip('?')
+
+
+# --- Filename Sanitization ---
+def sanitize(title, max_len=80):
+    """convert title to clean filename: lowercase, dashes, alphanumeric only"""
+    name = title.lower()
+    name = re.sub(r'[\s_]+', '-', name)       # spaces/underscores -> dashes
+    name = re.sub(r'[^a-z0-9-]', '', name)    # strip non-alphanumeric
+    name = re.sub(r'-+', '-', name)           # collapse multiple dashes
+    name = name.strip('-')
+    if len(name) > max_len:
+        name = name[:max_len].rstrip('-')
+    return name or 'download'
+
+
+# --- Metadata ---
+def fetch_metadata(url):
+    """get video/playlist metadata via yt-dlp"""
+    cmd = [
+        'yt-dlp', '--no-download', '--no-warnings',
+        '--no-playlist',
+        '--print', '%(title)s',
+        '--print', '%(duration_string)s',
+        '--print', '%(playlist_title)s',
+        '--print', '%(playlist_count)s',
+        url
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            lines = r.stdout.strip().split('\n')
+            return {
+                'title': lines[0] if lines else 'unknown',
+                'duration': lines[1] if len(lines) > 1 else '?',
+            }
+    except subprocess.TimeoutExpired:
+        log_warn('metadata fetch timed out — proceeding without title info')
+    except Exception:
+        pass
+    return None
+
+
+# --- Interactive Prompt ---
+def prompt_playlist_choice(playlist_title, count):
+    """ask user: single video or full playlist?"""
+    if playlist_title:
+        log_warn(f"playlist detected: {C.BOLD}{playlist_title}{C.RESET}")
+        if count:
+            log_detail(f"{count} videos")
+    else:
+        log_warn("playlist detected")
+
+    print(f"\n  {C.CYAN}[1]{C.RESET} single video")
+    print(f"  {C.CYAN}[2]{C.RESET} full playlist")
+    print(f"  {C.CYAN}[q]{C.RESET} cancel\n")
+
+    while True:
+        try:
+            choice = input(f"  {C.DIM}→{C.RESET} ").strip().lower()
+            if choice in ('1', 's', 'single'):
+                return 'single'
+            elif choice in ('2', 'p', 'playlist'):
+                return 'playlist'
+            elif choice in ('q', 'quit', 'exit', ''):
+                return 'cancel'
+            print(f"  {C.DIM}enter 1, 2, or q{C.RESET}")
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return 'cancel'
+
+
+# --- Download ---
+def download(url, video_mode=False, force_single=False, force_playlist=False, audio_fmt='opus', dry_run=False, custom_name=None):
+    """download media from URL"""
+
+    # clean URL
+    cleaned_url, changes = clean_url(url)
+
+    log_action(f"url {C.DIM}{cleaned_url}{C.RESET}")
+    for change in changes:
+        log_ok(f"cleaned: {change}")
+
+    # playlist handling
+    is_playlist = has_playlist(cleaned_url)
+    playlist_mode = False
+
+    if is_playlist:
+        if force_single:
+            cleaned_url = strip_playlist_params(cleaned_url)
+            log_ok("stripped playlist params")
+        elif force_playlist:
+            playlist_mode = True
+            log_ok("playlist mode")
+        else:
+            # interactive prompt (playlist detected from URL params)
+            choice = prompt_playlist_choice(None, None)
+            if choice == 'cancel':
+                log_error("cancelled")
+                return False
+            elif choice == 'single':
+                cleaned_url = strip_playlist_params(cleaned_url)
+                log_ok("stripped playlist params")
+            else:
+                playlist_mode = True
+
+    # fetch metadata for filename
+    meta = fetch_metadata(cleaned_url)
+    if meta:
+        log_detail(f"title: {meta['title'][:60]}{'...' if len(meta['title']) > 60 else ''}")
+        log_detail(f"duration: {meta['duration']}")
+
+    # build output template
+    if playlist_mode:
+        # playlist: folder/01-title.ext
+        output_tpl = f"%(playlist_title)s/%(playlist_index)02d-%(title)s.%(ext)s"
+        if custom_name:
+            log_warn("custom name ignored in playlist mode")
+    else:
+        if custom_name:
+            filename = sanitize(custom_name)
+            if not filename:
+                filename = 'download'
+            log_ok(f"custom name: {filename}")
+        elif meta:
+            filename = sanitize(meta['title'])
+        else:
+            filename = 'download'
+
+        ext = 'mp4' if video_mode else audio_fmt
+        output_tpl = f"{filename}.%(ext)s"
+        log_detail(f"output: {filename}.{ext}")
+
+    # build command
+    # YouTube workaround: use iOS client and m3u8 formats to bypass 403 errors
+    yt_extractor_args = 'youtube:player_client=default,ios,-android_sdkless;formats=missing_pot'
+
+    if video_mode:
+        cmd = [
+            'yt-dlp',
+            '--extractor-args', yt_extractor_args,
+            '-f', 'bv[protocol=m3u8_native][height<=1080]+ba[protocol=m3u8_native]/bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b',
+            '--merge-output-format', 'mp4',
+        ]
+    else:
+        cmd = [
+            'yt-dlp',
+            '--extractor-args', yt_extractor_args,
+            '-f', 'ba[protocol=m3u8_native]/ba/b',
+            '-x', '--audio-format', audio_fmt,
+        ]
+        # add quality for lossy formats (wav is lossless, no quality needed)
+        if audio_fmt == 'opus':
+            cmd += ['--audio-quality', '128K']
+        elif audio_fmt == 'mp3':
+            cmd += ['--audio-quality', '192K']
+
+    cmd += [
+        '-ci', '--ignore-errors',
+        '--no-playlist' if not playlist_mode else '--yes-playlist',
+        '--restrict-filenames',
+        '-o', output_tpl,
+        cleaned_url
+    ]
+
+    if dry_run:
+        log_action("dry run")
+        print(f"  {C.DIM}{' '.join(cmd)}{C.RESET}")
+        return True
+
+    log_action("downloading")
+
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line:
+                # filter noise, show progress
+                if any(x in line.lower() for x in ['download', 'extract', 'merger', 'delet', '%']):
+                    print(f"  {C.DIM}{line}{C.RESET}")
+        proc.wait()
+
+        if proc.returncode == 0:
+            log_success("done")
+            return True
+        else:
+            log_error(f"yt-dlp exited {proc.returncode}")
+            return False
+    except KeyboardInterrupt:
+        log_warn("interrupted")
+        return False
+    except Exception as e:
+        log_error(str(e))
+        return False
+
+
+# --- Spotify Download ---
+def download_spotify(url, video_mode=False, force_single=False, force_playlist=False, audio_fmt='opus', dry_run=False, custom_name=None):
+    """download audio from Spotify using spotdl"""
+
+    # clean URL (strip tracking params)
+    cleaned_url, changes = clean_url(url)
+
+    log_action(f"spotify {C.DIM}{cleaned_url}{C.RESET}")
+    for change in changes:
+        log_ok(f"cleaned: {change}")
+
+    # video mode not supported - spotdl is audio-only
+    if video_mode:
+        log_warn("video mode not available for Spotify — downloading audio only")
+
+    # -p / -s are no-ops for spotdl (handles tracks, albums, playlists from URL)
+    if force_playlist:
+        log_ok("playlist flag passed (spotdl auto-detects content type)")
+    if force_single:
+        log_ok("single flag passed (spotdl auto-detects content type)")
+
+    # build command
+    cmd = ['spotdl', '--simple-tui', '--format', audio_fmt, '--bitrate', '128k']
+
+    if custom_name and not force_playlist:
+        safe_name = sanitize(custom_name) or 'download'
+        cmd += ['--output', f'{safe_name}.{{output-ext}}']
+        log_ok(f"custom name: {safe_name}")
+    elif custom_name:
+        log_warn("custom name may not behave as expected for Spotify lists")
+
+    cmd += [cleaned_url]
+
+    if dry_run:
+        log_action("dry run")
+        print(f"  {C.DIM}{' '.join(cmd)}{C.RESET}")
+        return True
+
+    log_action("downloading")
+
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line:
+                # show progress but filter noise
+                if any(kw in line.lower() for kw in ['download', 'converting', 'error', '%',
+                                                      'searching', 'skipping', 'found']):
+                    print(f"  {C.DIM}{line}{C.RESET}")
+        proc.wait()
+
+        if proc.returncode == 0:
+            log_success("done")
+            return True
+        else:
+            log_error(f"spotdl exited {proc.returncode}")
+            return False
+    except KeyboardInterrupt:
+        log_warn("interrupted")
+        return False
+    except Exception as e:
+        log_error(str(e))
+        return False
+
+
+# --- Convert ---
+def convert(filepath, video_mode=False, audio_fmt='opus', dry_run=False):
+    """convert local file to optimized format"""
+    path = Path(filepath)
+
+    if not path.exists():
+        log_error(f"file not found: {filepath}")
+        return False
+
+    log_action(f"convert {C.DIM}{path.name}{C.RESET}")
+
+    stem = sanitize(path.stem)
+
+    if video_mode:
+        output = path.parent / f"{stem}.mp4"
+        # avoid overwriting input
+        if output == path or output.resolve() == path.resolve():
+            output = path.parent / f"{stem}-h265.mp4"
+        cmd = [
+            'ffmpeg', '-i', str(path),
+            '-c:v', 'libx265', '-crf', '28', '-preset', 'medium',
+            '-c:a', 'aac', '-b:a', '128k',
+            '-y', str(output)
+        ]
+        log_detail("h265 crf28 + aac 128k")
+    else:
+        output = path.parent / f"{stem}.{audio_fmt}"
+        cmd = ['ffmpeg', '-i', str(path)]
+        if audio_fmt == 'opus':
+            cmd += ['-c:a', 'libopus', '-b:a', '128k']
+            log_detail("opus 128k")
+        elif audio_fmt == 'mp3':
+            cmd += ['-c:a', 'libmp3lame', '-b:a', '192k']
+            log_detail("mp3 192k")
+        elif audio_fmt == 'wav':
+            cmd += ['-c:a', 'pcm_s16le']
+            log_detail("wav pcm 16-bit")
+        cmd += ['-y', str(output)]
+
+    log_detail(f"output: {output.name}")
+
+    if dry_run:
+        log_action("dry run")
+        print(f"  {C.DIM}{' '.join(cmd)}{C.RESET}")
+        return True
+
+    log_action("converting")
+
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line and ('time=' in line or 'size=' in line or 'speed=' in line):
+                # show ffmpeg progress lines
+                print(f"  {C.DIM}{line}{C.RESET}", end='\r')
+        print()  # newline after progress
+        proc.wait()
+
+        if proc.returncode == 0:
+            size = output.stat().st_size
+            size_str = f"{size/1024/1024:.1f}MB" if size > 1024*1024 else f"{size/1024:.0f}KB"
+            log_success(f"done {output.name} ({size_str})")
+            return True
+        else:
+            log_error(f"ffmpeg exited {proc.returncode}")
+            return False
+    except KeyboardInterrupt:
+        log_warn("interrupted")
+        return False
+    except Exception as e:
+        log_error(str(e))
+        return False
+
+
+# --- Update ---
+def update(dry_run=False):
+    """update the mutable yt-dlp tool installed by uv"""
+    log_action("updating yt-dlp")
+
+    if shutil.which('uv'):
+        cmd = ['uv', 'tool', 'install', 'yt-dlp', '--force']
+    else:
+        cmd = ['yt-dlp', '-U']
+
+    if dry_run:
+        print(f"  {C.DIM}{' '.join(cmd)}{C.RESET}")
+        return True
+
+    try:
+        result = subprocess.run(cmd)
+        if result.returncode == 0:
+            log_success("yt-dlp updated")
+            return True
+        else:
+            log_error(f"update failed ({result.returncode})")
+            return False
+    except KeyboardInterrupt:
+        log_warn("interrupted")
+        return False
+    except Exception as e:
+        log_error(str(e))
+        return False
+
+
+# --- Main ---
+def main():
+    parser = argparse.ArgumentParser(
+        prog='rip',
+        description='opinionated media downloader and converter',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"""
+{C.DIM}examples:{C.RESET}
+  rip youtube.com/watch?v=xxx      {C.DIM}download as opus audio{C.RESET}
+  rip -m youtube.com/watch?v=xxx   {C.DIM}download as mp3 audio{C.RESET}
+  rip -w youtube.com/watch?v=xxx   {C.DIM}download as wav (lossless){C.RESET}
+  rip -v youtube.com/watch?v=xxx   {C.DIM}download as mp4 video{C.RESET}
+  rip -s youtube.com/watch?v=xxx   {C.DIM}single video (ignore playlist){C.RESET}
+  rip -p youtube.com/watch?v=xxx   {C.DIM}full playlist{C.RESET}
+  rip -n english-name URL          {C.DIM}force output filename{C.RESET}
+  rip open.spotify.com/playlist/x  {C.DIM}spotify playlist/album/track{C.RESET}
+  rip -c video.mp4                 {C.DIM}convert to opus audio{C.RESET}
+  rip -c -m video.mp4              {C.DIM}convert to mp3 audio{C.RESET}
+  rip -cv video.mkv                {C.DIM}convert to h265 mp4{C.RESET}
+  rip -u                           {C.DIM}update yt-dlp via uv tool{C.RESET}
+"""
+    )
+
+    parser.add_argument('target', nargs='?', help='URL or file path')
+    parser.add_argument('-v', '--video', action='store_true', help='video mode (default: audio)')
+    parser.add_argument('-c', '--convert', action='store_true', help='convert local file')
+    parser.add_argument('-p', '--playlist', action='store_true', help='force full playlist')
+    parser.add_argument('-s', '--single', action='store_true', help='force single video')
+    parser.add_argument('-u', '--update', action='store_true', help='update yt-dlp (uv tool)')
+    parser.add_argument('-n', '--name', help='custom output filename for single downloads')
+    parser.add_argument('--dry', action='store_true', help='show commands without executing')
+
+    # audio format options (mutually exclusive)
+    fmt_group = parser.add_mutually_exclusive_group()
+    fmt_group.add_argument('-m', '--mp3', action='store_true', help='output as mp3 (default: opus)')
+    fmt_group.add_argument('-w', '--wav', action='store_true', help='output as wav (lossless)')
+
+    args = parser.parse_args()
+
+    # determine audio format
+    if args.mp3:
+        audio_fmt = 'mp3'
+    elif args.wav:
+        audio_fmt = 'wav'
+    else:
+        audio_fmt = 'opus'
+
+    # error if audio format specified with video mode
+    if args.video and (args.mp3 or args.wav):
+        log_error("cannot use --mp3 or --wav with video mode (-v)")
+        sys.exit(1)
+
+    # update mode
+    if args.update:
+        sys.exit(0 if update(args.dry) else 1)
+
+    # need target for everything else
+    if not args.target:
+        parser.print_help()
+        sys.exit(0)
+
+    # detect Spotify vs yt-dlp routing
+    spotify_mode = is_spotify(args.target)
+    check_deps(spotify_mode)
+
+    # convert mode
+    if args.convert:
+        sys.exit(0 if convert(args.target, args.video, audio_fmt, args.dry) else 1)
+
+    # download mode — spotify gets its own handler
+    if spotify_mode:
+        sys.exit(0 if download_spotify(args.target, args.video, args.single, args.playlist, audio_fmt, args.dry, args.name) else 1)
+    else:
+        sys.exit(0 if download(args.target, args.video, args.single, args.playlist, audio_fmt, args.dry, args.name) else 1)
+
+
+if __name__ == '__main__':
+    main()

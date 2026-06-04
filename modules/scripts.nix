@@ -48,4 +48,10 @@
     executable = true;
     force = true;
   };
+
+  home.file.".local/bin/rip" = {
+    source = ../scripts/rip;
+    executable = true;
+    force = true;
+  };
 }

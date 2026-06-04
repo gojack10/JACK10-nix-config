@@ -12,10 +12,16 @@
     htop
     neovim
     mpv
+    python3
     ripgrep
     fd
     jq
     tree
     git-filter-repo
+
+    # Media tools
+    ffmpeg
+    yt-dlp
+    spotdl
   ];
 }

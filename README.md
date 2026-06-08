@@ -19,3 +19,26 @@ cd ~/.config/JACK10-nix-config
 Every step is check-then-act, so re-running is safe.
 
 After the first switch, `hms` is installed to `~/.local/bin/hms` and can be invoked from anywhere. The flake path is resolved in this order: `$JACK10_NIX_CONFIG_FLAKE`, `~/.config/JACK10-nix-config`, `~/.config/home-manager`, `~/projects/JACK10-nix-config`.
+
+## Local SSH defaults
+
+Committed config never stores private SSH hosts, users, ports, or forwards. Put real SSH details in `~/.ssh/config`, then put local-only aliases/defaults in this gitignored file:
+
+```sh
+~/.config/JACK10-nix-config/local/ssh.env
+```
+
+Example shape:
+
+```sh
+JACK10_SSH_TARGET=my-host-alias
+JACK10_REVERSE_SSH_TUNNEL_REMOTE_FORWARDS='remote_port:localhost:local_port'
+
+# Optional overrides when not already handled by ~/.ssh/config:
+# JACK10_SSH_PORT=22
+# JACK10_PI_PUSH_TARGET=my-host-alias
+# JACK10_PI_AGENT_TARGET=my-host-alias
+# JACK10_BROWSER_HARNESS_TARGET=my-host-alias
+```
+
+`hms`, the generic reverse SSH LaunchAgent, `pi-push`, `pi-update`, `pi-setup`, and browser-harness activation all read this shared local env when present.

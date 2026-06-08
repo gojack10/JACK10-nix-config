@@ -3,7 +3,7 @@
 let
   home = config.home.homeDirectory;
   enabled = hostname == "m5-max";
-  localConfig = "${home}/.config/JACK10-nix-config/local/reverse-ssh-tunnel.env";
+  localConfig = "${home}/.config/JACK10-nix-config/local/ssh.env";
   logFile = "${home}/Library/Logs/reverse-ssh-tunnel.log";
   errLogFile = "${home}/Library/Logs/reverse-ssh-tunnel.err.log";
   launcher = pkgs.writeShellScript "reverse-ssh-tunnel-launch" ''
@@ -18,21 +18,26 @@ let
     if [ ! -f "$local_config" ]; then
       log "reverse SSH tunnel is not configured."
       log "Create $local_config with local-only settings."
-      log "Required: REVERSE_SSH_TUNNEL_TARGET and REVERSE_SSH_TUNNEL_REMOTE_FORWARDS."
-      log "Optional: REVERSE_SSH_TUNNEL_PORT. Prefer putting host/user/port in ~/.ssh/config."
+      log "Required: JACK10_REVERSE_SSH_TUNNEL_TARGET or JACK10_SSH_TARGET."
+      log "Required: JACK10_REVERSE_SSH_TUNNEL_REMOTE_FORWARDS."
+      log "Optional: JACK10_REVERSE_SSH_TUNNEL_PORT or JACK10_SSH_PORT. Prefer ~/.ssh/config."
       exit 78
     fi
 
     # shellcheck disable=SC1090
     . "$local_config"
 
-    if [ -z "''${REVERSE_SSH_TUNNEL_TARGET:-}" ]; then
-      log "reverse SSH tunnel config is missing REVERSE_SSH_TUNNEL_TARGET in $local_config."
+    tunnel_target="''${JACK10_REVERSE_SSH_TUNNEL_TARGET:-''${JACK10_SSH_TARGET:-}}"
+    tunnel_port="''${JACK10_REVERSE_SSH_TUNNEL_PORT:-''${JACK10_SSH_PORT:-}}"
+    tunnel_remote_forwards="''${JACK10_REVERSE_SSH_TUNNEL_REMOTE_FORWARDS:-}"
+
+    if [ -z "$tunnel_target" ]; then
+      log "reverse SSH tunnel config is missing JACK10_REVERSE_SSH_TUNNEL_TARGET or JACK10_SSH_TARGET in $local_config."
       exit 78
     fi
 
-    if [ -z "''${REVERSE_SSH_TUNNEL_REMOTE_FORWARDS:-}" ]; then
-      log "reverse SSH tunnel config is missing REVERSE_SSH_TUNNEL_REMOTE_FORWARDS in $local_config."
+    if [ -z "$tunnel_remote_forwards" ]; then
+      log "reverse SSH tunnel config is missing JACK10_REVERSE_SSH_TUNNEL_REMOTE_FORWARDS in $local_config."
       exit 78
     fi
 
@@ -47,16 +52,16 @@ let
       -o StrictHostKeyChecking=accept-new \
       -o ConnectTimeout=10
 
-    if [ -n "''${REVERSE_SSH_TUNNEL_PORT:-}" ]; then
-      set -- "$@" -p "$REVERSE_SSH_TUNNEL_PORT"
+    if [ -n "$tunnel_port" ]; then
+      set -- "$@" -p "$tunnel_port"
     fi
 
     # Intentionally split on whitespace: each item must be one ssh -R spec.
-    for forward in $REVERSE_SSH_TUNNEL_REMOTE_FORWARDS; do
+    for forward in $tunnel_remote_forwards; do
       set -- "$@" -R "$forward"
     done
 
-    exec "$@" "$REVERSE_SSH_TUNNEL_TARGET"
+    exec "$@" "$tunnel_target"
   '';
 in {
   home.activation.warn-reverse-ssh-tunnel = lib.mkIf enabled (lib.hm.dag.entryAfter [ "writeBoundary" ] ''
@@ -67,30 +72,30 @@ in {
     fi
 
     if [ ! -f ${lib.escapeShellArg localConfig} ] \
-      || ! grep -Eq '^[[:space:]]*REVERSE_SSH_TUNNEL_TARGET=' ${lib.escapeShellArg localConfig} \
-      || ! grep -Eq '^[[:space:]]*REVERSE_SSH_TUNNEL_REMOTE_FORWARDS=' ${lib.escapeShellArg localConfig}; then
+      || { ! grep -Eq '^[[:space:]]*JACK10_REVERSE_SSH_TUNNEL_TARGET=' ${lib.escapeShellArg localConfig} && ! grep -Eq '^[[:space:]]*JACK10_SSH_TARGET=' ${lib.escapeShellArg localConfig}; } \
+      || ! grep -Eq '^[[:space:]]*JACK10_REVERSE_SSH_TUNNEL_REMOTE_FORWARDS=' ${lib.escapeShellArg localConfig}; then
       cat >&2 <<'EOF'
 warning: reverse SSH tunnel launchagent is installed but not configured.
 Create this local, gitignored env file:
 
-  ~/.config/JACK10-nix-config/local/reverse-ssh-tunnel.env
+  ~/.config/JACK10-nix-config/local/ssh.env
 
 Suggested shape:
 
-  REVERSE_SSH_TUNNEL_TARGET=my-ssh-config-host-alias
-  REVERSE_SSH_TUNNEL_REMOTE_FORWARDS='remote_port:localhost:local_port remote_port:localhost:local_port'
+  JACK10_SSH_TARGET=my-ssh-config-host-alias
+  JACK10_REVERSE_SSH_TUNNEL_REMOTE_FORWARDS='remote_port:localhost:local_port remote_port:localhost:local_port'
   # Optional if not already in ~/.ssh/config:
-  # REVERSE_SSH_TUNNEL_PORT=22
+  # JACK10_SSH_PORT=22
 
 Prefer storing host/user/port in ~/.ssh/config under the alias above.
 EOF
       cat > ${lib.escapeShellArg errLogFile} <<'EOF'
 reverse SSH tunnel launchagent is installed but not configured.
-Create ~/.config/JACK10-nix-config/local/reverse-ssh-tunnel.env with:
+Create ~/.config/JACK10-nix-config/local/ssh.env with:
 
-  REVERSE_SSH_TUNNEL_TARGET=my-ssh-config-host-alias
-  REVERSE_SSH_TUNNEL_REMOTE_FORWARDS='remote_port:localhost:local_port remote_port:localhost:local_port'
-  # Optional: REVERSE_SSH_TUNNEL_PORT=22
+  JACK10_SSH_TARGET=my-ssh-config-host-alias
+  JACK10_REVERSE_SSH_TUNNEL_REMOTE_FORWARDS='remote_port:localhost:local_port remote_port:localhost:local_port'
+  # Optional: JACK10_SSH_PORT=22
 
 No hostnames, usernames, or private ports should be committed to git.
 EOF

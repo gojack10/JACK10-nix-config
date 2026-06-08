@@ -60,6 +60,7 @@
       # Modules shared across all platforms
       sharedModules = [
         ./home.nix
+        ./modules/ssh/default.nix
         ./modules/packages/bootstrap-tools.nix
         ./modules/packages/browser-harness.nix
         ./modules/packages/common.nix

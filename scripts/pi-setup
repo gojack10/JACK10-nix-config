@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -61,7 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Pull your personal pi setup from another machine over SSH.",
     )
-    parser.add_argument("--source", help="Source in user@host form.")
+    parser.add_argument("--source", help="Source SSH target alias or user@host.")
     parser.add_argument("--user", help="SSH username for the source machine.")
     parser.add_argument("--host", help="SSH hostname for the source machine.")
     parser.add_argument("--port", type=int, help="SSH port for the source machine.")
@@ -96,27 +98,93 @@ def confirm(label: str, default: bool = False) -> bool:
     return value in {"y", "yes"}
 
 
-def parse_source(args: argparse.Namespace) -> tuple[str, str, int]:
-    source_user = args.user
-    source_host = args.host
-    source_port = args.port
+def load_jack10_ssh_env() -> dict[str, str]:
+    env_path = Path(
+        os.environ.get(
+            "JACK10_SSH_ENV",
+            str(Path.home() / ".config/JACK10-nix-config/local/ssh.env"),
+        )
+    )
+    if not env_path.is_file():
+        return {}
+
+    keys = [
+        "JACK10_SSH_TARGET",
+        "JACK10_SSH_PORT",
+        "JACK10_PI_SETUP_SOURCE",
+        "JACK10_PI_SETUP_PORT",
+        "PI_SETUP_SOURCE",
+        "PI_SETUP_PORT",
+    ]
+    code = (
+        "import json, os; "
+        f"keys={keys!r}; "
+        "print(json.dumps({k: os.environ.get(k, '') for k in keys}))"
+    )
+    command = f"set -a; . {shlex.quote(str(env_path))}; {shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+    result = subprocess.run(
+        ["sh", "-c", command],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
+
+
+def ssh_env_value(env: dict[str, str], *names: str) -> str | None:
+    for name in names:
+        value = os.environ.get(name) or env.get(name)
+        if value:
+            return value
+    return None
+
+
+def parse_optional_port(value: str | None) -> int | None:
+    if not value:
+        return None
+    return int(value)
+
+
+def parse_source(args: argparse.Namespace) -> tuple[str, int | None]:
+    ssh_env = load_jack10_ssh_env()
+    env_source = ssh_env_value(
+        ssh_env,
+        "PI_SETUP_SOURCE",
+        "JACK10_PI_SETUP_SOURCE",
+        "JACK10_SSH_TARGET",
+    )
+    env_port = ssh_env_value(
+        ssh_env,
+        "PI_SETUP_PORT",
+        "JACK10_PI_SETUP_PORT",
+        "JACK10_SSH_PORT",
+    )
+
+    source_port = args.port if args.port is not None else parse_optional_port(env_port)
 
     if args.source:
-        if "@" in args.source:
-            parsed_user, parsed_host = args.source.split("@", 1)
-            source_user = source_user or parsed_user
-            source_host = source_host or parsed_host
-        else:
-            source_host = source_host or args.source
+        source = args.source
+        if args.user and "@" not in source:
+            source = f"{args.user}@{source}"
+        return source, source_port
+
+    if args.host:
+        source_user = args.user or Path.home().name
+        source = f"{source_user}@{args.host}"
+        if source_port is None:
+            source_port = int(prompt("Source port", "22"))
+        return source, source_port
+
+    if env_source:
+        return env_source, source_port
 
     local_user = Path.home().name
-    source_user = source_user or prompt("Source user", local_user)
-    source_host = source_host or prompt("Source host")
-
+    source_user = args.user or prompt("Source user", local_user)
+    source_host = prompt("Source host")
     if source_port is None:
         source_port = int(prompt("Source port", "22"))
 
-    return source_user, source_host, source_port
+    return f"{source_user}@{source_host}", source_port
 
 
 def require_local_commands() -> None:
@@ -155,8 +223,12 @@ def run(
         raise PiSetupError("\n".join(details)) from None
 
 
-def ssh_base(source: str, port: int) -> list[str]:
-    return ["ssh", "-p", str(port), "-o", "ConnectTimeout=10", source]
+def ssh_base(source: str, port: int | None) -> list[str]:
+    command = ["ssh", "-o", "ConnectTimeout=10"]
+    if port is not None:
+        command.extend(["-p", str(port)])
+    command.append(source)
+    return command
 
 
 def remote_command(base: list[str], script: str, *, capture_output: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -198,11 +270,29 @@ def backup_existing_path(local_path: Path, backup_root: Path) -> None:
     run(["rsync", "-a", str(local_path), str(destination_parent) + "/"])
 
 
-def rsync_ssh_transport(port: int) -> str:
+def rsync_ssh_transport(port: int | None) -> str:
+    if port is None:
+        return "ssh -o ConnectTimeout=10"
     return f"ssh -p {port} -o ConnectTimeout=10"
 
 
-def sync_item(source: str, port: int, remote_path: str, local_path: Path, item: SyncItem) -> None:
+def git_ssh_url(source: str, port: int | None, path: str) -> str:
+    if path.startswith("/"):
+        if port is None:
+            return f"ssh://{source}{path}"
+        return f"ssh://{source}:{port}{path}"
+    if port is None:
+        return f"{source}:{path}"
+    return f"ssh://{source}:{port}/{path}"
+
+
+def ssh_hint(source: str, port: int | None) -> str:
+    if port is None:
+        return f"ssh {source}"
+    return f"ssh -p {port} {source}"
+
+
+def sync_item(source: str, port: int | None, remote_path: str, local_path: Path, item: SyncItem) -> None:
     local_path.parent.mkdir(parents=True, exist_ok=True)
 
     command = [*RSYNC_BASE, "-e", rsync_ssh_transport(port)]
@@ -270,9 +360,9 @@ def report_local_pi_patches(home: Path) -> None:
     print("Bare pi setup will install/build the rsynced checkout. Run pi after setup and let the agent handle patches.")
 
 
-def sync_pi_agent(source: str, port: int, remote_home: str, home: Path) -> None:
+def sync_pi_agent(source: str, port: int | None, remote_home: str, home: Path) -> None:
     local_path = home / PI_AGENT_REL
-    git_url = f"ssh://{source}:{port}{remote_home}/git/{PI_AGENT_GIT_REPO}"
+    git_url = git_ssh_url(source, port, f"{remote_home}/git/{PI_AGENT_GIT_REPO}")
 
     if (local_path / ".git").is_dir():
         print(f"Pulling {PI_AGENT_REL} from git...")
@@ -286,7 +376,7 @@ def sync_pi_agent(source: str, port: int, remote_home: str, home: Path) -> None:
     else:
         raise PiSetupError(
             f"Git repo {git_url} not found on server. "
-            f"Initialize it first: ssh {source} 'git init --bare ~/git/{PI_AGENT_GIT_REPO}'"
+            f"Initialize it first: {ssh_hint(source, port)} 'git init --bare ~/git/{PI_AGENT_GIT_REPO}'"
         )
 
 
@@ -369,11 +459,11 @@ def main() -> int:
     args = parse_args()
     require_local_commands()
 
-    source_user, source_host, source_port = parse_source(args)
-    source = f"{source_user}@{source_host}"
+    source, source_port = parse_source(args)
     ssh = ssh_base(source, source_port)
 
-    print(f"Source: {source} (port {source_port})")
+    port_label = str(source_port) if source_port is not None else "ssh-config/default"
+    print(f"Source: {source} (port {port_label})")
     remote_home = remote_output(ssh, 'printf %s "$HOME"')
     remote_system = remote_output(ssh, "uname -s")
     remote_machine = remote_output(ssh, "uname -m")

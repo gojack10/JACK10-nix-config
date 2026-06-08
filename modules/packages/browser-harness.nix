@@ -3,19 +3,68 @@
 {
   home.activation.cloneBrowserHarness =
     lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+      jack10_ssh_env="''${JACK10_SSH_ENV:-$HOME/.config/JACK10-nix-config/local/ssh.env}"
+      if [ -f "$jack10_ssh_env" ]; then
+        set -a
+        # shellcheck disable=SC1090
+        . "$jack10_ssh_env"
+        set +a
+      fi
+
       browser_harness_git_url=""
       browser_harness_ssh_command="${pkgs.openssh}/bin/ssh"
+
+      browser_harness_git_ssh_url() {
+        target="$1"
+        port="''${2:-}"
+        path="$3"
+        if [ -n "$port" ]; then
+          browser_harness_ssh_command="${pkgs.openssh}/bin/ssh -p $port"
+        else
+          browser_harness_ssh_command="${pkgs.openssh}/bin/ssh"
+        fi
+
+        case "$path" in
+          /*)
+            if [ -n "$port" ]; then
+              browser_harness_git_url="ssh://$target:$port$path"
+            else
+              browser_harness_git_url="ssh://$target$path"
+            fi
+            ;;
+          *)
+            if [ -n "$port" ]; then
+              browser_harness_git_url="ssh://$target:$port/$path"
+            else
+              browser_harness_git_url="$target:$path"
+            fi
+            ;;
+        esac
+      }
 
       browser_harness_resolve_git_url() {
         if [ -n "''${BROWSER_HARNESS_GIT_URL:-}" ]; then
           browser_harness_git_url="$BROWSER_HARNESS_GIT_URL"
           return 0
         fi
+        if [ -n "''${JACK10_BROWSER_HARNESS_GIT_URL:-}" ]; then
+          browser_harness_git_url="$JACK10_BROWSER_HARNESS_GIT_URL"
+          return 0
+        fi
+
+        local target target_port target_path
+        target="''${BROWSER_HARNESS_SSH_TARGET:-''${JACK10_BROWSER_HARNESS_TARGET:-''${JACK10_SSH_TARGET:-}}}"
+        target_port="''${BROWSER_HARNESS_SSH_PORT:-''${JACK10_BROWSER_HARNESS_PORT:-''${JACK10_SSH_PORT:-}}}"
+        target_path="''${BROWSER_HARNESS_REPO_PATH:-''${JACK10_BROWSER_HARNESS_REPO_PATH:-git/browser-harness.git}}"
+        if [ -n "$target" ]; then
+          browser_harness_git_ssh_url "$target" "$target_port" "$target_path"
+          return 0
+        fi
 
         local default_user default_port default_path user host port path interactive
         default_user="''${BROWSER_HARNESS_SSH_USER:-$(whoami)}"
-        default_port="''${BROWSER_HARNESS_SSH_PORT:-22}"
-        default_path="''${BROWSER_HARNESS_REPO_PATH:-git/browser-harness.git}"
+        default_port="''${BROWSER_HARNESS_SSH_PORT:-''${JACK10_BROWSER_HARNESS_PORT:-''${JACK10_SSH_PORT:-22}}}"
+        default_path="''${BROWSER_HARNESS_REPO_PATH:-''${JACK10_BROWSER_HARNESS_REPO_PATH:-git/browser-harness.git}}"
         user="''${BROWSER_HARNESS_SSH_USER:-}"
         host="''${BROWSER_HARNESS_SSH_HOST:-}"
         port="''${BROWSER_HARNESS_SSH_PORT:-}"
@@ -62,11 +111,7 @@
           fi
         fi
 
-        browser_harness_ssh_command="${pkgs.openssh}/bin/ssh -p $port"
-        case "$path" in
-          /*) browser_harness_git_url="ssh://$user@$host:$port$path" ;;
-          *)  browser_harness_git_url="$user@$host:$path" ;;
-        esac
+        browser_harness_git_ssh_url "$user@$host" "$port" "$path"
       }
 
       target="$HOME/projects/browser-harness"

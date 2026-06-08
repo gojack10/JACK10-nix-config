@@ -1,6 +1,11 @@
 { config, pkgs, ... }:
 
 {
+  home.file.".local/share/JACK10-nix-config/ssh-env.sh" = {
+    source = ../scripts/lib/ssh-env.sh;
+    force = true;
+  };
+
   home.file.".local/bin/tmux-status" = {
     source = ../scripts/tmux-status;
     executable = true;

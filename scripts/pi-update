@@ -14,6 +14,23 @@ elif [[ -x "$HOME/.local/bin/mise" ]]; then
   NPM_BIN="$HOME/.local/bin/mise exec node@24 -- npm"
 fi
 
+load_jack10_ssh_env() {
+  local helper
+  for helper in \
+    "${JACK10_SSH_ENV_HELPER:-}" \
+    "$HOME/.local/share/JACK10-nix-config/ssh-env.sh" \
+    "$HOME/.config/JACK10-nix-config/scripts/lib/ssh-env.sh"; do
+    if [[ -n "$helper" && -r "$helper" ]]; then
+      # shellcheck disable=SC1090
+      . "$helper"
+      jack10_load_ssh_env
+      return 0
+    fi
+  done
+}
+
+load_jack10_ssh_env
+
 if [[ ! -d "$REPO/.git" ]]; then
   echo "pi-mono not found at $REPO" >&2
   exit 1
@@ -107,11 +124,24 @@ prompt_pi_agent_git_url() {
     printf '%s\n' "$PI_AGENT_GIT_URL"
     return 0
   fi
+  if [[ -n "${JACK10_PI_AGENT_GIT_URL:-}" ]]; then
+    printf '%s\n' "$JACK10_PI_AGENT_GIT_URL"
+    return 0
+  fi
+
+  local target target_port target_path
+  target="${PI_AGENT_SSH_TARGET:-${JACK10_PI_AGENT_TARGET:-${JACK10_SSH_TARGET:-}}}"
+  target_port="${PI_AGENT_SSH_PORT:-${JACK10_PI_AGENT_PORT:-${JACK10_SSH_PORT:-}}}"
+  target_path="${PI_AGENT_REPO_PATH:-${JACK10_PI_AGENT_REPO_PATH:-git/pi-agent.git}}"
+  if [[ -n "$target" ]]; then
+    jack10_git_ssh_url "$target" "$target_port" "$target_path"
+    return 0
+  fi
 
   local default_user default_port default_path user host port path
   default_user="$(whoami)"
-  default_port="22"
-  default_path="git/pi-agent.git"
+  default_port="${JACK10_PI_AGENT_PORT:-${JACK10_SSH_PORT:-22}}"
+  default_path="${JACK10_PI_AGENT_REPO_PATH:-git/pi-agent.git}"
 
   read -rp "pi-agent SSH user [$default_user]: " user
   user="${user:-$default_user}"

@@ -1,16 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TARGET="${PI_PUSH_TARGET:-}"
-PORT="${PI_PUSH_PORT:-22}"
+load_jack10_ssh_env() {
+  local helper
+  for helper in \
+    "${JACK10_SSH_ENV_HELPER:-}" \
+    "$HOME/.local/share/JACK10-nix-config/ssh-env.sh" \
+    "$HOME/.config/JACK10-nix-config/scripts/lib/ssh-env.sh"; do
+    if [[ -n "$helper" && -r "$helper" ]]; then
+      # shellcheck disable=SC1090
+      . "$helper"
+      jack10_load_ssh_env
+      return 0
+    fi
+  done
+}
+
+load_jack10_ssh_env
+
+TARGET="${PI_PUSH_TARGET:-${JACK10_PI_PUSH_TARGET:-${JACK10_SSH_TARGET:-}}}"
+PORT="${PI_PUSH_PORT:-${JACK10_PI_PUSH_PORT:-${JACK10_SSH_PORT:-}}}"
 YES=false
 DRY_RUN=false
 
 usage() {
   cat <<'EOF'
-Usage: pi-push [--target user@host] [--port 22] [--yes] [--dry-run]
+Usage: pi-push [--target ssh-alias|user@host] [--port port] [--yes] [--dry-run]
 
 Push this machine's pi setup to an SSH source machine used by pi-setup.
+Defaults may come from ~/.config/JACK10-nix-config/local/ssh.env.
 
 What it does:
   - ensures ~/git/pi-agent.git exists on the target
@@ -26,9 +44,6 @@ EOF
 
 prompt_missing_target() {
   if [[ -n "$TARGET" ]]; then
-    if [[ "$TARGET" != *@* ]]; then
-      TARGET="$(whoami)@$TARGET"
-    fi
     return 0
   fi
 
@@ -55,8 +70,10 @@ prompt_missing_target() {
     return 1
   fi
 
-  read -rp "pi-push SSH port [$PORT]: " port
-  PORT="${port:-$PORT}"
+  local default_port
+  default_port="${PORT:-22}"
+  read -rp "pi-push SSH port [$default_port]: " port
+  PORT="${port:-$default_port}"
   TARGET="$user@$host"
 }
 
@@ -102,15 +119,24 @@ if [[ ! -d "$HOME/.local/share/pi-mono/.git" ]]; then
   exit 1
 fi
 
-SSH=(ssh -p "$PORT" -o ConnectTimeout=10 "$TARGET")
-RSYNC=(rsync -ah --info=progress2 --no-i-r --stats -e "ssh -p $PORT -o ConnectTimeout=10")
+SSH=(ssh -o ConnectTimeout=10)
+if [[ -n "$PORT" ]]; then
+  SSH+=(-p "$PORT")
+fi
+SSH+=("$TARGET")
+
+rsync_ssh="ssh -o ConnectTimeout=10"
+if [[ -n "$PORT" ]]; then
+  rsync_ssh="ssh -p $PORT -o ConnectTimeout=10"
+fi
+RSYNC=(rsync -ah --info=progress2 --no-i-r --stats -e "$rsync_ssh")
 if $DRY_RUN; then
   RSYNC+=(--dry-run)
 fi
 
 run_remote() {
   if $DRY_RUN; then
-    echo "+ ssh -p $PORT $TARGET $*"
+    echo "+ $(jack10_ssh_display "$TARGET" "$PORT") $*"
   else
     "${SSH[@]}" "$@"
   fi
@@ -119,7 +145,7 @@ run_remote() {
 write_remote_pi_launcher() {
   local launcher="$remote_home/.local/bin/pi"
   if $DRY_RUN; then
-    echo "+ ssh -p $PORT $TARGET cat > $launcher"
+    echo "+ $(jack10_ssh_display "$TARGET" "$PORT") cat > $launcher"
     return 0
   fi
 
@@ -164,7 +190,7 @@ fi
 
 remote_home="$("${SSH[@]}" 'printf %s "$HOME"')"
 remote_bare="$remote_home/git/pi-agent.git"
-remote_bare_url="ssh://$TARGET:$PORT$remote_bare"
+remote_bare_url="$(jack10_git_ssh_url "$TARGET" "$PORT" "$remote_bare")"
 
 if [[ -n "$(git -C "$HOME/.pi/agent" status --short)" ]]; then
   echo "~/.pi/agent has uncommitted tracked changes; commit or revert before pi-push." >&2

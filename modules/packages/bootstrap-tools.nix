@@ -6,7 +6,6 @@ in {
   home.packages = with pkgs; [
     git
     gh
-    openssh
     rsync
     uv
     mise

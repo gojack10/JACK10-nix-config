@@ -1,2 +1,5 @@
 result
 __pycache__/
+
+# Machine-local secrets/config (never commit hostnames, ports, tokens, etc.)
+local/

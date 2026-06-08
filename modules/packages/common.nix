@@ -6,6 +6,7 @@
     zsh
     fzf
     lf
+    autossh
 
     # Dev tools
     fastfetch

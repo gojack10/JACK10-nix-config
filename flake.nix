@@ -95,6 +95,7 @@
         ./modules/darwin/defaults.nix
         ./modules/darwin/fan.nix
         ./modules/darwin/omlx.nix
+        ./modules/darwin/reverse-ssh-tunnel.nix
       ];
 
       mkHome = hostname: settings:

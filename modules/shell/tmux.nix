@@ -81,6 +81,8 @@
       bind \\ split-window -h -c "#{pane_current_path}"
       bind - split-window -v -c "#{pane_current_path}"
       bind c new-window -c "#{pane_current_path}"
+      # Rejoin a pane broken out with prefix+! into the previous window.
+      bind @ join-pane -h -t ':!'
 
       # Quick actions
       # NOTE: ~/.config/tmux/tmux.conf is a symlink to the Nix store —

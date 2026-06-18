@@ -24,7 +24,6 @@ cpu=$(top -l 1 2>/dev/null | grep 'CPU usage' | head -1 | sed 's/.*: *\([0-9.]*\
 vmstat=$(vm_stat 2>/dev/null)
 pages_active=$(echo "$vmstat" | grep 'Pages active' | awk '{print $3}' | tr -d '.')
 pages_wired=$(echo "$vmstat" | grep 'Pages wired down' | awk '{print $4}' | tr -d '.')
-# Used = active + wired (pages that are in use)
 used_pages=$((pages_active + pages_wired))
 used_mb=$((used_pages * 16384 / 1024 / 1024))
 used_gb_int=$((used_mb / 1024))
@@ -46,10 +45,112 @@ if [ -n "$charge" ]; then
   fi
 fi
 
+# ── Power Flow (Net +/-, color-coded) ──────────────────────────────────
+# Uses SMC power telemetry for accurate net power:
+#   Net = (VD0R × ID0R) − PSTR
+#   adapter output  −  total system power  =  battery flow
+pow=""
+smc=~/.local/bin/smc
+ext=$(ioreg -rn AppleSmartBattery | awk -F'= ' '/"ExternalConnected" = /{print $2; exit}')
+
+if [ "$ext" = "Yes" ]; then
+  # Plugged in: use SMC bus power and system total
+  vd0r=$($smc read VD0R 2>/dev/null | awk 'NR==1{print $3}')
+  id0r=$($smc read ID0R 2>/dev/null | awk 'NR==1{print $3}')
+  pstr=$($smc read PSTR 2>/dev/null | awk 'NR==1{print $3}')
+
+  if [ -n "$vd0r" ] && [ -n "$id0r" ] && [ -n "$pstr" ]; then
+    pow=$(python3 -c "
+vd0r = float('$vd0r')
+id0r = float('$id0r')
+pstr = float('$pstr')
+charge = '${charge:-}'
+
+adapter_w = vd0r * id0r
+net_w = adapter_w - pstr  # positive = charging, negative = discharging
+
+net_sign = '+' if net_w > 0 else '-'
+net_fmt = f'{abs(net_w):.1f}'
+
+# Determine color state
+is_low = False
+if charge and charge.isdigit():
+    if int(charge) < 15:
+        is_low = True
+
+if is_low and net_w < 0:
+    # CRITICAL + discharging: battery dying
+    print(f'#[bg=red,fg=black] {net_sign}{net_fmt}W #[bg=black,fg=white]')
+elif is_low and net_w >= 0:
+    # CRITICAL + charging: recovering but still low
+    print(f'#[bg=red,fg=black] {net_sign}{net_fmt}W #[bg=black,fg=white]')
+elif net_w > 0.5:
+    # GAINING: adapter exceeds system demand
+    print(f'#[bg=green,fg=black] {net_sign}{net_fmt}W #[bg=black,fg=white]')
+elif net_w > -0.5:
+    # STEADY: near equilibrium
+    print(f'{net_sign}{net_fmt}W')
+else:
+    # OUTDRAWING: plugged in but discharging
+    print(f'#[bg=yellow,fg=black] {net_sign}{net_fmt}W #[bg=black,fg=white]')
+" 2>/dev/null)
+  fi
+elif [ "$ext" = "No" ]; then
+  # On battery: PSTR is the total draw from battery
+  pstr=$($smc read PSTR 2>/dev/null | awk 'NR==1{print $3}')
+  if [ -n "$pstr" ]; then
+    pow=$(python3 -c "
+pstr = float('$pstr')
+charge = '${charge:-}'
+net_fmt = f'{pstr:.1f}'
+is_low = False
+if charge and charge.isdigit():
+    if int(charge) < 15:
+        is_low = True
+if is_low:
+    print(f'#[bg=red,fg=black] -{net_fmt}W #[bg=black,fg=white]')
+else:
+    print(f'-{net_fmt}W')
+" 2>/dev/null)
+  fi
+fi
+
+# Fallback if SMC data unavailable
+if [ -z "$pow" ]; then
+  ibat=$(ioreg -rn AppleSmartBattery | awk -F'= ' '/"InstantAmperage" = /{print $2; exit}')
+  volt=$(ioreg -rn AppleSmartBattery | awk -F'= ' '/"Voltage" = /{print $2; exit}')
+  if [ -n "$ibat" ] && [ -n "$volt" ]; then
+    pow=$(python3 -c "
+ibat = int('$ibat')
+volt = int('$volt')
+ext = '$ext'
+charge = '${charge:-}'
+if ibat >= 2**63: ibat -= 2**64
+bat_w = abs(ibat) * volt / 1e6
+net_sign = '+' if ibat < 0 else '-'
+net_fmt = f'{bat_w:.1f}'
+is_low = False
+if charge and charge.isdigit():
+    if int(charge) < 15:
+        is_low = True
+if is_low:
+    print(f'#[bg=red,fg=black] {net_sign}{net_fmt}W #[bg=black,fg=white]')
+elif ext == 'Yes' and ibat < 0:
+    print(f'#[bg=green,fg=black] {net_sign}{net_fmt}W #[bg=black,fg=white]')
+elif ext == 'Yes' and ibat >= 0:
+    print(f'#[bg=yellow,fg=black] {net_sign}{net_fmt}W #[bg=black,fg=white]')
+else:
+    print(f'{net_sign}{net_fmt}W')
+" 2>/dev/null)
+  fi
+fi
+
 # Date
 dt="$(date "+%A" | cut -c1-3 | tr '[:lower:]' '[:upper:]') $(date "+%Y-%m-%d %H:%M:%S")"
 
-if [ -n "$bat" ]; then
+if [ -n "$bat" ] && [ -n "$pow" ]; then
+  printf "%s | CPU %s%% | MEM %s.%sG | %s %s | %s" "$net" "$cpu" "$used_gb_int" "$used_gb_dec" "$bat" "$pow" "$dt"
+elif [ -n "$bat" ]; then
   printf "%s | CPU %s%% | MEM %s.%sG | %s | %s" "$net" "$cpu" "$used_gb_int" "$used_gb_dec" "$bat" "$dt"
 else
   printf "%s | CPU %s%% | MEM %s.%sG | %s" "$net" "$cpu" "$used_gb_int" "$used_gb_dec" "$dt"

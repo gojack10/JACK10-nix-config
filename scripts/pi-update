@@ -4,6 +4,7 @@ set -euo pipefail
 REPO="$HOME/.local/share/pi-mono"
 BASELINE="$REPO/.audit-baseline.txt"
 PATCHES_DIR="$HOME/.pi/agent/patches"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 NODE_BIN="${PI_NODE:-node}"
 NPM_BIN="npm"
 if command -v mise >/dev/null 2>&1; then
@@ -74,6 +75,17 @@ install_and_build() {
 
   echo "Building workspace packages..."
   $NPM_BIN run build --silent
+}
+
+update_pi_packages() {
+  local pi_bin="$HOME/.local/bin/pi"
+  if [[ ! -x "$pi_bin" ]]; then
+    echo "pi launcher not found at $pi_bin" >&2
+    return 1
+  fi
+
+  echo "Updating pi packages..."
+  "$pi_bin" update --extensions --no-approve
 }
 
 ghsa_ids_from_audit() {
@@ -195,6 +207,11 @@ sync_pi_agent() {
 # ── Report patches (no auto-apply) ──────────────────────────────────
 
 report_patches() {
+  if [[ -x "$SCRIPT_DIR/pi-patches" ]]; then
+    "$SCRIPT_DIR/pi-patches" "$REPO" "$PATCHES_DIR"
+    return 0
+  fi
+
   if [[ ! -d "$PATCHES_DIR" ]]; then
     echo "No patches directory at $PATCHES_DIR"
     echo "Patches: none"
@@ -239,8 +256,8 @@ for arg in "$@"; do
 Usage: pi-update [--yes] [--repair]
 
 Updates the local pi checkout to the latest release tag, syncs ~/.pi/agent,
-reports local patch status, rewrites the machine-local launcher, and checks npm
-audit against the reviewed baseline.
+updates pi packages, reports local patch status, rewrites the machine-local
+launcher, and checks npm audit against the reviewed baseline.
 
   --yes     Do not prompt for upgrade/audit baseline confirmation
   --repair  Reinstall dependencies and rebuild even if already on latest tag
@@ -309,6 +326,9 @@ if $REPAIR || needs_rebuild; then
 else
   echo "Dependencies/build look present. Use --repair to force npm ci + build."
 fi
+
+echo
+update_pi_packages
 
 echo
 echo "Checking npm audit against reviewed baseline..."

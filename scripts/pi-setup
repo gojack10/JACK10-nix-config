@@ -44,6 +44,7 @@ SYNC_ITEMS = (
     ),
     SyncItem(".local/bin/pi", "file", required=True),
     SyncItem(".local/bin/pi-update", "file", required=True),
+    SyncItem(".local/bin/pi-patches", "file"),
     SyncItem(".local/bin/pi-subagent", "file"),
     SyncItem(".local/bin/pi-subagent-sifttext", "file"),
     SyncItem(".claude", "dir", delete=True),
@@ -561,6 +562,7 @@ def main() -> int:
 
     write_pi_launcher(Path.home())
     ensure_executable(Path.home() / ".local/bin/pi-update")
+    ensure_executable(Path.home() / ".local/bin/pi-patches")
     ensure_executable(Path.home() / ".local/bin/pi-subagent")
     ensure_executable(Path.home() / ".local/bin/pi-subagent-sifttext")
 

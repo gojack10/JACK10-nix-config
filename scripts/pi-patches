@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO="${1:-$HOME/.local/share/pi-mono}"
+PATCHES_DIR="${2:-$HOME/.pi/agent/patches}"
+
+if [[ ! -d "$REPO/.git" ]]; then
+  echo "pi-mono not found at $REPO" >&2
+  exit 1
+fi
+
+cd "$REPO"
+
+if [[ ! -d "$PATCHES_DIR" ]]; then
+  echo "No patches directory at $PATCHES_DIR"
+  echo "Patches: none"
+  exit 0
+fi
+
+shopt -s nullglob
+patches=("$PATCHES_DIR"/*.patch)
+if (( ${#patches[@]} == 0 )); then
+  echo "No patch files found in $PATCHES_DIR"
+  echo "Patches: none"
+  exit 0
+fi
+
+echo "Patches available at $PATCHES_DIR:"
+for patch in "${patches[@]}"; do
+  name="$(basename "$patch")"
+  if git apply --check "$patch" 2>/dev/null; then
+    echo "  ✅ $name  (applies cleanly)"
+  else
+    echo "  ❌ $name  (DOES NOT APPLY — upstream likely changed)"
+  fi
+done
+cat <<'EOF'
+
+Action required: review each patch above.
+  - ✅ = remove if upstream has adopted the fix (check changelog)
+  - ❌ = regenerate patch (git diff) or drop if superseded
+EOF

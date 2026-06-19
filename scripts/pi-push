@@ -34,7 +34,7 @@ What it does:
   - ensures ~/git/pi-agent.git exists on the target
   - pushes local ~/.pi/agent main to that bare repo
   - rsyncs ~/.local/share/pi-mono without node_modules
-  - rsyncs pi helper launch/update scripts
+  - rsyncs pi helper launch/update/patch/push scripts
   - rsyncs auth/session material needed for Codex/Claude login carry-over
 
 This intentionally does not run npm/build remotely. pi-setup on the receiving
@@ -219,6 +219,7 @@ run_remote "if [ -d '$remote_home/.pi/agent/.git' ]; then git -C '$remote_home/.
 sync_path "$HOME/.local/share/pi-mono/" "$remote_home/.local/share/pi-mono/" --delete --exclude node_modules
 sync_path "$HOME/.config/JACK10-nix-config/scripts/pi-setup" "$remote_home/.local/bin/pi-setup"
 sync_path "$HOME/.config/JACK10-nix-config/scripts/pi-update" "$remote_home/.local/bin/pi-update"
+sync_path "$HOME/.config/JACK10-nix-config/scripts/pi-patches" "$remote_home/.local/bin/pi-patches"
 sync_path "$HOME/.config/JACK10-nix-config/scripts/pi-push" "$remote_home/.local/bin/pi-push"
 sync_path "$HOME/.local/bin/pi-subagent" "$remote_home/.local/bin/pi-subagent"
 sync_path "$HOME/.local/bin/pi-subagent-sifttext" "$remote_home/.local/bin/pi-subagent-sifttext"
@@ -229,6 +230,6 @@ sync_path "$HOME/.claude.json.backup" "$remote_home/.claude.json.backup"
 sync_path "$HOME/.pi/agent/auth.json" "$remote_home/.pi/agent/auth.json"
 sync_path "$HOME/.config/pi-secrets/env" "$remote_home/.config/pi-secrets/env"
 
-run_remote "chmod +x '$remote_home/.local/bin/pi-setup' '$remote_home/.local/bin/pi-update' 2>/dev/null || true; chmod 600 '$remote_home/.pi/agent/auth.json' '$remote_home/.config/pi-secrets/env' 2>/dev/null || true"
+run_remote "chmod +x '$remote_home/.local/bin/pi-setup' '$remote_home/.local/bin/pi-update' '$remote_home/.local/bin/pi-patches' 2>/dev/null || true; chmod 600 '$remote_home/.pi/agent/auth.json' '$remote_home/.config/pi-secrets/env' 2>/dev/null || true"
 
 echo "pi-push complete. Target can now be used as a pi-setup source."

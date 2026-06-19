@@ -36,6 +36,12 @@
     force = true;
   };
 
+  home.file.".local/bin/pi-patches" = {
+    source = ../scripts/pi-patches;
+    executable = true;
+    force = true;
+  };
+
   home.file.".local/bin/pi-push" = {
     source = ../scripts/pi-push;
     executable = true;

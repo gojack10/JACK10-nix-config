@@ -5,11 +5,13 @@
     enable = true;
     autosuggestion.enable = true;
     syntaxHighlighting.enable = true;
-    historySubstringSearch = {
-      enable = true;
-      searchUpKey = [ "^[[A" "^[OA" ];
-      searchDownKey = [ "^[[B" "^[OB" ];
-    };
+    # Keep readline/emacs line editing even when EDITOR/VISUAL=nvim is inherited
+    # by tmux/new shells. Otherwise zsh defaults to viins, making Ctrl-A/E
+    # self-insert instead of beginning/end-of-line.
+    defaultKeymap = "emacs";
+    # Plain Up/Down should always walk history. The substring-search plugin makes
+    # arrows look "blocked" when the current buffer has no match.
+    historySubstringSearch.enable = false;
     completionInit = "autoload -U compinit && compinit -C";
 
     plugins = [
@@ -166,10 +168,32 @@
       # it's usable during bootstrap, before a first home-manager generation.
 
       # Word navigation in insert mode
+      bindkey -e                         # source-safe: restore emacs/readline editing on reload
       bindkey '^[[1;5D' backward-word   # Ctrl+Left
       bindkey '^[[1;5C' forward-word    # Ctrl+Right
       bindkey '^[[1;3D' backward-word   # Alt+Left
       bindkey '^[[1;3C' forward-word    # Alt+Right
+      bindkey '^[b' backward-word       # Option/Alt+Left in macOS terminals
+      bindkey '^[f' forward-word        # Option/Alt+Right in macOS terminals
+      bindkey '^?' backward-delete-char # Delete/Backspace
+      bindkey '^H' backward-delete-char # Ctrl-H/alternate Backspace
+
+      # Up/Down: normal history on an empty prompt, prefix history after typing
+      # (`ssh ` + Up cycles previous ssh commands). Ships with zsh; no plugin needed.
+      autoload -Uz up-line-or-beginning-search down-line-or-beginning-search
+      zle -N up-line-or-beginning-search
+      zle -N down-line-or-beginning-search
+      bindkey '^[[A' up-line-or-beginning-search
+      bindkey '^[OA' up-line-or-beginning-search
+      bindkey '^[[B' down-line-or-beginning-search
+      bindkey '^[OB' down-line-or-beginning-search
+
+      # Home Manager's fzf shell integration loads after fzf-tab and steals Tab
+      # for fzf-completion. Put fzf-tab back as the normal Tab completion UI.
+      if (( $+widgets[fzf-tab-complete] )); then
+        bindkey -M emacs '^I' fzf-tab-complete
+        bindkey -M viins '^I' fzf-tab-complete
+      fi
 
       # Quality of life
       setopt AUTO_CD

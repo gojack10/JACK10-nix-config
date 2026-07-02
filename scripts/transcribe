@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT="$HOME/projects/canary-qwen-transcribe"
+SUPERVISOR="$PROJECT/canary_qwen_transcribe/transcribe_supervisor.py"
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export UV_OFFLINE=1
+
+if [[ ! -d "$PROJECT" ]]; then
+  echo "transcribe: project missing: $PROJECT" >&2
+  exit 1
+fi
+if [[ ! -f "$SUPERVISOR" ]]; then
+  echo "transcribe: supervisor missing: $SUPERVISOR" >&2
+  exit 1
+fi
+
+tmp=0
+args=()
+for a in "$@"; do
+  case "$a" in
+    --tmp) tmp=1 ;;
+    *) args+=("$a") ;;
+  esac
+done
+if ((${#args[@]})); then
+  set -- "${args[@]}"
+else
+  set --
+fi
+
+# First existing arg is the audio. If stdin is piped, wait for EOF and use the
+# first line that is an existing file; this makes `record-mic | transcribe --tmp`
+# wait until recording stops before transcribing.
+src=""
+for a in "$@"; do
+  if [[ -f "$a" ]]; then src="$a"; break; fi
+done
+
+if [[ -z "$src" && ! -t 0 ]]; then
+  trap '' INT
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ -z "$src" && -n "$line" ]]; then
+      src="$line"
+    fi
+  done
+  trap - INT
+  if [[ -n "$src" ]]; then
+    set -- "$@" "$src"
+  fi
+fi
+
+archive=""
+ref_audio=""
+if [[ "$tmp" -eq 0 && -n "$src" ]]; then
+  fname="$(basename -- "$src")"
+  case "$fname" in
+    *.*) base="${fname%.*}"; ext=".${fname##*.}" ;;
+    *)   base="$fname";      ext="" ;;
+  esac
+  stamp="$(TZ='America/Los_Angeles' date '+%Y-%m-%d %H-%M-%S')"
+  day="${stamp% *}"; clock="${stamp#* }"
+  text_dir="$HOME/transcriptions/${day}_text"
+  audio_dir="$HOME/transcriptions/${day}_ref-audio"
+  archive="$text_dir/${base}_${clock}.txt"
+  ref_audio="$audio_dir/${base}_${clock}${ext}"
+  mkdir -p "$text_dir" "$audio_dir"
+  trap 'rm -f -- "${archive:-}" "${ref_audio:-}"; exit 130' INT TERM
+  set +e
+  cp -p -- "$src" "$ref_audio" 2>/dev/null
+  cp_status=$?
+  set -e
+  trap - INT TERM
+  # Keep the old best-effort archive behavior for normal cp errors, but do not
+  # swallow Ctrl-C/termination during the initial reference-audio copy.
+  if (( cp_status >= 128 )); then
+    rm -f -- "$archive" "$ref_audio"
+    exit "$cp_status"
+  fi
+fi
+
+cmd=(uv run --project "$PROJECT" --offline --frozen python -m canary_qwen_transcribe.transcribe_compat "$@")
+
+if [[ -n "$archive" ]]; then
+  # The Python supervisor tees stdout to the archive and runs uv/python in a
+  # separate process group. Ctrl-C hits the supervisor, which can terminate
+  # native CoreML work immediately instead of waiting for KeyboardInterrupt.
+  exec /usr/bin/python3 "$SUPERVISOR" \
+    --archive "$archive" \
+    --ref-audio "$ref_audio" \
+    -- "${cmd[@]}"
+else
+  exec /usr/bin/python3 "$SUPERVISOR" -- "${cmd[@]}"
+fi

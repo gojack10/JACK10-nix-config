@@ -65,4 +65,10 @@
     executable = true;
     force = true;
   };
+
+  home.file.".local/bin/transcribe" = {
+    source = ../scripts/transcribe;
+    executable = true;
+    force = true;
+  };
 }

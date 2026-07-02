@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""Log GPU-over-threshold episodes as JSONL (one line per busy episode)."""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import uuid
+from datetime import datetime, timezone
+
+GPU_RE = re.compile(r"\bGPU HW active residency:\s*([0-9]+(?:\.[0-9]+)?)%", re.I)
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def parse_gpu_pct(line):
+    match = GPU_RE.search(line)
+    return None if match is None else float(match.group(1))
+
+
+def feed(ep, ts, pct, threshold, cooldown_n, max_n):
+    """Advance the episode state machine. Returns (ep, closed_episode_or_None)."""
+    if pct >= threshold:
+        if ep is None:
+            ep = {"start": ts, "end": ts, "n": 0, "max_pct": 0.0, "sum_pct": 0.0, "under": 0}
+        ep["n"] += 1
+        ep["end"] = ts
+        ep["max_pct"] = max(ep["max_pct"], pct)
+        ep["sum_pct"] += pct
+        ep["under"] = 0
+        # ponytail: segment long episodes so kill -9 loses <= max-episode-seconds;
+        # merge adjacent rows at read time.
+        if ep["n"] >= max_n:
+            return None, ep
+    elif ep is not None:
+        ep["under"] += 1
+        if ep["under"] >= cooldown_n:
+            return None, ep
+    return ep, None
+
+
+def episode_json(ep, run_id, threshold, sample_seconds):
+    return json.dumps({
+        "start": ep["start"],
+        "end": ep["end"],
+        "seconds_over": ep["n"] * sample_seconds,
+        "max_pct": ep["max_pct"],
+        "avg_pct": round(ep["sum_pct"] / ep["n"], 2),
+        "threshold_pct": threshold,
+        "run_id": run_id,
+    }, separators=(",", ":"))
+
+
+def self_test():
+    assert parse_gpu_pct("GPU HW active residency: 73.2%") == 73.2
+    assert parse_gpu_pct("    GPU HW active residency: 0.00%") == 0.0
+    assert parse_gpu_pct("CPU Active residency: 99%") is None
+
+    def run(samples, cooldown_n=2, max_n=1000):
+        ep, closes = None, []
+        for ts, pct in samples:
+            ep, closed = feed(ep, ts, pct, 50.0, cooldown_n, max_n)
+            if closed:
+                closes.append(closed)
+        return ep, closes
+
+    # over, over, cooldown closes; end is last over-sample
+    ep, closes = run([("t0", 80.0), ("t1", 90.0), ("t2", 10.0), ("t3", 10.0)])
+    assert ep is None and len(closes) == 1
+    assert closes[0]["n"] == 2 and closes[0]["start"] == "t0" and closes[0]["end"] == "t1"
+    assert closes[0]["max_pct"] == 90.0
+
+    # blip under threshold shorter than cooldown does not split the episode
+    ep, closes = run([("t0", 80.0), ("t1", 40.0), ("t2", 80.0), ("t3", 0.0), ("t4", 0.0)])
+    assert ep is None and len(closes) == 1 and closes[0]["n"] == 2
+
+    # segmentation at max_n
+    ep, closes = run([(f"t{i}", 99.0) for i in range(4)], max_n=2)
+    assert len(closes) == 2 and all(c["n"] == 2 for c in closes)
+
+    # never over threshold -> nothing
+    ep, closes = run([("t0", 1.0), ("t1", 2.0)])
+    assert ep is None and closes == []
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Log GPU-over-threshold episodes as JSONL.")
+    parser.add_argument("--threshold", type=float, default=50.0)
+    parser.add_argument("--interval", type=float, default=1.0, help="sample interval in seconds")
+    parser.add_argument("--cooldown", type=float, default=10.0,
+                        help="seconds under threshold before an episode closes")
+    parser.add_argument("--max-episode-seconds", type=float, default=3600.0)
+    parser.add_argument("--output", default="~/.gpu-usage/gpu-episodes.jsonl")
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
+
+    if args.self_test:
+        self_test()
+        return 0
+
+    output = os.path.expanduser(args.output)
+    os.makedirs(os.path.dirname(output), exist_ok=True)
+
+    run_id = str(uuid.uuid4())
+    interval_ms = max(1, int(args.interval * 1000))
+    sample_seconds = interval_ms / 1000
+    cooldown_n = max(1, round(args.cooldown / sample_seconds))
+    max_n = max(1, round(args.max_episode_seconds / sample_seconds))
+    cmd = ["/usr/bin/sudo", "-n", "/usr/bin/powermetrics", "--samplers", "gpu_power", "-i", str(interval_ms)]
+
+    ep = None
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+    try:
+        with open(output, "a", buffering=1) as f:
+            for line in proc.stdout:
+                pct = parse_gpu_pct(line)
+                if pct is None:
+                    continue
+                ep, closed = feed(ep, utc_now(), pct, args.threshold, cooldown_n, max_n)
+                if closed:
+                    f.write(episode_json(closed, run_id, args.threshold, sample_seconds) + "\n")
+
+        rc = proc.wait()
+        if rc:
+            print(
+                "gpu-over-50: powermetrics exited non-zero; if this is a LaunchAgent, "
+                "allow passwordless /usr/bin/powermetrics or run it as root.",
+                file=sys.stderr,
+            )
+        return rc
+    finally:
+        if ep is not None and ep["n"]:
+            with open(output, "a") as f:  # flush the open episode on SIGTERM/exit
+                f.write(episode_json(ep, run_id, args.threshold, sample_seconds) + "\n")
+        if proc.poll() is None:
+            proc.terminate()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

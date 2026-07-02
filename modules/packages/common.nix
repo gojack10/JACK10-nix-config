@@ -18,6 +18,7 @@
     jq
     tree
     git-filter-repo
+    hcloud
 
     # Media tools
     ffmpeg

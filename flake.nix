@@ -95,6 +95,7 @@
         ./modules/packages/ghostty.nix
         ./modules/darwin/defaults.nix
         ./modules/darwin/fan.nix
+        ./modules/darwin/gpu-over-50.nix
         ./modules/darwin/omlx.nix
         ./modules/darwin/reverse-ssh-tunnel.nix
       ];

@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ config, pkgs, ... }:
 
 let
   audioCatchall = pkgs.writeShellScriptBin "audio-catchall" ''
@@ -369,8 +369,25 @@ let
   recordCatchall = pkgs.writeShellScriptBin "record-catchall" ''
     exec ${audioCatchall}/bin/audio-catchall auto "$@"
   '';
+
+  recordMic = pkgs.stdenv.mkDerivation {
+    pname = "record-mic";
+    version = "1";
+    src = ../../scripts/record-mic.c;
+    dontUnpack = true;
+    buildPhase = ''
+      $CC -O2 -Wall -Wextra -DFFMPEG_PATH='"${pkgs.ffmpeg}/bin/ffmpeg"' "$src" -o record-mic
+    '';
+    installPhase = ''
+      install -Dm755 record-mic "$out/bin/record-mic"
+    '';
+  };
 in
 {
+  nixpkgs.config.allowUnfreePredicate = pkg: builtins.elem (pkgs.lib.getName pkg) [
+    "unrar"
+  ];
+
   home.packages = with pkgs; [
     # Fonts (nerd fonts install to nix profile; macOS apps can find them)
     nerd-fonts.jetbrains-mono
@@ -385,9 +402,13 @@ in
     switchaudio-osx
     audioCatchall
     recordCatchall
+    recordMic
 
     rustup
     docker
     colima
+
+    # Fast RAR extraction (official rarlab decoder, solid-archive safe)
+    unrar
   ];
 }

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# SiftWorks launcher — Chief of Staff seat.
+# Uses claude --dangerously-skip-permissions (claudeyolo equivalent) with Opus 4.8 max effort.
+exec env SIFTWORKS_SEAT=chief-of-staff claude --dangerously-skip-permissions "$@"

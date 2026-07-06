@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# SiftWorks launcher — Worker seat.
+# Uses claude --dangerously-skip-permissions (claudeyolo equivalent) with Opus 4.8 max effort.
+# Optional: SIFTWORKS_WORK_ITEM=<uuid> and SIFTWORKS_ALLOW_GIT_COMMIT=1 may be set before this.
+exec env SIFTWORKS_SEAT=worker claude --dangerously-skip-permissions "$@"

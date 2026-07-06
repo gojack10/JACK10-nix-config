@@ -1,61 +1,27 @@
-{ config, pkgs, ... }:
+{ pkgs, ... }: {
+  # Scripts sourced from ../scripts/ are managed by Home Manager and linked to ~/.local/bin.
+  # Add new script entries below following the same pattern.
 
-{
-  home.file.".local/share/JACK10-nix-config/ssh-env.sh" = {
-    source = ../scripts/lib/ssh-env.sh;
-    force = true;
-  };
-
-  home.file.".local/bin/tmux-status" = {
-    source = ../scripts/tmux-status;
+  home.file.".local/bin/worker" = {
+    source = ../scripts/worker;
     executable = true;
     force = true;
   };
 
-  home.file.".local/bin/deepwork-status" = {
-    source = ../scripts/deepwork-status;
+  home.file.".local/bin/cos" = {
+    source = ../scripts/cos;
     executable = true;
     force = true;
   };
 
-  home.file.".local/bin/tokens" = {
-    source = ../scripts/tokens;
+  home.file.".local/bin/cofounder" = {
+    source = ../scripts/cofounder;
     executable = true;
     force = true;
   };
 
-  home.file.".local/bin/pi-setup" = {
-    source = ../scripts/pi-setup;
-    executable = true;
-    force = true;
-  };
-
-  home.file.".local/bin/pi-update" = {
-    source = ../scripts/pi-update;
-    executable = true;
-    force = true;
-  };
-
-  home.file.".local/bin/pi-patches" = {
-    source = ../scripts/pi-patches;
-    executable = true;
-    force = true;
-  };
-
-  home.file.".local/bin/pi-push" = {
-    source = ../scripts/pi-push;
-    executable = true;
-    force = true;
-  };
-
-  home.file.".local/bin/hms" = {
-    source = ../scripts/hms;
-    executable = true;
-    force = true;
-  };
-
-  home.file.".local/bin/music" = {
-    source = ../scripts/music;
+  home.file.".local/bin/jack" = {
+    source = ../scripts/jack;
     executable = true;
     force = true;
   };

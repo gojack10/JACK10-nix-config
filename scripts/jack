@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# SiftWorks launcher — Jack (Principal). No seat => gate dormant => full access.
+# Uses claude --dangerously-skip-permissions (claudeyolo equivalent) with Opus 4.8 max effort.
+exec env -u SIFTWORKS_SEAT -u SIFTWORKS_WORK_ITEM -u SIFTWORKS_ALLOW_GIT_COMMIT claude --dangerously-skip-permissions "$@"

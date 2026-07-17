@@ -90,7 +90,8 @@
       bind X kill-window
       # Keep choose-tree's terminal preview visible; -N starts hidden.
       # -Z zooms tree mode so the preview can use the whole client.
-      bind s choose-tree -Zs -F '#{?pane_format,#{pane_index}: #{pane_current_command}#{?pane_active,*,}#{?@pi_cache_pane,  #{@pi_cache_pane},},#{?window_format,#{window_index}: #{window_name}#{window_flags}#{?@pi_cache_window,  #{@pi_cache_window},},#{session_windows} windows#{?session_attached, (attached),}#{?@pi_cache_session,  #{@pi_cache_session},}}}'
+      set -g @session_tree_format '#{?pane_format,#{pane_index}: #{pane_current_command}#{?pane_active,*,}#{?@pi_cache_pane,  #{@pi_cache_pane},},#{?window_format,#{window_index}: #{window_name}#{window_flags}#{?@pi_cache_window,  #{@pi_cache_window},},#{session_windows} windows#{?session_attached, (attached),}#{?@pi_cache_session,  #{@pi_cache_session},}}}'
+      bind s choose-tree -Zs -F '#{E:@session_tree_format}'
 
       # Theme toggle: prefix + t flips between riced theme and tmux defaults
       # (replaces the built-in clock-mode binding).

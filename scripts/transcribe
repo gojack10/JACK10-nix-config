@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT="$HOME/projects/canary-qwen-transcribe"
+PROJECT="$HOME/projects/canary-coreml-transcribe"
+[[ -d "$PROJECT" ]] || PROJECT="$HOME/projects/canary-qwen-transcribe"
 SUPERVISOR="$PROJECT/canary_qwen_transcribe/transcribe_supervisor.py"
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1

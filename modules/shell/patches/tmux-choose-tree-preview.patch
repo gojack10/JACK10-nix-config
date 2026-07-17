@@ -90,7 +90,7 @@
  	}
  }
 --- tmux-patch-orig/window-tree.c	2024-10-04 22:57:07
-+++ tmux-patch-gen/window-tree.c	2026-07-17 15:12:52
++++ tmux-patch-gen/window-tree.c	2026-07-17 15:13:54
 @@ -33,6 +33,7 @@
  static void		 window_tree_key(struct window_mode_entry *,
  			     struct client *, struct session *,
@@ -107,12 +107,12 @@
  
  	struct window_tree_itemdata	**item_list;
  	u_int				  item_size;
-@@ -883,6 +885,28 @@
+@@ -883,7 +885,29 @@
  	struct window_pane		*wp;
  	char				*expanded;
  	key_code			 key;
 +	u_int				 i, n = 0;
-+
+ 
 +	/*
 +	 * In session mode (choose-tree -s), only session rows get jump keys,
 +	 * numbered by session order rather than visible line. Expanding a
@@ -133,10 +133,11 @@
 +			return (KEYC_META|('a' + n - 10));
 +		return (KEYC_UNKNOWN);
 +	}
- 
++
  	ft = format_create(NULL, NULL, FORMAT_NONE, 0);
  	window_tree_pull_item(item, &s, &wl, &wp);
-@@ -899,6 +923,15 @@
+ 	if (item->type == WINDOW_TREE_SESSION)
+@@ -899,6 +923,18 @@
  	free(expanded);
  	format_free(ft);
  	return (key);
@@ -145,14 +146,17 @@
 +static u_int
 +window_tree_height(__unused void *modedata, u_int height)
 +{
-+	/* Leave the smallest list area tmux allows; preview gets the rest. */
-+	if (height <= 10)
-+		return (0);
-+	return (height - 10);
++	/*
++	 * Split roughly in half: session list on top, preview below. On
++	 * short screens fall back to the smallest list area tmux allows.
++	 */
++	if (height <= 20)
++		return (height <= 10 ? 0 : height - 10);
++	return (height / 2);
  }
  
  static struct screen *
-@@ -934,10 +967,11 @@
+@@ -934,10 +970,11 @@
  	else
  		data->command = xstrdup(args_string(args, 0));
  	data->squash_groups = !args_has(args, 'G');

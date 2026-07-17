@@ -22,7 +22,6 @@
 
     # Media tools
     ffmpeg
-    yt-dlp
     spotdl
   ];
 }

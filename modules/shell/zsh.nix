@@ -225,16 +225,16 @@
       export SUDO_ASKPASS="$HOME/.local/bin/askpass-wofi"
       ''}
 
-      # pbcopy for OSC 52 clipboard (works in tmux, SSH, raw terminal)
+      # pbcopy for local macOS; OSC 52 fallback for SSH/Linux/tmux.
       pbcopy() {
-        if [[ -n "$TMUX" ]]; then
+        if [[ -z "$SSH_TTY" ]] && command -v /usr/bin/pbcopy &>/dev/null; then
+          /usr/bin/pbcopy
+        elif [[ -n "$TMUX" ]]; then
           local data=$(base64 | tr -d '\n')
           printf '\033Ptmux;\033\033]52;c;%s\007\033\\' "$data"
         elif [[ -n "$SSH_TTY" ]]; then
           local data=$(base64 | tr -d '\n')
           printf '\033]52;c;%s\007' "$data"
-        elif command -v /usr/bin/pbcopy &>/dev/null; then
-          /usr/bin/pbcopy
         else
           local data=$(base64 | tr -d '\n')
           printf '\033]52;c;%s\007' "$data"

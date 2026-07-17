@@ -1,4 +1,4 @@
-{ pkgs, ... }: {
+{ lib, pkgs, ... }: {
   # Scripts sourced from ../scripts/ are managed by Home Manager and linked to ~/.local/bin.
   # Add new script entries below following the same pattern.
 
@@ -38,8 +38,14 @@
     force = true;
   };
 
-  home.file.".local/bin/tmux-cache-status" = {
-    source = ../scripts/tmux-cache-status;
+  home.file.".local/bin/tmux-status" = lib.mkIf pkgs.stdenv.isDarwin {
+    source = ../scripts/tmux-status;
+    executable = true;
+    force = true;
+  };
+
+  home.file.".local/bin/deepwork-status" = lib.mkIf pkgs.stdenv.isDarwin {
+    source = ../scripts/deepwork-status;
     executable = true;
     force = true;
   };

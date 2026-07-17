@@ -89,6 +89,55 @@
  		screen_write_cell(ctx, &gc);
  	}
  }
+--- tmux-patch-orig/mode-tree.c	2024-10-04 22:57:07
++++ tmux-patch-gen/mode-tree.c	2026-07-17 15:53:43
+@@ -617,6 +617,33 @@
+ 	else
+ 		TAILQ_REMOVE(&mtd->children, mti, entry);
+ 	mode_tree_free_item(mti);
++}
++
++/*
++ * A selected tree row uses mode-style's yellow background and black
++ * foreground. Item formats can embed foreground colours; force those back
++ * to black while selected so yellow/red/green cache text stays legible.
++ */
++static char *
++mode_tree_selected_text(const char *text)
++{
++	const char	*cursor = text, *start, *end;
++	char		*result, *next;
++
++	result = xstrdup("");
++	while ((start = strstr(cursor, "#[fg=")) != NULL) {
++		end = strchr(start, ']');
++		if (end == NULL)
++			break;
++		xasprintf(&next, "%s%.*s#[fg=black]", result,
++		    (int)(start - cursor), cursor);
++		free(result);
++		result = next;
++		cursor = end + 1;
++	}
++	xasprintf(&next, "%s%s", result, cursor);
++	free(result);
++	return (next);
+ }
+ 
+ void
+@@ -729,8 +756,11 @@
+ 			screen_write_clearendofline(&ctx, gc.bg);
+ 			screen_write_nputs(&ctx, w, &gc, "%s", text);
+ 			if (mti->text != NULL) {
+-				format_draw(&ctx, &gc, w - width, mti->text,
++				char *selected_text = mode_tree_selected_text(mti->text);
++
++				format_draw(&ctx, &gc, w - width, selected_text,
+ 				    NULL, 0);
++				free(selected_text);
+ 			}
+ 		}
+ 		free(text);
 --- tmux-patch-orig/window-tree.c	2024-10-04 22:57:07
 +++ tmux-patch-gen/window-tree.c	2026-07-17 15:15:24
 @@ -33,6 +33,7 @@

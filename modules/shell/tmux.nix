@@ -147,7 +147,7 @@
       # Line 0: session+windows left, stats+date right
       # tmux-continuum normally injects its save hook into status-right, but
       # status-format[] bypasses status-right. Run the same hook invisibly here.
-      set -g status-format[0] '#(${pkgs.tmuxPlugins.continuum}/share/tmux-plugins/continuum/scripts/continuum_save.sh)#[align=left fg=white] #S #{W:#{?window_active,#[fg=green] #I:#W #[fg=white], #I:#W }}#[align=right fg=white]#{?#{==:#{client_key_table},off},#[fg=green]PASS#[fg=white],LOCAL} | #(~/.local/bin/tmux-cache-status)#(~/.local/bin/tmux-status) '
+      set -g status-format[0] '#(${pkgs.tmuxPlugins.continuum}/share/tmux-plugins/continuum/scripts/continuum_save.sh)#[align=left fg=white] #S #{W:#{?window_active,#[fg=green] #I:#W #[fg=white], #I:#W }}#[align=right fg=white]#{?#{==:#{client_key_table},off},#[fg=green]PASS#[fg=white],LOCAL} | #(~/.local/bin/tmux-status) '
 
       # Line 1: deepwork centered
       set -g status-format[1] '#[align=centre fg=white]#(~/.local/bin/deepwork-status)'

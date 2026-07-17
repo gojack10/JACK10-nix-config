@@ -1,0 +1,50 @@
+#!/bin/sh
+
+# The cache extension stores absolute expiry facts on tmux sessions. Compute
+# the countdown here so the status bar stays truthful even if Pi is gone.
+now=$(date +%s)
+row=$(tmux list-sessions -F '#{session_name}|#{@pi_cache_expiry}|#{@pi_cache_duration}|#{@pi_cache_model}' 2>/dev/null |
+  awk -F '|' -v now="$now" '
+    $2 ~ /^[0-9]+$/ && $2 > 0 {
+      if ($2 > now && (!warm || $2 < warm)) {
+        warm = $2; warm_session = $1; warm_duration = $3; warm_model = $4
+      }
+      if ($2 <= now && (!expired || $2 > expired)) {
+        expired = $2; expired_session = $1; expired_model = $4
+      }
+    }
+    END {
+      if (warm) print "warm|" warm_session "|" warm "|" warm_duration "|" warm_model
+      else if (expired) print "expired|" expired_session "|" expired "||" expired_model
+    }
+  ')
+
+[ -n "$row" ] || exit 0
+IFS='|' read -r state session expiry duration model <<EOF
+$row
+EOF
+
+if [ "$state" = expired ]; then
+  printf '#[fg=white]CACHE %s EXPIRED %s#[fg=white] | ' "$session" "$model"
+  exit 0
+fi
+
+remaining=$((expiry - now))
+hours=$((remaining / 3600))
+minutes=$(((remaining % 3600) / 60))
+seconds=$((remaining % 60))
+if [ "$hours" -gt 0 ]; then
+  timer=$(printf '%d:%02d:%02d' "$hours" "$minutes" "$seconds")
+else
+  timer=$(printf '%02d:%02d' "$minutes" "$seconds")
+fi
+
+color=green
+if [ "$duration" -gt 0 ] 2>/dev/null; then
+  if [ $((remaining * 100)) -le $((duration * 25)) ]; then
+    color=red
+  elif [ $((remaining * 100)) -le $((duration * 50)) ]; then
+    color=yellow
+  fi
+fi
+printf '#[fg=%s]CACHE %s %s %s#[fg=white] | ' "$color" "$session" "$timer" "$model"

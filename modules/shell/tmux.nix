@@ -90,7 +90,7 @@
       bind X kill-window
       # Keep choose-tree's terminal preview visible; -N starts hidden.
       # -Z zooms tree mode so the preview can use the whole client.
-      bind s choose-tree -Zs
+      bind s choose-tree -Zs -F '#{?pane_format,#{pane_index}: #{pane_current_command}#{?pane_active,*,}#{?@pi_cache_pane,  #{@pi_cache_pane},},#{?window_format,#{window_index}: #{window_name}#{window_flags}#{?@pi_cache_window,  #{@pi_cache_window},},#{session_windows} windows#{?session_attached, (attached),}#{?@pi_cache_session,  #{@pi_cache_session},}}}'
 
       # Theme toggle: prefix + t flips between riced theme and tmux defaults
       # (replaces the built-in clock-mode binding).
@@ -147,7 +147,7 @@
       # Line 0: session+windows left, stats+date right
       # tmux-continuum normally injects its save hook into status-right, but
       # status-format[] bypasses status-right. Run the same hook invisibly here.
-      set -g status-format[0] '#(${pkgs.tmuxPlugins.continuum}/share/tmux-plugins/continuum/scripts/continuum_save.sh)#[align=left fg=white] #S #{W:#{?window_active,#[fg=green] #I:#W #[fg=white], #I:#W }}#[align=right fg=white]#{?#{==:#{client_key_table},off},#[fg=green]PASS#[fg=white],LOCAL} | #(~/.local/bin/tmux-status) '
+      set -g status-format[0] '#(${pkgs.tmuxPlugins.continuum}/share/tmux-plugins/continuum/scripts/continuum_save.sh)#[align=left fg=white] #S #{W:#{?window_active,#[fg=green] #I:#W #[fg=white], #I:#W }}#[align=right fg=white]#{?#{==:#{client_key_table},off},#[fg=green]PASS#[fg=white],LOCAL} | #(~/.local/bin/tmux-cache-status)#(~/.local/bin/tmux-status) '
 
       # Line 1: deepwork centered
       set -g status-format[1] '#[align=centre fg=white]#(~/.local/bin/deepwork-status)'

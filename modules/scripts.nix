@@ -37,4 +37,10 @@
     executable = true;
     force = true;
   };
+
+  home.file.".local/bin/tmux-cache-status" = {
+    source = ../scripts/tmux-cache-status;
+    executable = true;
+    force = true;
+  };
 }

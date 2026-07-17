@@ -90,7 +90,7 @@
  	}
  }
 --- tmux-patch-orig/window-tree.c	2024-10-04 22:57:07
-+++ tmux-patch-gen/window-tree.c	2026-07-17 15:13:54
++++ tmux-patch-gen/window-tree.c	2026-07-17 15:15:24
 @@ -33,6 +33,7 @@
  static void		 window_tree_key(struct window_mode_entry *,
  			     struct client *, struct session *,
@@ -107,7 +107,59 @@
  
  	struct window_tree_itemdata	**item_list;
  	u_int				  item_size;
-@@ -883,7 +885,29 @@
+@@ -291,6 +293,24 @@
+ 	if (window_tree_sort->reversed)
+ 		result = -result;
+ 	return (result);
++}
++
++/*
++ * Expand the item format with strftime expansion as well, so formats can
++ * use %s (epoch) for countdown arithmetic against absolute timestamps.
++ */
++static char *
++window_tree_expand_format(const char *fmt, struct session *s,
++    struct winlink *wl, struct window_pane *wp)
++{
++	struct format_tree	*ft;
++	char			*expanded;
++
++	ft = format_create(NULL, NULL, FORMAT_NONE, 0);
++	format_defaults(ft, NULL, s, wl, wp);
++	expanded = format_expand_time(ft, fmt);
++	format_free(ft);
++	return (expanded);
+ }
+ 
+ static void
+@@ -310,7 +330,7 @@
+ 	item->winlink = wl->idx;
+ 	item->pane = wp->id;
+ 
+-	text = format_single(NULL, data->format, NULL, s, wl, wp);
++	text = window_tree_expand_format(data->format, s, wl, wp);
+ 	xasprintf(&name, "%u", idx);
+ 
+ 	mode_tree_add(data->data, parent, item, (uint64_t)wp, name, text, -1);
+@@ -354,7 +374,7 @@
+ 	item->winlink = wl->idx;
+ 	item->pane = -1;
+ 
+-	text = format_single(NULL, data->format, NULL, s, wl, NULL);
++	text = window_tree_expand_format(data->format, s, wl, NULL);
+ 	xasprintf(&name, "%u", wl->idx);
+ 
+ 	if (data->type == WINDOW_TREE_SESSION ||
+@@ -420,7 +440,7 @@
+ 	item->winlink = -1;
+ 	item->pane = -1;
+ 
+-	text = format_single(NULL, data->format, NULL, s, NULL, NULL);
++	text = window_tree_expand_format(data->format, s, NULL, NULL);
+ 
+ 	if (data->type == WINDOW_TREE_SESSION)
+ 		expanded = 0;
+@@ -883,7 +903,29 @@
  	struct window_pane		*wp;
  	char				*expanded;
  	key_code			 key;
@@ -137,7 +189,7 @@
  	ft = format_create(NULL, NULL, FORMAT_NONE, 0);
  	window_tree_pull_item(item, &s, &wl, &wp);
  	if (item->type == WINDOW_TREE_SESSION)
-@@ -899,6 +923,18 @@
+@@ -899,6 +941,18 @@
  	free(expanded);
  	format_free(ft);
  	return (key);
@@ -156,7 +208,7 @@
  }
  
  static struct screen *
-@@ -934,10 +970,11 @@
+@@ -934,10 +988,11 @@
  	else
  		data->command = xstrdup(args_string(args, 0));
  	data->squash_groups = !args_has(args, 'G');

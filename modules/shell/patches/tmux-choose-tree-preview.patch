@@ -1,5 +1,5 @@
 --- tmux-patch-orig/screen-write.c	2024-10-04 22:57:07
-+++ tmux-patch-gen/screen-write.c	2026-05-24 19:23:43
++++ tmux-patch-gen/screen-write.c	2026-07-17 15:05:16
 @@ -810,14 +810,18 @@
  {
  	struct screen		*s = ctx->s;
@@ -90,7 +90,7 @@
  	}
  }
 --- tmux-patch-orig/window-tree.c	2024-10-04 22:57:07
-+++ tmux-patch-gen/window-tree.c	2026-05-24 19:23:43
++++ tmux-patch-gen/window-tree.c	2026-07-17 15:12:52
 @@ -33,6 +33,7 @@
  static void		 window_tree_key(struct window_mode_entry *,
  			     struct client *, struct session *,
@@ -99,7 +99,44 @@
  
  #define WINDOW_TREE_DEFAULT_COMMAND "switch-client -Zt '%%'"
  
-@@ -899,6 +900,15 @@
+@@ -131,6 +132,7 @@
+ 	char				 *key_format;
+ 	char				 *command;
+ 	int				  squash_groups;
++	int				  session_jump_keys;
+ 
+ 	struct window_tree_itemdata	**item_list;
+ 	u_int				  item_size;
+@@ -883,6 +885,28 @@
+ 	struct window_pane		*wp;
+ 	char				*expanded;
+ 	key_code			 key;
++	u_int				 i, n = 0;
++
++	/*
++	 * In session mode (choose-tree -s), only session rows get jump keys,
++	 * numbered by session order rather than visible line. Expanding a
++	 * session no longer renumbers the sessions below it.
++	 */
++	if (data->session_jump_keys) {
++		if (item->type != WINDOW_TREE_SESSION)
++			return (KEYC_UNKNOWN);
++		for (i = 0; i < data->item_size; i++) {
++			if (data->item_list[i] == item)
++				break;
++			if (data->item_list[i]->type == WINDOW_TREE_SESSION)
++				n++;
++		}
++		if (n < 10)
++			return ('0' + n);
++		if (n < 36)
++			return (KEYC_META|('a' + n - 10));
++		return (KEYC_UNKNOWN);
++	}
+ 
+ 	ft = format_create(NULL, NULL, FORMAT_NONE, 0);
+ 	window_tree_pull_item(item, &s, &wl, &wp);
+@@ -899,6 +923,15 @@
  	free(expanded);
  	format_free(ft);
  	return (key);
@@ -115,8 +152,11 @@
  }
  
  static struct screen *
-@@ -936,8 +946,8 @@
+@@ -934,10 +967,11 @@
+ 	else
+ 		data->command = xstrdup(args_string(args, 0));
  	data->squash_groups = !args_has(args, 'G');
++	data->session_jump_keys = (args != NULL && args_has(args, 's'));
  
  	data->data = mode_tree_start(wp, args, window_tree_build,
 -	    window_tree_draw, window_tree_search, window_tree_menu, NULL,
@@ -125,3 +165,4 @@
 +	    window_tree_height, window_tree_get_key, data, window_tree_menu_items,
  	    window_tree_sort_list, nitems(window_tree_sort_list), &s);
  	mode_tree_zoom(data->data, args);
+ 

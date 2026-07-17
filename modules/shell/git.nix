@@ -7,7 +7,10 @@ in {
     enable = true;
     settings = {
       init.defaultBranch = "main";
-      credential."https://github.com".helper = "!${pkgs.gh}/bin/gh auth git-credential";
+      credential = {
+        helper = "";
+        "https://github.com".helper = "!${pkgs.gh}/bin/gh auth git-credential";
+      };
     } // lib.optionalAttrs personalIdentity {
       user.name = settings.gitName;
       user.email = settings.gitEmail;

@@ -271,3 +271,25 @@
  	    window_tree_sort_list, nitems(window_tree_sort_list), &s);
  	mode_tree_zoom(data->data, args);
  
+--- tmux-patch-orig/mode-tree.c
++++ tmux-patch-gen/mode-tree.c
+@@ -659,0 +660 @@
++	u_int			 name_width, max_name_width;
+@@ -678,0 +680 @@
++	max_name_width = 0;
+@@ -680,0 +683,5 @@
++		if (mtd->line_list[i].depth == 0 && mti->text != NULL) {
++			name_width = utf8_cstrwidth(mti->name) + mti->tagged;
++			if (name_width > max_name_width)
++				max_name_width = name_width;
++		}
+@@ -736,2 +743,7 @@
+-		xasprintf(&text, "%-*s%s%s%s%s", keylen, key, start, mti->name,
+-		    tag, (mti->text != NULL) ? ": " : "" );
++		if (line->depth == 0 && mti->text != NULL)
++			pad = max_name_width - utf8_cstrwidth(mti->name) -
++			    mti->tagged;
++		else
++			pad = 0;
++		xasprintf(&text, "%-*s%s%s%s%*s%s", keylen, key, start,
++		    mti->name, tag, pad, "", (mti->text != NULL) ? ": " : "");

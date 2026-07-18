@@ -72,6 +72,38 @@ static int parse_device_line(const char *line, int *idx, char *name, size_t name
     return 0;
 }
 
+static int mic_has_signal(int idx) {
+    char command[PATH_MAX + 256];
+    snprintf(command, sizeof(command),
+             "%s -hide_banner -loglevel error -nostdin -f avfoundation -i \":%d\" "
+             "-t 0.25 -ac 1 -ar 8000 -f s16le - 2>/dev/null",
+             FFMPEG_PATH, idx);
+
+    FILE *fp = popen(command, "r");
+    if (!fp) {
+        fprintf(stderr, "record-mic: cannot test microphone: %s\n", strerror(errno));
+        return 0;
+    }
+
+    unsigned char buf[4096];
+    int signal = 0;
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
+        for (size_t i = 0; i < n; i++) signal |= buf[i];
+    }
+
+    if (pclose(fp) != 0) {
+        fprintf(stderr, "record-mic: microphone test failed\n");
+        return 0;
+    }
+    if (!signal) {
+        fprintf(stderr, "record-mic: microphone returned digital silence; macOS may have denied access\n");
+        fprintf(stderr, "record-mic: fully quit/reopen your terminal and enable it in Privacy & Security > Microphone\n");
+        return 0;
+    }
+    return 1;
+}
+
 static int choose_mic(int use_airpods, char *chosen_name, size_t chosen_name_len) {
     char command[PATH_MAX + 128];
     snprintf(command, sizeof(command), "%s -hide_banner -f avfoundation -list_devices true -i \"\" 2>&1", FFMPEG_PATH);
@@ -169,6 +201,7 @@ int main(int argc, char **argv) {
     char mic_name[512] = "";
     int mic_idx = choose_mic(use_airpods, mic_name, sizeof(mic_name));
     if (mic_idx < 0) return 1;
+    if (!mic_has_signal(mic_idx)) return 1;
 
     char input[32];
     snprintf(input, sizeof(input), ":%d", mic_idx);

@@ -30,13 +30,16 @@ for patch in "${patches[@]}"; do
   name="$(basename "$patch")"
   if git apply --check "$patch" 2>/dev/null; then
     echo "  ✅ $name  (applies cleanly)"
+  elif git apply --reverse --check "$patch" 2>/dev/null; then
+    echo "  ✅ $name  (already present)"
   else
-    echo "  ❌ $name  (DOES NOT APPLY — upstream likely changed)"
+    echo "  ❌ $name  (NEEDS RECONCILIATION — upstream likely changed)"
   fi
 done
 cat <<'EOF'
 
 Action required: review each patch above.
-  - ✅ = remove if upstream has adopted the fix (check changelog)
-  - ❌ = regenerate patch (git diff) or drop if superseded
+  - ✅ applies cleanly = available for a clean upstream checkout
+  - ✅ already present = active in this checkout
+  - ❌ = regenerate patch or drop if superseded
 EOF

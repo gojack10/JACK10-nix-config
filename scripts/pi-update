@@ -255,20 +255,23 @@ report_patches() {
 
 YES=false
 REPAIR=false
+TRACK_MAIN=false
 for arg in "$@"; do
   case "$arg" in
     -y|--yes) YES=true ;;
     --repair) REPAIR=true ;;
+    --main) TRACK_MAIN=true ;;
     -h|--help)
       cat <<'EOF'
-Usage: pi-update [--yes] [--repair]
+Usage: pi-update [--yes] [--repair] [--main]
 
-Updates the local pi checkout to the latest release tag, syncs ~/.pi/agent,
-updates pi packages, reports local patch status, rewrites the machine-local
-launcher, and checks npm audit against the reviewed baseline.
+Updates the local pi checkout, syncs ~/.pi/agent, updates pi packages, reports
+local patch status, rewrites the machine-local launcher, and checks npm audit
+against the reviewed baseline.
 
   --yes     Do not prompt for upgrade/audit baseline confirmation
-  --repair  Reinstall dependencies and rebuild even if already on latest tag
+  --repair  Reinstall dependencies and rebuild even if already current
+  --main    Track current upstream main instead of the latest release tag
 EOF
       exit 0
       ;;
@@ -279,40 +282,57 @@ EOF
   esac
 done
 
-echo "Fetching tags from origin..."
-git fetch --tags --quiet origin
-
-CURRENT="$(git describe --tags --exact-match 2>/dev/null || echo '<detached>')"
-LATEST="$(git tag -l 'v*' --sort=-version:refname | head -1)"
-
-if [[ -z "$LATEST" ]]; then
-  echo "No version tags found." >&2
-  exit 1
+SOURCE_REMOTE="origin"
+if git remote get-url upstream >/dev/null 2>&1; then
+  SOURCE_REMOTE="upstream"
 fi
 
-if [[ "$CURRENT" == "$LATEST" ]]; then
-  echo "Already on latest: $LATEST"
+if $TRACK_MAIN; then
+  echo "Fetching main from $SOURCE_REMOTE..."
+  git fetch --quiet "$SOURCE_REMOTE" main
+  CURRENT="$(git rev-parse HEAD)"
+  LATEST="$SOURCE_REMOTE/main"
+  TARGET="$(git rev-parse "$LATEST")"
+  CURRENT_LABEL="$(git log -1 --format='%h %s' "$CURRENT")"
+  LATEST_LABEL="$(git log -1 --format='%h %s' "$TARGET")"
 else
-  echo "Current: $CURRENT"
-  echo "Latest:  $LATEST"
+  echo "Fetching tags from $SOURCE_REMOTE..."
+  git fetch --tags --quiet "$SOURCE_REMOTE"
+  CURRENT="$(git describe --tags --exact-match 2>/dev/null || echo '<detached>')"
+  LATEST="$(git tag -l 'v*' --sort=-version:refname | head -1)"
+  TARGET="$LATEST"
+  CURRENT_LABEL="$CURRENT"
+  LATEST_LABEL="$LATEST"
+
+  if [[ -z "$LATEST" ]]; then
+    echo "No version tags found." >&2
+    exit 1
+  fi
+fi
+
+if [[ "$(git rev-parse HEAD)" == "$(git rev-parse "$TARGET")" ]]; then
+  echo "Already current: $LATEST_LABEL"
+else
+  echo "Current: $CURRENT_LABEL"
+  echo "Latest:  $LATEST_LABEL"
   echo
-  echo "Changes since $CURRENT:"
-  if ! git log --oneline --no-decorate "${CURRENT}..${LATEST}" 2>/dev/null; then
-    echo "  (unable to diff; showing recent history for $LATEST)"
-    git log --oneline --no-decorate "$LATEST" -20
+  echo "Changes:"
+  if ! git log --oneline --no-decorate "HEAD..${TARGET}" 2>/dev/null; then
+    echo "  (unable to diff; showing recent history for $TARGET)"
+    git log --oneline --no-decorate "$TARGET" -20
   fi
   echo
 
   if ! $YES; then
-    read -rp "Upgrade to $LATEST? [y/N] " reply
+    read -rp "Upgrade to $LATEST_LABEL? [y/N] " reply
     if [[ ! "$reply" =~ ^[yY]$ ]]; then
       echo "Aborted."
       exit 1
     fi
   fi
 
-  echo "Checking out $LATEST..."
-  git checkout --force --quiet "$LATEST"
+  echo "Checking out $LATEST_LABEL..."
+  git checkout --force --quiet "$TARGET"
 
   REPAIR=true
 fi

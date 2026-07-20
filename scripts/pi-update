@@ -68,9 +68,12 @@ EOF
 }
 
 needs_rebuild() {
+  local cli="$REPO/packages/coding-agent/dist/cli.js"
+
   [[ ! -d "$REPO/node_modules" ]] && return 0
   [[ ! -f "$REPO/node_modules/undici/package.json" ]] && return 0
-  [[ ! -f "$REPO/packages/coding-agent/dist/cli.js" ]] && return 0
+  [[ ! -f "$cli" ]] && return 0
+  [[ -n "$(find "$REPO/packages" -path '*/src/*' -type f -newer "$cli" -print -quit)" ]] && return 0
   return 1
 }
 

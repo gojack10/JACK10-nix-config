@@ -50,6 +50,11 @@ write_pi_launcher() {
 REPO="$HOME/.local/share/pi-mono"
 CLI="$REPO/packages/coding-agent/dist/cli.js"
 export PI_PACKAGE_DIR="$REPO/packages/coding-agent"
+# Make SiftText available when Pi is launched outside an interactive shell.
+if [[ -z "${SIFTTEXT_API_KEY:-}" && -f "$HOME/.config/pi-secrets/env" ]]; then
+  # shellcheck source=/dev/null
+  source "$HOME/.config/pi-secrets/env"
+fi
 NODE_BIN="${PI_NODE:-node}"
 if command -v mise >/dev/null 2>&1; then
 	NODE_BIN="mise exec node@24 -- node"

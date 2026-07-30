@@ -1,4 +1,4 @@
-{ config, pkgs, ... }:
+{ config, pkgs, lib, hostname, ... }:
 
 let
   audioCatchall = pkgs.writeShellScriptBin "audio-catchall" ''
@@ -385,6 +385,7 @@ let
 in
 {
   nixpkgs.config.allowUnfreePredicate = pkg: builtins.elem (pkgs.lib.getName pkg) [
+    "terraform"
     "unrar"
   ];
 
@@ -410,5 +411,7 @@ in
 
     # Fast RAR extraction (official rarlab decoder, solid-archive safe)
     unrar
+  ] ++ lib.optionals (builtins.elem hostname [ "m5-max" "work-mac" ]) [
+    terraform
   ];
 }

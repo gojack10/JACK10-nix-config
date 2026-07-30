@@ -1,0 +1,137 @@
+#!/bin/sh
+set -eu
+
+[ "$(id -u)" -eq 0 ] || { echo "run with sudo" >&2; exit 1; }
+repo=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
+
+apt-get install -y --no-install-recommends \
+  papirus-icon-theme nix-bin nix-setup-systemd zsh \
+  accountsservice at-spi2-core rtkit xdg-desktop-portal xdg-desktop-portal-gtk \
+  i965-va-driver
+if [ -n "${SUDO_USER:-}" ]; then
+  usermod -aG nix-users "$SUDO_USER"
+  chsh -s /usr/bin/zsh "$SUDO_USER"
+fi
+cat > /etc/nix/nix.conf <<'EOF'
+sandbox = true
+auto-optimise-store = true
+max-jobs = 1
+cores = 1
+http-connections = 2
+EOF
+
+install -Dm644 "$repo/bg.png" /usr/share/backgrounds/setzer.png
+mkdir -p /etc/lightdm/lightdm-gtk-greeter.conf.d
+cat > /etc/lightdm/lightdm-gtk-greeter.conf.d/20-setzer.conf <<'EOF'
+[greeter]
+background=/usr/share/backgrounds/setzer.png
+theme-name=Adwaita-dark
+icon-theme-name=Papirus-Dark
+font-name=Sans 10
+EOF
+
+mkdir -p /etc/chromium/policies/recommended /etc/chromium/policies/managed
+cat > /etc/chromium/policies/recommended/setzer.json <<'EOF'
+{
+  "BackgroundModeEnabled": false,
+  "BrowserSignin": 1,
+  "HardwareAccelerationModeEnabled": true,
+  "HighEfficiencyModeEnabled": true,
+  "DefaultSearchProviderEnabled": true,
+  "DefaultSearchProviderName": "Google",
+  "DefaultSearchProviderKeyword": "google.com",
+  "DefaultSearchProviderSearchURL": "https://www.google.com/search?q={searchTerms}",
+  "DefaultSearchProviderSuggestURL": "https://www.google.com/complete/search?client=chrome&q={searchTerms}",
+  "PasswordManagerEnabled": true,
+  "SafeBrowsingProtectionLevel": 1
+}
+EOF
+cat > /etc/chromium/policies/managed/setzer-extensions.json <<'EOF'
+{
+  "ExtensionSettings": {
+    "omkfmpieigblcllmkgbflkikinpkodlk": {
+      "installation_mode": "normal_installed",
+      "update_url": "https://clients2.google.com/service/update2/crx"
+    }
+  }
+}
+EOF
+
+cat > /etc/chromium.d/99-setzer-dark <<'EOF'
+export LIBVA_DRIVER_NAME=i965
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --force-dark-mode --disable-background-mode --enable-features=VaapiVideoDecoder"
+EOF
+
+# Debian seeds DuckDuckGo before Chromium's first run. Keep its other defaults,
+# but make future profiles start with Google and sane browser protections.
+python3 - <<'PY'
+import json
+path = "/etc/chromium/master_preferences"
+with open(path) as f:
+    prefs = json.load(f)
+prefs["search_provider_overrides"] = [{
+    "enabled": True,
+    "encoding": "UTF-8",
+    "favicon_url": "https://www.google.com/favicon.ico",
+    "id": 1,
+    "keyword": "google.com",
+    "name": "Google",
+    "search_url": "https://www.google.com/search?q={searchTerms}",
+    "suggest_url": "https://www.google.com/complete/search?client=chrome&q={searchTerms}",
+}]
+prefs["search_provider_overrides_version"] = prefs.get("search_provider_overrides_version", 1) + 1
+prefs.setdefault("signin", {})["allowed"] = True
+prefs["signin"]["allowed_on_next_startup"] = True
+prefs.setdefault("safebrowsing", {})["enabled"] = True
+prefs["homepage"] = "https://www.google.com/"
+prefs.setdefault("bookmark_bar", {})["show_on_all_tabs"] = False
+with open(path, "w") as f:
+    json.dump(prefs, f, indent=2)
+    f.write("\n")
+PY
+
+python3 -m json.tool /etc/chromium/policies/recommended/setzer.json >/dev/null
+python3 -m json.tool /etc/chromium/policies/managed/setzer-extensions.json >/dev/null
+# Avoid needless metadata writes on the slow internal eMMC.
+sed -i 's#ext4[[:space:]]\+errors=remount-ro#ext4    noatime,errors=remount-ro#' /etc/fstab
+
+# The EC once held a false PROCHOT state until a cold Refresh+Power reset.
+# acpi-cpufreq has remained predictable since; keep a one-second GRUB window.
+sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=1/' /etc/default/grub
+sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet intel_pstate=disable preempt=full"/' /etc/default/grub
+update-grub
+
+# BFQ and smaller dirty-write bursts keep desktop input responsive while the
+# eMMC is busy with package installs or browser cache writes.
+echo bfq > /etc/modules-load.d/bfq.conf
+modprobe bfq
+printf '%s\n' 'ACTION=="add|change", KERNEL=="mmcblk0", ATTR{queue/scheduler}="bfq"' > /etc/udev/rules.d/60-setzer-io.rules
+echo bfq > /sys/block/mmcblk0/queue/scheduler
+cat > /etc/sysctl.d/91-setzer-io.conf <<'EOF'
+vm.dirty_background_bytes=16777216
+vm.dirty_bytes=67108864
+EOF
+sysctl --system >/dev/null
+
+# Prefer responsiveness under memory pressure and keep background maintenance
+# behind interactive work on this slow eMMC.
+if [ -f /etc/default/zramswap ]; then
+  sed -i 's/^ALGO=.*/ALGO=lz4/' /etc/default/zramswap
+fi
+mkdir -p /etc/NetworkManager/conf.d
+cat > /etc/NetworkManager/conf.d/20-wifi-performance.conf <<'EOF'
+[connection]
+wifi.powersave=2
+EOF
+for unit in nix-daemon apt-daily apt-daily-upgrade; do
+  mkdir -p "/etc/systemd/system/$unit.service.d"
+  cat > "/etc/systemd/system/$unit.service.d/20-low-io.conf" <<'EOF'
+[Service]
+Nice=15
+IOSchedulingClass=idle
+EOF
+done
+systemctl daemon-reload
+systemctl disable networking.service >/dev/null 2>&1 || true
+
+test -s /usr/share/backgrounds/setzer.png

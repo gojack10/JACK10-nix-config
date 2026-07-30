@@ -24,6 +24,8 @@
         fontSizeFoot = 11.5;
         fontSizeWaybar = 11.0;
         useSystemSway = true;
+        profile = "full";
+        desktop = "sway";
       };
 
       darwinDefaults = {
@@ -37,6 +39,8 @@
         fontSizeFoot = 11.5;
         fontSizeWaybar = 11.0;
         useSystemSway = true;
+        profile = "full";
+        desktop = "darwin";
       };
 
       machines = {
@@ -44,6 +48,11 @@
         litetop = linuxDefaults // { fontSize = 9.5; fontSizeWaybar = 9.5; };
         "10top" = linuxDefaults // { fontSizeWaybar = 11.5; };
         desktop = linuxDefaults;
+        setzer = linuxDefaults // {
+          profile = "minimal";
+          desktop = "xfce";
+          fontSize = 10.0;
+        };
         # Darwin hosts
         m2-air = darwinDefaults;
         m5-max = darwinDefaults;
@@ -57,8 +66,8 @@
         };
       };
 
-      # Modules shared across all platforms
-      sharedModules = [
+      # Modules shared by the full workstation profiles.
+      fullSharedModules = [
         ./home.nix
         ./modules/ssh/default.nix
         ./modules/packages/bootstrap-tools.nix
@@ -68,6 +77,18 @@
         ./modules/packages/salesforce-cli.nix
         ./modules/packages/timer.nix
         ./modules/scripts.nix
+        ./modules/shell/zsh.nix
+        ./modules/shell/tmux.nix
+        ./modules/shell/git.nix
+        ./modules/shell/lf.nix
+        ./modules/editor/nvim.nix
+      ];
+
+      # Small profile for storage-constrained machines. Heavy media, browser
+      # automation, Salesforce, Node, and workstation scripts stay out.
+      minimalSharedModules = [
+        ./home.nix
+        ./modules/packages/setzer.nix
         ./modules/shell/zsh.nix
         ./modules/shell/tmux.nix
         ./modules/shell/git.nix
@@ -105,7 +126,11 @@
         let
           isLinux = settings.system == "x86_64-linux";
           pkgs = nixpkgs.legacyPackages.${settings.system};
-          platformModules = if isLinux then linuxModules else darwinModules;
+          sharedModules = if settings.profile == "minimal" then minimalSharedModules else fullSharedModules;
+          platformModules =
+            if settings.desktop == "xfce" then [ ./modules/linux/xfce.nix ]
+            else if isLinux then linuxModules
+            else darwinModules;
         in home-manager.lib.homeManagerConfiguration {
           inherit pkgs;
           extraSpecialArgs = {

@@ -1,4 +1,4 @@
-{ config, pkgs, lib, ... }:
+{ config, pkgs, lib, settings, ... }:
 
 {
   programs.zsh = {
@@ -80,7 +80,7 @@
       gst = "git status";
       gsta = "git stash push";
       gstp = "git stash pop";
-    } // lib.optionalAttrs pkgs.stdenv.isLinux {
+    } // lib.optionalAttrs (pkgs.stdenv.isLinux && settings.desktop != "xfce") {
       open = "xdg-open";
       brave-update = "cd ~/void-packages && git -C ./srcpkgs/brave-bin pull && ./xbps-src pkg brave-bin && sudo xbps-install -R hostdir/binpkgs -u brave-bin && cd -";
       # Power management (polkit authorizes wheel group)
@@ -89,10 +89,15 @@
       bye = "echo cya && loginctl poweroff";
       rrr = "echo 'ok brb' && loginctl reboot";
       fixnet = "echo 'Restarting iwd...' && sudo sv restart iwd && echo 'Done'";
+    } // lib.optionalAttrs (pkgs.stdenv.isLinux && settings.desktop == "xfce") {
+      open = "xdg-open";
+      zzz = "echo gn && loginctl suspend && echo 'im up bro'";
+      bye = "echo cya && loginctl poweroff";
+      rrr = "echo 'ok brb' && loginctl reboot";
     };
 
     # .zprofile - runs on login shell
-    profileExtra = if pkgs.stdenv.isLinux then ''
+    profileExtra = if pkgs.stdenv.isLinux && settings.desktop != "xfce" then ''
       # XDG_RUNTIME_DIR for Wayland/Sway
       if [ -z "$XDG_RUNTIME_DIR" ]; then
         export XDG_RUNTIME_DIR=/tmp/$(id -u)-runtime-dir
@@ -220,7 +225,7 @@
         source "$HOME/.config/pi-secrets/env"
       fi
 
-      ${lib.optionalString pkgs.stdenv.isLinux ''
+      ${lib.optionalString (pkgs.stdenv.isLinux && settings.desktop != "xfce") ''
       # Sudo askpass for GUI prompts (enables sudo -A)
       export SUDO_ASKPASS="$HOME/.local/bin/askpass-wofi"
       ''}

@@ -1,4 +1,4 @@
-{ config, pkgs, lib, ... }:
+{ config, pkgs, lib, settings, ... }:
 
 {
   programs.tmux = {
@@ -201,6 +201,11 @@
 
       # Network (ethernet > wifi > disconnected)
       net=""
+      ${if settings.desktop == "xfce" then ''
+      net=$(/usr/bin/nmcli -t -f TYPE,STATE,CONNECTION device 2>/dev/null \
+        | sed -n 's/^wifi:connected://p' | head -n 1)
+      [ -n "$net" ] || net="DISCONNECTED"
+      '' else ''
       if ip link show enp4s0 2>/dev/null | grep -q 'state UP'; then
         net="ETH"
       elif ${pkgs.iwd}/bin/iwctl station wlp0s20f3 show 2>/dev/null | grep -q 'Connected'; then
@@ -209,6 +214,7 @@
       else
         net="DISCONNECTED"
       fi
+      ''}
 
       # CPU (delta between runs via /tmp cache)
       prev=/tmp/.tmux-cpu-prev

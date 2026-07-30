@@ -39,6 +39,16 @@
     package = pkgs.nix;
     settings = {
       experimental-features = [ "nix-command" "flakes" ];
+    } // lib.optionalAttrs (settings.profile != "minimal") {
+      auto-optimise-store = true;
+    } // lib.optionalAttrs (settings.profile == "minimal") {
+      max-jobs = 1;
+      cores = 1;
+    };
+    gc = lib.mkIf (settings.profile == "minimal") {
+      automatic = true;
+      dates = "weekly";
+      options = "--delete-older-than 7d";
     };
   };
 }

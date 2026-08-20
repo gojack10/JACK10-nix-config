@@ -64,19 +64,54 @@ if [[ "$tmp" -eq 0 && -n "$src" ]]; then
   text_dir="$HOME/transcriptions/${day}_text"
   audio_dir="$HOME/transcriptions/${day}_ref-audio"
   archive="$text_dir/${base}_${clock}.txt"
-  ref_audio="$audio_dir/${base}_${clock}${ext}"
+
+  is_video=0
+  if command -v ffprobe >/dev/null 2>&1; then
+    if video_stream="$(ffprobe -v error -select_streams V:0 \
+        -show_entries stream=index -of csv=p=0 "$src" 2>/dev/null)"; then
+      [[ -n "$video_stream" ]] && is_video=1
+    else
+      echo "transcribe: cannot inspect media streams: $src" >&2
+      exit 1
+    fi
+  else
+    # /usr/bin/env bash is Bash 3.2 here, so do not use ${ext,,}.
+    ext_lower="$(printf '%s' "$ext" | tr '[:upper:]' '[:lower:]')"
+    case "$ext_lower" in
+      .mov|.mp4|.m4v|.mkv|.avi|.webm|.mpeg|.mpg|.mts|.m2ts|.ts|.wmv|.flv|.3gp)
+        echo "transcribe: ffprobe is required to archive video as Opus" >&2
+        exit 127
+        ;;
+    esac
+  fi
+
+  if (( is_video )); then
+    command -v ffmpeg >/dev/null 2>&1 || {
+      echo "transcribe: ffmpeg with libopus is required to archive video" >&2
+      exit 127
+    }
+    ref_audio="$audio_dir/${base}_${clock}.opus"
+  else
+    ref_audio="$audio_dir/${base}_${clock}${ext}"
+  fi
+
   mkdir -p "$text_dir" "$audio_dir"
   trap 'rm -f -- "${archive:-}" "${ref_audio:-}"; exit 130' INT TERM
   set +e
-  cp -p -- "$src" "$ref_audio" 2>/dev/null
-  cp_status=$?
+  if (( is_video )); then
+    ffmpeg -nostdin -hide_banner -loglevel error -y -i "$src" \
+      -vn -ac 1 -ar 16000 -c:a libopus -b:a 64k "$ref_audio"
+  else
+    cp -p -- "$src" "$ref_audio" 2>/dev/null
+  fi
+  archive_status=$?
   set -e
   trap - INT TERM
-  # Keep the old best-effort archive behavior for normal cp errors, but do not
-  # swallow Ctrl-C/termination during the initial reference-audio copy.
-  if (( cp_status >= 128 )); then
+  # Keep the old best-effort archive behavior for normal cp errors, but make
+  # every video-conversion failure fatal and preserve signal cleanup.
+  if (( (is_video && archive_status != 0) || archive_status >= 128 )); then
     rm -f -- "$archive" "$ref_audio"
-    exit "$cp_status"
+    exit "$archive_status"
   fi
 fi
 

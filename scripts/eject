@@ -1,0 +1,273 @@
+#!/usr/bin/env -S uv run --with rich python
+"""Safely eject USB storage on macOS and Linux."""
+
+from __future__ import annotations
+
+import json
+import os
+import plistlib
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+from rich.console import Console
+from rich.prompt import Confirm, Prompt
+from rich.table import Table
+
+console = Console()
+
+
+@dataclass
+class Device:
+    path: str
+    aliases: list[str]
+    name: str
+    size: int
+    kind: str
+    volumes: list[str]
+    filesystems: list[str]
+    mountpoints: list[str]
+
+    @property
+    def volume(self) -> str:
+        return ", ".join(self.volumes) or "—"
+
+    @property
+    def filesystem(self) -> str:
+        return ", ".join(self.filesystems) or "—"
+
+    @property
+    def state(self) -> str:
+        return "connected" if self.mountpoints else "unmounted"
+
+
+def run(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(args, check=check, capture_output=True, text=True)
+
+
+def human_size(size: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    value = float(size)
+    for unit in units:
+        if value < 1000 or unit == units[-1]:
+            return f"{value:.1f} {unit}" if value < 10 and unit != "B" else f"{value:.0f} {unit}"
+        value /= 1000
+    raise AssertionError("unreachable")
+
+
+def mac_plist(*args: str) -> dict:
+    return plistlib.loads(subprocess.run(
+        ["diskutil", args[0], "-plist", *args[1:]], check=True, capture_output=True
+    ).stdout)
+
+
+def mac_devices() -> list[Device]:
+    devices = []
+    for disk in mac_plist("list", "external", "physical").get("AllDisksAndPartitions", []):
+        ident = disk["DeviceIdentifier"]
+        info = mac_plist("info", f"/dev/{ident}")
+        aliases, volumes, filesystems, mountpoints = [], [], [], []
+        for partition in disk.get("Partitions", []):
+            aliases.append(f"/dev/{partition['DeviceIdentifier']}")
+            volume = partition.get("VolumeName")
+            if not volume or volume == "EFI":
+                continue
+            volumes.append(volume)
+            part_info = mac_plist("info", f"/dev/{partition['DeviceIdentifier']}")
+            filesystem = part_info.get("FilesystemName")
+            mountpoint = part_info.get("MountPoint")
+            if filesystem and filesystem not in filesystems:
+                filesystems.append(filesystem)
+            if mountpoint:
+                mountpoints.append(mountpoint)
+        solid = info.get("SolidState")
+        kind = "USB SSD" if solid is True else "USB HDD" if solid is False else "USB drive"
+        devices.append(Device(
+            path=f"/dev/{ident}",
+            aliases=aliases,
+            name=info.get("MediaName") or ident,
+            size=info.get("TotalSize", disk.get("Size", 0)),
+            kind=kind,
+            volumes=volumes,
+            filesystems=filesystems,
+            mountpoints=mountpoints,
+        ))
+    return devices
+
+
+def descendants(node: dict) -> list[dict]:
+    found = []
+    for child in node.get("children") or []:
+        found.append(child)
+        found.extend(descendants(child))
+    return found
+
+
+def linux_devices() -> list[Device]:
+    fields = "NAME,PATH,TYPE,TRAN,ROTA,SIZE,MODEL,VENDOR,FSTYPE,LABEL,MOUNTPOINT"
+    data = json.loads(run("lsblk", "-J", "-b", "-o", fields).stdout)
+    devices = []
+    for disk in data.get("blockdevices", []):
+        if disk.get("type") != "disk" or disk.get("tran") != "usb":
+            continue
+        children = [disk, *descendants(disk)]
+        volumes = [x["label"] for x in children if x.get("label")]
+        filesystems = list(dict.fromkeys(x["fstype"] for x in children if x.get("fstype")))
+        mountpoints = [x["mountpoint"] for x in children if x.get("mountpoint")]
+        kind = "USB HDD" if disk.get("rota") else "USB SSD"
+        name = " ".join(x for x in (disk.get("vendor"), disk.get("model")) if x).strip()
+        devices.append(Device(
+            path=disk.get("path") or f"/dev/{disk['name']}",
+            aliases=[x["path"] for x in children if x.get("path")],
+            name=name or disk["name"],
+            size=int(disk.get("size") or 0),
+            kind=kind,
+            volumes=volumes,
+            filesystems=filesystems,
+            mountpoints=mountpoints,
+        ))
+    return devices
+
+
+def devices() -> list[Device]:
+    if sys.platform == "darwin":
+        return mac_devices()
+    if sys.platform.startswith("linux"):
+        return linux_devices()
+    raise SystemExit(f"eject: unsupported operating system: {sys.platform}")
+
+
+def table(items: list[Device], interactive: bool) -> Table:
+    grid = Table(show_header=True, header_style="bold", pad_edge=False)
+    if interactive:
+        grid.add_column("#", justify="right", style="bold")
+    grid.add_column("Drive")
+    grid.add_column("Volume")
+    grid.add_column("Size", justify="right")
+    grid.add_column("State")
+    grid.add_column("Details", style="dim")
+    if interactive:
+        grid.add_row("1", "[bold]Eject all external drives[/bold]", "", "", "", "")
+    for index, item in enumerate(items, start=2):
+        state = "[green]connected[/green]" if item.mountpoints else "[dim]unmounted[/dim]"
+        row = [item.name, item.volume, human_size(item.size), state,
+               f"{item.kind}, {item.filesystem}, {item.path}"]
+        grid.add_row(*([str(index)] + row if interactive else row))
+    return grid
+
+
+def matches(item: Device, target: str) -> bool:
+    target_path = str(Path(target).expanduser())
+    names = [item.path, Path(item.path).name, *item.aliases, item.name,
+             *item.volumes, *item.mountpoints]
+    if target_path.startswith("/Volumes/") or target_path.startswith("/media/") or target_path.startswith("/mnt/"):
+        target = target_path
+    return any(target.casefold() == name.casefold() for name in names if name)
+
+
+def resolve(items: list[Device], target: str) -> Device:
+    found = [item for item in items if matches(item, target)]
+    if not found:
+        raise ValueError(f"cannot find external USB drive: {target}")
+    if len(found) > 1:
+        raise ValueError(f"ambiguous external USB drive: {target}")
+    return found[0]
+
+
+def linux_eject(item: Device) -> None:
+    if "/" in item.mountpoints:
+        raise RuntimeError(f"refusing disk containing /: {item.path}")
+    os.sync()
+    for mountpoint in reversed(item.mountpoints):
+        if shutil.which("udisksctl"):
+            source = run("findmnt", "-rn", "-o", "SOURCE", "--target", mountpoint).stdout.strip()
+            run("udisksctl", "unmount", "-b", source)
+        else:
+            run("umount", mountpoint)
+    os.sync()
+    if shutil.which("udisksctl"):
+        run("udisksctl", "power-off", "-b", item.path)
+    else:
+        console.print(f"[green]Unmounted:[/green] {item.name} — safe to unplug "
+                      "(install udisks2 to power it off).")
+
+
+def eject_one(item: Device) -> bool:
+    console.print(f"Ejecting {item.name} ({item.volume})...")
+    try:
+        os.sync()
+        if sys.platform == "darwin":
+            run("diskutil", "eject", item.path)
+        else:
+            linux_eject(item)
+    except (subprocess.CalledProcessError, RuntimeError) as error:
+        detail = error.stderr.strip() if isinstance(error, subprocess.CalledProcessError) else str(error)
+        console.print(f"[red]Failed:[/red] {detail or item.name}")
+        return False
+    console.print(f"[green]Ejected:[/green] {item.name} — safe to unplug.")
+    return True
+
+
+def eject_many(items: list[Device]) -> int:
+    status = 0
+    for item in items:
+        if not eject_one(item):
+            status = 1
+    return status
+
+
+def usage() -> None:
+    print("""Usage: eject [--all | --list | volume | mountpoint | device ...]
+
+  eject          interactive numbered menu
+  eject --all    safely eject every external USB drive
+  eject --list   list external USB drives
+  eject TARGET   safely eject a volume, mountpoint, or device""")
+
+
+def interactive(items: list[Device]) -> int:
+    console.rule("[bold]Safely remove a drive[/bold]")
+    if not items:
+        console.print("\nNo external drives connected. Nothing to do.")
+        return 0
+    console.print(table(items, interactive=True))
+    console.print("Type a [bold]number[/bold] and press Enter, or [bold]q[/bold] to quit.")
+    choice = Prompt.ask("Your choice", choices=[str(i) for i in range(1, len(items) + 2)] + ["q"])
+    if choice == "q":
+        console.print("Cancelled — nothing was ejected.")
+        return 0
+    selected = items if choice == "1" else [items[int(choice) - 2]]
+    description = "all external drives" if choice == "1" else f"{selected[0].name} ({selected[0].volume})"
+    if not Confirm.ask(f"Eject {description}?", default=False):
+        console.print("Cancelled — nothing was ejected.")
+        return 0
+    return eject_many(selected)
+
+
+def main(argv: list[str]) -> int:
+    if argv and argv[0] in ("-h", "--help"):
+        usage()
+        return 0
+    items = devices()
+    if not argv:
+        return interactive(items)
+    if argv == ["--list"]:
+        if items:
+            console.print(table(items, interactive=False))
+        else:
+            console.print("No external drives connected.")
+        return 0
+    if argv == ["--all"]:
+        return eject_many(items) if items else 0
+    try:
+        selected = [resolve(items, target) for target in argv]
+    except ValueError as error:
+        console.print(f"[red]eject:[/red] {error}")
+        return 1
+    return eject_many(list({item.path: item for item in selected}.values()))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

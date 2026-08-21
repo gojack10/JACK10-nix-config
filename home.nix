@@ -1,6 +1,8 @@
 { config, pkgs, lib, settings, ... }:
 
 {
+  home.packages = [ pkgs.uv ];
+
   home.username = settings.username;
   home.homeDirectory = settings.homeDirectory;
   home.stateVersion = "25.11";
@@ -26,6 +28,12 @@
     "$HOME/.nix-profile/bin"
     "$HOME/.cargo/bin"
   ];
+
+  home.file.".local/bin/eject" = {
+    source = ./scripts/eject;
+    executable = true;
+    force = true;
+  };
 
   home.file.".local/share/JACK10-nix-config/bg.png" = lib.mkIf pkgs.stdenv.isLinux {
     source = ./bg.png;

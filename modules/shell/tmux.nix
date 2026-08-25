@@ -1,6 +1,10 @@
 { config, pkgs, lib, settings, ... }:
 
-{
+let
+  tmuxChooseTreeBase = "549c35b06165f6ae023115eb76f83f2cbf945395";
+  # Tag: jack-tmux-3.5a-r1. Pin the commit, never the movable tag name.
+  tmuxChooseTreeTip = "0859a85891e42f9a3b311594dacacb3cbb4e89bc";
+in {
   programs.tmux = {
     enable = true;
     # tmux 3.6a is crashing this machine's long-lived server when entering
@@ -14,7 +18,11 @@
         hash = "sha256-FiFr0IdxcN/MZBVwhbqQE2ELErCCVIx8lULMAQMZiVE=";
       };
       patches = (old.patches or []) ++ [
-        ./patches/tmux-choose-tree-preview.patch
+        (pkgs.fetchpatch {
+          name = "tmux-choose-tree-jack-tmux-3.5a-r1.patch";
+          url = "https://github.com/gojack10/tmux/compare/${tmuxChooseTreeBase}...${tmuxChooseTreeTip}.diff";
+          hash = "sha256-sX4MssExL5YtUPWcCtlexsg761TUz8Ahd4dpzdpmUgg=";
+        })
       ];
     });
     prefix = "C-Space";

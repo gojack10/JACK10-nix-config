@@ -1,22 +1,34 @@
-#!/usr/bin/env -S uv run --with rich python
+#!/usr/bin/env -S uv run --quiet --with rich python
 """Safely eject USB storage on macOS and Linux."""
 
 from __future__ import annotations
 
+import getpass
 import json
 import os
 import plistlib
+import re
+import shlex
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from rich import box
+from rich.cells import cell_len
 from rich.console import Console
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
+from rich.text import Text
 
-console = Console()
+_TERM = os.environ.get("TERM", "")
+PLAIN_TTY = not sys.stdout.isatty() or _TERM in {"dumb", "linux", "cons25", "vt100"}
+_COLOR_SYSTEM = None if not sys.stdout.isatty() else "standard" if PLAIN_TTY else "auto"
+console = Console(color_system=_COLOR_SYSTEM, highlight=False)
+COMMAND_LOG: list[str] = []
+APP_LOG: list[str] = []
 
 
 @dataclass
@@ -32,19 +44,79 @@ class Device:
 
     @property
     def volume(self) -> str:
-        return ", ".join(self.volumes) or "—"
+        return ", ".join(self.volumes) or "-"
 
     @property
     def filesystem(self) -> str:
-        return ", ".join(self.filesystems) or "—"
+        return ", ".join(self.filesystems) or "-"
 
     @property
     def state(self) -> str:
         return "connected" if self.mountpoints else "unmounted"
 
 
-def run(*args: str, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(args, check=check, capture_output=True, text=True)
+@dataclass
+class Holder:
+    pid: int
+    ppid: int | None = None
+    user: str = "?"
+    process: str = "?"
+    command: str = ""
+    paths: list[str] = field(default_factory=list)
+
+
+def command_string(args: tuple[str, ...] | list[str]) -> str:
+    return shlex.join(args)
+
+
+def run(
+    *args: str,
+    check: bool = True,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess:
+    COMMAND_LOG.append(command_string(args))
+    return subprocess.run(
+        args, check=check, capture_output=True, text=True, timeout=timeout
+    )
+
+
+def app_print(message: str = "", style: str | None = None) -> None:
+    APP_LOG.append(message)
+    console.print(Text(message, style=style))
+
+
+def status(label: str, subject: str, message: str) -> None:
+    styles = {
+        "RUN": "bold cyan",
+        "OK": "bold green",
+        "FAIL": "bold red",
+        "BLOCKED": "bold yellow",
+        "WARN": "bold yellow",
+        "INFO": "bold cyan",
+    }
+    line = f"[{label}] {subject} | {message}"
+    APP_LOG.append(line)
+    console.print(Text.assemble((f"[{label}] ", styles.get(label, "bold")),
+                                (subject, "bold"), " | ", message))
+
+
+def error_detail(error: Exception) -> str:
+    if isinstance(error, subprocess.CalledProcessError):
+        return (error.stderr or error.stdout or str(error)).strip()
+    return str(error)
+
+
+def step(item: Device, label: str, action):
+    status("RUN", item.path, label)
+    try:
+        result = action()
+    except Exception as error:
+        status("FAIL", item.path, label)
+        for line in error_detail(error).splitlines():
+            app_print(f"  {line}")
+        raise
+    status("OK", item.path, label)
+    return result
 
 
 def human_size(size: int) -> str:
@@ -58,13 +130,11 @@ def human_size(size: int) -> str:
 
 
 def mac_plist(*args: str) -> dict:
-    return plistlib.loads(subprocess.run(
-        ["diskutil", args[0], "-plist", *args[1:]], check=True, capture_output=True
-    ).stdout)
+    return plistlib.loads(run("diskutil", args[0], "-plist", *args[1:]).stdout.encode())
 
 
 def mac_devices() -> list[Device]:
-    devices = []
+    found = []
     for disk in mac_plist("list", "external", "physical").get("AllDisksAndPartitions", []):
         ident = disk["DeviceIdentifier"]
         info = mac_plist("info", f"/dev/{ident}")
@@ -84,7 +154,7 @@ def mac_devices() -> list[Device]:
                 mountpoints.append(mountpoint)
         solid = info.get("SolidState")
         kind = "USB SSD" if solid is True else "USB HDD" if solid is False else "USB drive"
-        devices.append(Device(
+        found.append(Device(
             path=f"/dev/{ident}",
             aliases=aliases,
             name=info.get("MediaName") or ident,
@@ -94,7 +164,7 @@ def mac_devices() -> list[Device]:
             filesystems=filesystems,
             mountpoints=mountpoints,
         ))
-    return devices
+    return found
 
 
 def descendants(node: dict) -> list[dict]:
@@ -108,7 +178,7 @@ def descendants(node: dict) -> list[dict]:
 def linux_devices() -> list[Device]:
     fields = "NAME,PATH,TYPE,TRAN,ROTA,SIZE,MODEL,VENDOR,FSTYPE,LABEL,MOUNTPOINT"
     data = json.loads(run("lsblk", "-J", "-b", "-o", fields).stdout)
-    devices = []
+    found = []
     for disk in data.get("blockdevices", []):
         if disk.get("type") != "disk" or disk.get("tran") != "usb":
             continue
@@ -118,7 +188,7 @@ def linux_devices() -> list[Device]:
         mountpoints = [x["mountpoint"] for x in children if x.get("mountpoint")]
         kind = "USB HDD" if disk.get("rota") else "USB SSD"
         name = " ".join(x for x in (disk.get("vendor"), disk.get("model")) if x).strip()
-        devices.append(Device(
+        found.append(Device(
             path=disk.get("path") or f"/dev/{disk['name']}",
             aliases=[x["path"] for x in children if x.get("path")],
             name=name or disk["name"],
@@ -128,7 +198,7 @@ def linux_devices() -> list[Device]:
             filesystems=filesystems,
             mountpoints=mountpoints,
         ))
-    return devices
+    return found
 
 
 def devices() -> list[Device]:
@@ -139,30 +209,91 @@ def devices() -> list[Device]:
     raise SystemExit(f"eject: unsupported operating system: {sys.platform}")
 
 
-def table(items: list[Device], interactive: bool) -> Table:
-    grid = Table(show_header=True, header_style="bold", pad_edge=False)
-    if interactive:
-        grid.add_column("#", justify="right", style="bold")
-    grid.add_column("Drive")
-    grid.add_column("Volume")
-    grid.add_column("Size", justify="right")
-    grid.add_column("State")
-    grid.add_column("Details", style="dim")
-    if interactive:
-        grid.add_row("1", "[bold]Eject all external drives[/bold]", "", "", "", "")
-    for index, item in enumerate(items, start=2):
-        state = "[green]connected[/green]" if item.mountpoints else "[dim]unmounted[/dim]"
-        row = [item.name, item.volume, human_size(item.size), state,
-               f"{item.kind}, {item.filesystem}, {item.path}"]
-        grid.add_row(*([str(index)] + row if interactive else row))
-    return grid
+_CELL_STYLES = {
+    "[OK]": "bold green",
+    "OK": "bold green",
+    "[BLOCKED]": "bold yellow",
+    "BLOCKED": "bold yellow",
+    "[FAIL]": "bold red",
+    "FAIL": "bold red",
+    "connected": "green",
+    "unmounted": "dim",
+}
+
+
+def _clip(value: str, width: int) -> str:
+    if cell_len(value) <= width:
+        return value
+    suffix = "..." if width >= 4 else ""
+    clipped = value
+    while clipped and cell_len(clipped) > width - len(suffix):
+        clipped = clipped[:-1]
+    return clipped + suffix
+
+
+def print_table(headers: list[str], rows: list[list[str]]) -> None:
+    """Rich Markdown table normally; aligned ASCII pipes on a plain TTY."""
+    if not rows:
+        return
+    APP_LOG.append(" | ".join(headers))
+    APP_LOG.extend(" | ".join(row) for row in rows)
+    if not PLAIN_TTY:
+        grid = Table(box=box.MARKDOWN, padding=(0, 1), pad_edge=True)
+        for header in headers:
+            grid.add_column(header, header_style="bold")
+        for row in rows:
+            grid.add_row(*(Text(value, style=_CELL_STYLES.get(value, "")) for value in row))
+        console.print(grid)
+        return
+
+    widths = [max(cell_len(headers[i]), *(cell_len(row[i]) for row in rows))
+              for i in range(len(headers))]
+    excess = sum(widths) + 3 * (len(widths) - 1) - max(console.width, 40)
+    for i in range(len(widths) - 1, -1, -1):
+        if excess <= 0:
+            break
+        minimum = max(len(headers[i]), 8)
+        shrink = min(excess, max(0, widths[i] - minimum))
+        widths[i] -= shrink
+        excess -= shrink
+
+    def print_row(values: list[str], header: bool = False) -> None:
+        line = Text()
+        for i, value in enumerate(values):
+            clipped = _clip(value, widths[i])
+            style = "bold" if header else _CELL_STYLES.get(value, "")
+            line.append(clipped + " " * (widths[i] - cell_len(clipped)), style=style)
+            if i + 1 < len(values):
+                line.append(" | ", style="dim")
+        console.print(line)
+
+    print_row(headers, header=True)
+    for row in rows:
+        print_row(row)
+
+
+def device_rows(items: list[Device], choices: dict[str, list[Device]] | None = None) -> list[list[str]]:
+    rows = []
+    if choices:
+        for key, selected in choices.items():
+            if len(selected) > 1:
+                rows.append([key, f"Eject all {len(selected)} external drives", "-", "-", "-"])
+                continue
+            item = selected[0]
+            rows.append([key, item.name, item.volume, human_size(item.size),
+                         f"{item.state}; {item.kind}; {item.path}"])
+        return rows
+    for item in items:
+        rows.append([item.name, item.volume, human_size(item.size), item.state,
+                     f"{item.kind}; {item.filesystem}; {item.path}"])
+    return rows
 
 
 def matches(item: Device, target: str) -> bool:
     target_path = str(Path(target).expanduser())
     names = [item.path, Path(item.path).name, *item.aliases, item.name,
              *item.volumes, *item.mountpoints]
-    if target_path.startswith("/Volumes/") or target_path.startswith("/media/") or target_path.startswith("/mnt/"):
+    if target_path.startswith(("/Volumes/", "/media/", "/mnt/")):
         target = target_path
     return any(target.casefold() == name.casefold() for name in names if name)
 
@@ -176,97 +307,567 @@ def resolve(items: list[Device], target: str) -> Device:
     return found[0]
 
 
-def linux_eject(item: Device) -> None:
+def check_linux_device(item: Device) -> None:
     if "/" in item.mountpoints:
         raise RuntimeError(f"refusing disk containing /: {item.path}")
-    os.sync()
+
+
+def linux_eject(item: Device) -> None:
+    step(item, "Checking that the device does not contain /", lambda: check_linux_device(item))
+    step(item, "Syncing filesystems before unmount", os.sync)
     for mountpoint in reversed(item.mountpoints):
         if shutil.which("udisksctl"):
-            source = run("findmnt", "-rn", "-o", "SOURCE", "--target", mountpoint).stdout.strip()
-            run("udisksctl", "unmount", "-b", source)
+            source = step(
+                item,
+                f"Finding the block device mounted at {mountpoint}",
+                lambda mountpoint=mountpoint: run(
+                    "findmnt", "-rn", "-o", "SOURCE", "--target", mountpoint
+                ).stdout.strip(),
+            )
+            step(item, f"Unmounting {mountpoint}",
+                 lambda source=source: run("udisksctl", "unmount", "-b", source))
         else:
-            run("umount", mountpoint)
-    os.sync()
+            step(item, f"Unmounting {mountpoint}",
+                 lambda mountpoint=mountpoint: run("umount", mountpoint))
+    step(item, "Syncing filesystems after unmount", os.sync)
     if shutil.which("udisksctl"):
-        run("udisksctl", "power-off", "-b", item.path)
+        step(item, f"Powering off {item.path}", lambda: run("udisksctl", "power-off", "-b", item.path))
     else:
-        console.print(f"[green]Unmounted:[/green] {item.name} — safe to unplug "
-                      "(install udisks2 to power it off).")
+        status("WARN", item.path, "unmounted but still powered; udisks2 is unavailable")
 
 
-def eject_one(item: Device) -> bool:
-    console.print(f"Ejecting {item.name} ({item.volume})...")
+def attempt_eject(item: Device) -> Exception | None:
     try:
-        os.sync()
         if sys.platform == "darwin":
-            run("diskutil", "eject", item.path)
+            step(item, "Syncing filesystems", os.sync)
+            step(item, "Ejecting drive", lambda: run("diskutil", "eject", item.path))
         else:
             linux_eject(item)
-    except (subprocess.CalledProcessError, RuntimeError) as error:
-        detail = error.stderr.strip() if isinstance(error, subprocess.CalledProcessError) else str(error)
-        console.print(f"[red]Failed:[/red] {detail or item.name}")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as error:
+        return error
+    return None
+
+
+def eject_success(item: Device, forced: bool = False) -> None:
+    result = "force-ejected; safe to unplug" if forced else "ejected; safe to unplug"
+    status("OK", item.path, f"{item.name} {result}")
+
+
+def reported_pid(error: Exception) -> int | None:
+    match = re.search(r"dissented by PID\s+(\d+)", error_detail(error), re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def process_info(pid: int) -> Holder | None:
+    result = run("ps", "-p", str(pid), "-o", "pid=,ppid=,user=,comm=,args=", check=False)
+    line = result.stdout.strip()
+    if not line:
+        return None
+    parts = line.split(None, 4)
+    if len(parts) < 4:
+        return None
+    return Holder(
+        pid=int(parts[0]),
+        ppid=int(parts[1]),
+        user=parts[2],
+        process=parts[3],
+        command=parts[4] if len(parts) == 5 else parts[3],
+    )
+
+
+def parse_lsof(output: str) -> list[Holder]:
+    holders: dict[int, Holder] = {}
+    current: Holder | None = None
+    for line in output.splitlines():
+        if not line:
+            continue
+        key, value = line[0], line[1:]
+        if key == "p" and value.isdigit():
+            current = holders.setdefault(int(value), Holder(pid=int(value)))
+        elif current is not None and key == "R" and value.isdigit():
+            current.ppid = int(value)
+        elif current is not None and key == "L":
+            current.user = value
+        elif current is not None and key == "c":
+            current.process = value
+        elif current is not None and key == "n" and value not in current.paths:
+            current.paths.append(value)
+    return list(holders.values())
+
+
+def merge_holders(target: dict[int, Holder], incoming: list[Holder]) -> None:
+    for holder in incoming:
+        existing = target.setdefault(holder.pid, holder)
+        if existing is holder:
+            continue
+        existing.ppid = existing.ppid if existing.ppid is not None else holder.ppid
+        if existing.user == "?":
+            existing.user = holder.user
+        if existing.process == "?":
+            existing.process = holder.process
+        for path in holder.paths:
+            if path not in existing.paths:
+                existing.paths.append(path)
+
+
+def scan_holders(item: Device, timeout: float = 2.0) -> tuple[list[Holder], str]:
+    if not item.mountpoints:
+        return [], "no mounted volumes to scan"
+    started = time.monotonic()
+    deadline = started + timeout
+    found: dict[int, Holder] = {}
+    tool = "lsof" if sys.platform == "darwin" else "fuser"
+    if not shutil.which(tool):
+        return [], f"{tool} is unavailable"
+
+    try:
+        for mountpoint in item.mountpoints:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(tool, timeout)
+            if sys.platform == "darwin":
+                result = run("lsof", "-nP", "-FpcRLn", "+D", mountpoint,
+                             check=False, timeout=remaining)
+                merge_holders(found, parse_lsof(result.stdout))
+            else:
+                result = run("fuser", "-m", mountpoint, check=False, timeout=remaining)
+                for value in re.findall(r"\d+", result.stdout):
+                    pid = int(value)
+                    holder = process_info(pid) or Holder(pid=pid)
+                    if mountpoint not in holder.paths:
+                        holder.paths.append(mountpoint)
+                    merge_holders(found, [holder])
+    except subprocess.TimeoutExpired:
+        return sorted(found.values(), key=lambda h: h.pid), f"incomplete; timed out after {timeout:.1f}s"
+
+    for pid, holder in list(found.items()):
+        info = process_info(pid)
+        if info:
+            holder.ppid = info.ppid
+            holder.user = info.user
+            holder.process = info.process
+            holder.command = info.command
+    elapsed = (time.monotonic() - started) * 1000
+    return sorted(found.values(), key=lambda h: h.pid), f"complete in {elapsed:.0f}ms"
+
+
+def holder_path(holder: Holder) -> str:
+    if not holder.paths:
+        return "-"
+    extra = len(holder.paths) - 1
+    return holder.paths[0] + (f" (+{extra} more)" if extra else "")
+
+
+def show_holders(holders: list[Holder], scan_result: str) -> None:
+    if holders:
+        print_table(
+            ["PID", "PPID", "USER", "PROCESS", "OPEN", "HELD PATH"],
+            [[str(h.pid), str(h.ppid) if h.ppid is not None else "?", h.user,
+              h.process, str(len(h.paths)), holder_path(h)] for h in holders],
+        )
+    else:
+        app_print("No user-space open files were found.")
+    app_print(f"Holder scan: {scan_result}")
+    if scan_result.startswith("incomplete"):
+        app_print("This does not mean that no process is holding the volume.", "yellow")
+
+
+def holder_commands(item: Device, pid: int | None = None) -> list[tuple[str, str]]:
+    commands = []
+    if pid is not None:
+        commands.append(("Identify the reported process",
+                         f"ps -p {pid} -o pid,ppid,user,comm,args"))
+    if sys.platform == "darwin":
+        commands.extend(("Find open files on this volume",
+                         f"lsof -nP +D {shlex.quote(mountpoint)} | head -50")
+                        for mountpoint in item.mountpoints)
+    else:
+        commands.extend(("Find processes using this volume",
+                         f"fuser -vm {shlex.quote(mountpoint)}")
+                        for mountpoint in item.mountpoints)
+    return commands
+
+
+def show_failure(item: Device, error: Exception) -> None:
+    detail = error_detail(error)
+    status("BLOCKED", item.path, f"{item.name} remains mounted")
+    app_print(f"  Drive: {item.name}")
+    app_print(f"  Volumes: {item.volume}")
+    pid = reported_pid(error)
+    if pid is not None:
+        app_print(f"  Dissenter: PID {pid}")
+    if "kernel_task" in detail or re.search(r"PPID\s+0", detail):
+        app_print("  Parent: kernel_task (kernel-side; do not try to stop it)")
+    app_print("  macOS or Linux refused to release at least one mounted volume.")
+
+
+def print_actions(actions: list[tuple[str, str, str]]) -> str:
+    console.print()
+    console.print(Text("What would you like to do?", style="bold"))
+    for key, title, explanation in actions:
+        console.print(Text.assemble((f"[{key}] ", "bold cyan"), (title, "bold")))
+        console.print(f"    {explanation}")
+    return Prompt.ask("Select", choices=[key for key, _, _ in actions])
+
+
+def lookup_pid(pid: int) -> Holder | None:
+    command = f"ps -p {pid} -o pid,ppid,user,comm,args"
+    app_print("This command asks the operating system which application owns the PID:")
+    app_print(f"  {command}", "cyan")
+    status("RUN", str(pid), "identifying process")
+    holder = process_info(pid)
+    if holder is None:
+        status("INFO", str(pid), "process no longer exists; a safe retry may now work")
+        return None
+    print_table(["PID", "PPID", "USER", "PROCESS", "COMMAND"], [[
+        str(holder.pid), str(holder.ppid), holder.user, holder.process, holder.command
+    ]])
+    return holder
+
+
+def pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
         return False
-    console.print(f"[green]Ejected:[/green] {item.name} — safe to unplug.")
+    except PermissionError:
+        return True
     return True
 
 
-def eject_many(items: list[Device]) -> int:
-    status = 0
+def stop_holder(holders: list[Holder]) -> bool:
+    if not holders:
+        app_print("No user-space holder is available to stop. Scan the volumes first.", "yellow")
+        return False
+    print_table(["#", "PID", "USER", "PROCESS", "HELD PATH"], [
+        [str(i), str(h.pid), h.user, h.process, holder_path(h)]
+        for i, h in enumerate(holders, 1)
+    ])
+    choice = Prompt.ask("Process to stop", choices=[str(i) for i in range(1, len(holders) + 1)])
+    holder = holders[int(choice) - 1]
+    current = process_info(holder.pid)
+    if current is None:
+        status("INFO", str(holder.pid), "process already exited")
+        return True
+    if current.ppid == 0 or current.process == "kernel_task":
+        status("WARN", str(holder.pid), "kernel-side process cannot be stopped here")
+        return False
+    if current.user != getpass.getuser() and os.geteuid() != 0:
+        status("WARN", str(holder.pid), f"owned by {current.user}; eject will not request administrator access")
+        return False
+
+    app_print(f"Process: {current.process} (PID {current.pid})")
+    app_print(f"Command: {current.command}")
+    app_print(f"The CLI will run: kill -TERM {current.pid}", "cyan")
+    app_print("This asks the process to exit cleanly, but active work may be interrupted.")
+    if not Confirm.ask("Stop this process and then retry eject?", default=False):
+        return False
+    try:
+        run("kill", "-TERM", str(current.pid))
+    except subprocess.CalledProcessError as error:
+        status("FAIL", str(current.pid), error_detail(error))
+        return False
+
+    deadline = time.monotonic() + 2
+    while pid_alive(current.pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    if not pid_alive(current.pid):
+        status("OK", str(current.pid), "process exited")
+        return True
+
+    status("BLOCKED", str(current.pid), "process did not exit after 2 seconds")
+    app_print(f"Force-stop command: kill -KILL {current.pid}", "red")
+    app_print("A force-stopped process cannot save or clean up before exiting.", "yellow")
+    if Prompt.ask("Type kill to force-stop, or press Enter to go back", default="") != "kill":
+        return False
+    try:
+        run("kill", "-KILL", str(current.pid))
+    except subprocess.CalledProcessError as error:
+        status("FAIL", str(current.pid), error_detail(error))
+        return False
+    status("OK", str(current.pid), "process force-stopped")
+    return True
+
+
+def force_eject(item: Device) -> bool:
+    try:
+        if sys.platform == "darwin":
+            step(item, "Force-unmounting all volumes",
+                 lambda: run("diskutil", "unmountDisk", "force", item.path))
+            step(item, "Ejecting drive", lambda: run("diskutil", "eject", item.path))
+        else:
+            check_linux_device(item)
+            step(item, "Syncing filesystems before forced unmount", os.sync)
+            for mountpoint in reversed(item.mountpoints):
+                step(item, f"Force-unmounting {mountpoint}",
+                     lambda mountpoint=mountpoint: run("umount", "-f", mountpoint))
+            if shutil.which("udisksctl"):
+                step(item, f"Powering off {item.path}",
+                     lambda: run("udisksctl", "power-off", "-b", item.path))
+    except (subprocess.CalledProcessError, RuntimeError) as error:
+        status("FAIL", item.path, f"forced eject failed: {error_detail(error)}")
+        return False
+    eject_success(item, forced=True)
+    return True
+
+
+def confirm_force(item: Device) -> bool:
+    app_print(f"Force-unmount {item.volume} and eject {item.path}?", "bold yellow")
+    if sys.platform == "darwin":
+        app_print(f"  diskutil unmountDisk force {item.path}", "cyan")
+        app_print(f"  diskutil eject {item.path}", "cyan")
+    else:
+        for mountpoint in item.mountpoints:
+            app_print(f"  umount -f {shlex.quote(mountpoint)}", "cyan")
+    app_print("This bypasses holder consent. Unwritten data may be lost.", "bold red")
+    app_print("Filesystem repair may be required the next time the drive is connected.")
+    return Prompt.ask("Type force to continue, or press Enter to cancel", default="") == "force"
+
+
+def build_support_prompt(item: Device, error: Exception) -> str:
+    commands = "\n".join(f"- {command}" for command in COMMAND_LOG) or "- none recorded"
+    logs = "\n".join(f"- {line}" for line in APP_LOG if line) or "- none recorded"
+    return f"""My USB eject command failed on {sys.platform}.
+
+Device:
+- Drive: {item.name}
+- Device: {item.path}
+- Volumes: {item.volume}
+- Filesystems: {item.filesystem}
+- Mountpoints: {', '.join(item.mountpoints) or '-'}
+
+Original failure:
+{error_detail(error)}
+
+Commands run:
+{commands}
+
+Eject application log:
+{logs}
+
+Please explain the likely cause and walk me through the safest next action.
+Distinguish waiting, stopping a user process, and force-unmounting. Do not
+suggest killing kernel_task. Warn before any action that could lose data.
+"""
+
+
+def copy_support_prompt(item: Device, error: Exception) -> None:
+    prompt = build_support_prompt(item, error)
+    app_print("The support prompt includes device names, mountpoints, commands, and process logs.")
+    app_print("Those details may contain private filenames or command arguments.", "yellow")
+    if not Confirm.ask("Copy it to the clipboard?", default=False):
+        return
+    if sys.platform == "darwin" and shutil.which("pbcopy"):
+        command = ["pbcopy"]
+    elif shutil.which("wl-copy"):
+        command = ["wl-copy"]
+    elif shutil.which("xclip"):
+        command = ["xclip", "-selection", "clipboard"]
+    else:
+        app_print("Clipboard command unavailable. Copy the prompt between the markers below.", "yellow")
+        console.print("--- SUPPORT PROMPT START ---")
+        console.print(prompt, markup=False)
+        console.print("--- SUPPORT PROMPT END ---")
+        return
+    COMMAND_LOG.append(command_string(command))
+    try:
+        subprocess.run(command, input=prompt, text=True, check=True)
+    except subprocess.CalledProcessError as clipboard_error:
+        status("FAIL", "clipboard", str(clipboard_error))
+        return
+    status("OK", "clipboard", "support prompt copied")
+
+
+def recovery_menu(item: Device, error: Exception) -> bool:
+    holders: list[Holder] = []
+    show_failure(item, error)
+    while True:
+        pid = reported_pid(error)
+        choice = print_actions([
+            ("1", f"Identify PID {pid}" if pid else "Identify the reported process",
+             "Find the application behind the failure." if pid else "No PID was reported for this failure."),
+            ("2", "Scan mounted volumes for open files",
+             "Find applications currently reading or writing the drive; capped at 2 seconds."),
+            ("3", "Retry safely", "Try the normal eject again without stopping anything."),
+            ("4", "Stop one listed process, then retry",
+             "Ask a user-owned process to exit; scan holders first."),
+            ("5", "Force-unmount and eject", "Bypass holder consent; unwritten data could be lost."),
+            ("6", "Copy a support prompt", "Copy the failure, commands run, and eject logs for an LLM."),
+            ("7", "Cancel", "Leave the drive mounted."),
+        ])
+        if choice == "1":
+            if pid is None:
+                app_print("This failure did not report a PID. Scan the volumes instead.", "yellow")
+            else:
+                holder = lookup_pid(pid)
+                if holder:
+                    holders = [holder]
+        elif choice == "2":
+            status("RUN", item.path, f"scanning {len(item.mountpoints)} mountpoint(s) for holders")
+            holders, scan_result = scan_holders(item)
+            show_holders(holders, scan_result)
+            app_print("Commands used by the guide are available below:")
+            for meaning, command in holder_commands(item, pid):
+                app_print(f"  {meaning}: {command}")
+        elif choice == "3":
+            error = attempt_eject(item)
+            if error is None:
+                eject_success(item)
+                return True
+            show_failure(item, error)
+        elif choice == "4":
+            if stop_holder(holders):
+                error = attempt_eject(item)
+                if error is None:
+                    eject_success(item)
+                    return True
+                show_failure(item, error)
+        elif choice == "5":
+            if confirm_force(item):
+                return force_eject(item)
+        elif choice == "6":
+            copy_support_prompt(item, error)
+        else:
+            status("INFO", item.path, "cancelled; drive remains mounted")
+            return False
+
+
+def noninteractive_help(item: Device, error: Exception) -> None:
+    pid = reported_pid(error)
+    app_print("No prompts were shown because this is a noninteractive run.")
+    app_print("For guided recovery, run this command in a terminal:")
+    app_print(f"  eject {shlex.quote(item.path)}", "cyan")
+    app_print("The guide can identify holders, stop a selected user process, retry, force-eject, or copy an LLM prompt.")
+    app_print("Commands available in the guide:")
+    for meaning, command in holder_commands(item, pid):
+        app_print(f"  {meaning}: {command}")
+    app_print(f"  Force-unmount with data-loss risk: eject --force {shlex.quote(item.path)}")
+
+
+def failure_summary(error: Exception) -> str:
+    detail = error_detail(error)
+    if "kernel_task" in detail or re.search(r"PPID\s+0", detail):
+        return "kernel-side dissenter"
+    if re.search(r"busy|dissent|could not be unmounted", detail, re.IGNORECASE):
+        return "volume still in use"
+    return detail.splitlines()[0][:60] if detail else "eject failed"
+
+
+def eject_one(item: Device, recover: bool = False, force: bool = False) -> tuple[bool, str]:
+    error = attempt_eject(item)
+    if error is None:
+        eject_success(item)
+        return True, "ejected"
+
+    if force:
+        show_failure(item, error)
+        holders, scan_result = scan_holders(item)
+        show_holders(holders, scan_result)
+        if force_eject(item):
+            return True, "force-ejected"
+        return False, "forced eject failed"
+
+    if recover:
+        return (True, "ejected") if recovery_menu(item, error) else (False, failure_summary(error))
+
+    show_failure(item, error)
+    holders, scan_result = scan_holders(item)
+    show_holders(holders, scan_result)
+    noninteractive_help(item, error)
+    return False, failure_summary(error)
+
+
+def eject_many(items: list[Device], recover: bool = False, force: bool = False) -> int:
+    results = []
+    failed = 0
     for item in items:
-        if not eject_one(item):
-            status = 1
-    return status
+        ok, result = eject_one(item, recover=recover, force=force)
+        failed += not ok
+        results.append(["[OK]" if ok else "[BLOCKED]", item.path, item.name, result])
+    if len(results) > 1:
+        print_table(["STATUS", "DEVICE", "DRIVE", "RESULT"], results)
+        app_print(f"Summary: {len(items) - failed} ejected, {failed} failed")
+    return int(bool(failed))
 
 
 def usage() -> None:
-    print("""Usage: eject [--all | --list | volume | mountpoint | device ...]
+    print("""Usage: eject [--force] [--all | --list | volume | mountpoint | device ...]
 
-  eject          interactive numbered menu
-  eject --all    safely eject every external USB drive
-  eject --list   list external USB drives
-  eject TARGET   safely eject a volume, mountpoint, or device""")
+  eject                 interactive numbered menu
+  eject --all           safely eject every external USB drive without prompts
+  eject --list          list external USB drives
+  eject TARGET          eject a volume, mountpoint, or device
+  eject --force TARGET  force-unmount only after normal eject fails""")
 
 
-def interactive(items: list[Device]) -> int:
-    console.rule("[bold]Safely remove a drive[/bold]")
+def interactive(items: list[Device], force: bool = False) -> int:
     if not items:
-        console.print("\nNo external drives connected. Nothing to do.")
         return 0
-    console.print(table(items, interactive=True))
-    console.print("Type a [bold]number[/bold] and press Enter, or [bold]q[/bold] to quit.")
-    choice = Prompt.ask("Your choice", choices=[str(i) for i in range(1, len(items) + 2)] + ["q"])
+    choices: dict[str, list[Device]] = {}
+    number = 1
+    if len(items) > 1:
+        choices[str(number)] = items
+        number += 1
+    for item in items:
+        choices[str(number)] = [item]
+        number += 1
+    print_table(["#", "DRIVE", "VOLUME", "SIZE", "STATE / DETAILS"], device_rows(items, choices))
+    console.print(Text.assemble(("[q] ", "bold cyan"), ("Quit", "bold")))
+    choice = Prompt.ask("Select", choices=[*choices, "q"])
     if choice == "q":
-        console.print("Cancelled — nothing was ejected.")
+        status("INFO", "eject", "cancelled; nothing was ejected")
         return 0
-    selected = items if choice == "1" else [items[int(choice) - 2]]
-    description = "all external drives" if choice == "1" else f"{selected[0].name} ({selected[0].volume})"
+    selected = choices[choice]
+    description = "all external drives" if len(selected) > 1 else f"{selected[0].name} ({selected[0].volume})"
     if not Confirm.ask(f"Eject {description}?", default=False):
-        console.print("Cancelled — nothing was ejected.")
+        status("INFO", "eject", "cancelled; nothing was ejected")
         return 0
-    return eject_many(selected)
+    return eject_many(selected, recover=True, force=force)
 
 
 def main(argv: list[str]) -> int:
-    if argv and argv[0] in ("-h", "--help"):
+    if any(arg in ("-h", "--help") for arg in argv):
         usage()
         return 0
+
+    force = "--force" in argv
+    if argv.count("--force") > 1:
+        console.print("eject: --force may only be specified once", style="red")
+        return 2
+    argv = [arg for arg in argv if arg != "--force"]
+    if any(arg.startswith("-") and arg not in ("--all", "--list") for arg in argv):
+        console.print(f"eject: unknown option: {next(arg for arg in argv if arg.startswith('-'))}", style="red")
+        return 2
+    if force and argv == ["--list"]:
+        console.print("eject: --force cannot be used with --list", style="red")
+        return 2
+
     items = devices()
+    if items:
+        status("OK", "discovery", f"found {len(items)} external USB drive(s): " +
+               ", ".join(item.path for item in items))
+    else:
+        status("INFO", "discovery", "no external USB drives found")
+
     if not argv:
-        return interactive(items)
+        return interactive(items, force=force)
     if argv == ["--list"]:
-        if items:
-            console.print(table(items, interactive=False))
-        else:
-            console.print("No external drives connected.")
+        print_table(["DRIVE", "VOLUME", "SIZE", "STATE", "DETAILS"], device_rows(items))
         return 0
     if argv == ["--all"]:
-        return eject_many(items) if items else 0
+        return eject_many(items, recover=False, force=force)
+    if "--all" in argv or "--list" in argv:
+        console.print("eject: --all and --list cannot be combined with targets", style="red")
+        return 2
+
     try:
         selected = [resolve(items, target) for target in argv]
     except ValueError as error:
-        console.print(f"[red]eject:[/red] {error}")
+        console.print(f"eject: {error}", style="red")
         return 1
-    return eject_many(list({item.path: item for item in selected}.values()))
+    unique = list({item.path: item for item in selected}.values())
+    recover = console.is_terminal and sys.stdin.isatty()
+    return eject_many(unique, recover=recover, force=force)
 
 
 if __name__ == "__main__":

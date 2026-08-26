@@ -86,6 +86,12 @@
     force = true;
   };
 
+  home.file.".local/bin/stimulant" = lib.mkIf pkgs.stdenv.isDarwin {
+    source = ../scripts/stimulant;
+    executable = true;
+    force = true;
+  };
+
   home.file.".local/bin/tmux-restart" = {
     executable = true;
     force = true;

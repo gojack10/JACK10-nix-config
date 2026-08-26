@@ -1,0 +1,65 @@
+#!/usr/bin/env -S uv run --script
+"""Keep a Mac awake with its lid closed."""
+
+import argparse
+import re
+import subprocess
+
+PMSET = "/usr/bin/pmset"
+
+
+def positive_seconds(value: str) -> int:
+    seconds = int(value)
+    if seconds <= 0:
+        raise argparse.ArgumentTypeError("time must be a positive number of seconds")
+    return seconds
+
+
+def enabled() -> bool:
+    result = subprocess.run([PMSET, "-g"], check=True, capture_output=True, text=True)
+    return re.search(r"\bSleepDisabled\s+1\b", result.stdout) is not None
+
+
+def set_enabled(value: bool) -> None:
+    subprocess.run(["sudo", PMSET, "-a", "disablesleep", str(int(value))], check=True)
+
+
+def run_timer(seconds: int) -> None:
+    script = f"""
+set -e
+cleanup() {{
+  trap - EXIT HUP INT TERM
+  {PMSET} -a disablesleep 0
+}}
+trap cleanup EXIT HUP INT TERM
+{PMSET} -a disablesleep 1
+/bin/sleep "$1"
+"""
+    print(f"Stimulant on for {seconds} seconds; press Ctrl-C to stop early.", flush=True)
+    subprocess.run(["sudo", "/bin/sh", "-c", script, "stimulant", str(seconds)], check=True)
+    print("Stimulant off.")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Toggle closed-lid sleep, or keep this Mac awake for a fixed time."
+    )
+    parser.add_argument(
+        "seconds",
+        nargs="?",
+        type=positive_seconds,
+        help="seconds to stay awake before automatically restoring normal sleep (example: 7200)",
+    )
+    args = parser.parse_args()
+
+    if args.seconds is not None:
+        run_timer(args.seconds)
+        return
+
+    turn_on = not enabled()
+    set_enabled(turn_on)
+    print(f"Stimulant {'on' if turn_on else 'off'}.")
+
+
+if __name__ == "__main__":
+    main()

@@ -44,7 +44,7 @@
     GSETTINGS_SCHEMA_DIR = "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/gsettings-desktop-schemas-${pkgs.gsettings-desktop-schemas.version}/glib-2.0/schemas";
     XCURSOR_THEME = "retrosmart-xcursor-black";
     XCURSOR_SIZE = "24";
-    CHROME_BINARY = "/usr/bin/brave-browser-stable";
+    CHROME_BINARY = "${pkgs.brave}/bin/brave";
   };
 
   # mpv config
@@ -143,7 +143,7 @@
       export QT_OPENGL=software
       export QT_QUICK_BACKEND=software
       export QT_XCB_GL_INTEGRATION=none
-      export BROWSER=/usr/bin/brave-browser-stable
+      export BROWSER=${pkgs.brave}/bin/brave
       exec zoom "$@"
     '';
   };

@@ -1,6 +1,8 @@
-{ config, pkgs, lib, fontSize, useSystemSway, ... }:
+{ config, pkgs, lib, fontSize, useSystemSway, settings, ... }:
 
 let
+  isNixOS = settings.isNixOS or false;
+
   # Chooser invoked by xdg-desktop-portal-wlr on every screencast request.
   # Runs in `dmenu` mode (see xdg-desktop-portal-wlr(5)):
   #   stdin  → one label per line, e.g. "Monitor: eDP-1 'BOE 0x0864'"
@@ -221,18 +223,17 @@ in
       startup = [
         { command = "dbus-update-activation-environment --systemd DISPLAY WAYLAND_DISPLAY SWAYSOCK XDG_CURRENT_DESKTOP=sway DBUS_SESSION_BUS_ADDRESS"; }
         { command = "dconf load / < ~/.config/dconf/hm-settings.ini"; }
-        # audio stack first so waybar's pulseaudio module connects successfully
+      ] ++ lib.optionals (!isNixOS) [
+        # Foreign distros do not provide these as systemd user services.
         { command = "pipewire"; }
         { command = "pipewire-pulse"; }
         { command = "wireplumber"; }
+        { command = "nm-applet --indicator"; }
+      ] ++ [
         { command = "sleep 1 && waybar"; }
         { command = "mako"; }
-        { command = "nm-applet --indicator"; }
         { command = "gammastep"; }
-        # portals start on demand via dbus activation (.service files in
-        # /usr/share/dbus-1/services/). No explicit launch needed — dbus-daemon
-        # respawns them if they die. The dbus-update-activation-environment
-        # line above is what gives those activations the right env.
+        # Portals start on demand via D-Bus activation.
         { command = "~/.local/bin/battery-monitor"; }
       ];
 

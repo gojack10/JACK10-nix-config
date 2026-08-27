@@ -1,6 +1,9 @@
 { config, pkgs, lib, settings, ... }:
 
-{
+let
+  isNixOS = settings.isNixOS or false;
+in {
+
   home.packages = [ pkgs.uv ];
 
   home.username = settings.username;
@@ -41,9 +44,11 @@
 
   # Nix settings (enable flakes). Bootstrap may create this file before the
   # first activation, so force Home Manager to take ownership afterwards.
-  xdg.configFile."nix/nix.conf".force = true;
+  xdg.configFile = lib.mkIf (!isNixOS) {
+    "nix/nix.conf".force = true;
+  };
 
-  nix = {
+  nix = lib.mkIf (!isNixOS) {
     package = pkgs.nix;
     settings = {
       experimental-features = [ "nix-command" "flakes" ];

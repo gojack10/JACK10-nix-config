@@ -39,7 +39,7 @@
       };
 
       "custom/network" = {
-        exec = "if ip link show enp4s0 2>/dev/null | grep -q 'state UP'; then echo 'ETHERNET'; elif iwctl station wlp0s20f3 show 2>/dev/null | grep -q 'Connected'; then iwctl station wlp0s20f3 show | grep 'Connected network' | sed 's/.*Connected network[[:space:]]*//; s/[[:space:]]*$//' ; else echo 'disconnected'; fi";
+        exec = "if ip link show enp4s0 2>/dev/null | grep -q 'state UP'; then echo 'ETHERNET'; elif ${pkgs.iwd}/bin/iwctl station wlp0s20f3 show 2>/dev/null | grep -q 'Connected'; then ${pkgs.iwd}/bin/iwctl station wlp0s20f3 show | grep 'Connected network' | sed 's/.*Connected network[[:space:]]*//; s/[[:space:]]*$//' ; else echo 'disconnected'; fi";
         interval = 3;
       };
 

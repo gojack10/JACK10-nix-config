@@ -46,7 +46,11 @@
       machines = {
         # Linux hosts
         litetop = linuxDefaults // { fontSize = 9.5; fontSizeWaybar = 9.5; };
-        "10top" = linuxDefaults // { fontSizeWaybar = 11.5; };
+        "10top" = linuxDefaults // {
+          fontSizeWaybar = 11.5;
+          useSystemSway = false;
+          isNixOS = true;
+        };
         desktop = linuxDefaults;
         setzer = linuxDefaults // {
           profile = "minimal";
@@ -142,5 +146,28 @@
 
     in {
       homeConfigurations = builtins.mapAttrs mkHome machines;
+
+      nixosConfigurations."10top" =
+        let settings = machines."10top";
+        in nixpkgs.lib.nixosSystem {
+          system = settings.system;
+          specialArgs = { inherit settings; };
+          modules = [
+            ./hosts/10top/configuration.nix
+            home-manager.nixosModules.home-manager
+            {
+              home-manager = {
+                useGlobalPkgs = true;
+                useUserPackages = true;
+                extraSpecialArgs = {
+                  hostname = "10top";
+                  inherit settings;
+                  inherit (settings) fontSize fontSizeFoot fontSizeWaybar useSystemSway;
+                };
+                users.jack.imports = fullSharedModules ++ linuxModules;
+              };
+            }
+          ];
+        };
     };
 }

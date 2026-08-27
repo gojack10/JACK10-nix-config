@@ -1,9 +1,14 @@
-{ config, pkgs, ... }:
+{ config, pkgs, lib, settings, ... }:
 
-{
-  nixpkgs.config.allowUnfreePredicate = pkg: builtins.elem (pkgs.lib.getName pkg) [
-    "zoom"
-  ];
+let
+  isNixOS = settings.isNixOS or false;
+in {
+  nixpkgs.config = lib.mkIf (!isNixOS) {
+    allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [
+      "brave"
+      "zoom"
+    ];
+  };
 
   home.packages = with pkgs; [
     # Fonts (macOS has system emoji, Linux needs these)
@@ -35,7 +40,8 @@
     xdg-utils
     swayimg
 
-    # Communication
+    # Browsers & communication
+    brave
     zoom-us
 
     # Audio

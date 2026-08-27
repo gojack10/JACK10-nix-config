@@ -165,20 +165,20 @@ in {
     '';
   };
 
-  # Depends on two root-owned files that live outside Nix (see scripts/system/
-  # for the committed copies and install instructions):
-  #   /usr/local/sbin/fan-mode     — privileged helper, takes {full|normal|status}
-  #   /etc/sudoers.d/fan-nopasswd  — NOPASSWD jack on the three fan-mode invocations
   # Needed because sway bindsyms run without a TTY, so password-prompting sudo fails silently.
   home.file.".local/bin/fan-toggle" = lib.mkIf pkgs.stdenv.isLinux {
     executable = true;
-    text = ''
+    text = let
+      fanMode = if settings.isNixOS or false
+        then "/run/current-system/sw/bin/fan-mode"
+        else "/usr/local/sbin/fan-mode";
+    in ''
       #!/bin/sh
-      if sudo -n /usr/local/sbin/fan-mode status 2>/dev/null | grep -q '^run:'; then
-        sudo -n /usr/local/sbin/fan-mode full
+      if sudo -n ${fanMode} status 2>/dev/null | grep -q '^run:'; then
+        sudo -n ${fanMode} full
         notify-send -t 2000 "Fan" "FULL BLAST" 2>/dev/null
       else
-        sudo -n /usr/local/sbin/fan-mode normal
+        sudo -n ${fanMode} normal
         notify-send -t 2000 "Fan" "Normal" 2>/dev/null
       fi
     '';

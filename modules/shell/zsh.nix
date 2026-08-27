@@ -1,6 +1,8 @@
 { config, pkgs, lib, settings, ... }:
 
-{
+let
+  isNixOS = settings.isNixOS or false;
+in {
   programs.zsh = {
     enable = true;
     autosuggestion.enable = true;
@@ -82,13 +84,16 @@
       gstp = "git stash pop";
     } // lib.optionalAttrs (pkgs.stdenv.isLinux && settings.desktop != "xfce") {
       open = "xdg-open";
-      brave-update = "cd ~/void-packages && git -C ./srcpkgs/brave-bin pull && ./xbps-src pkg brave-bin && sudo xbps-install -R hostdir/binpkgs -u brave-bin && cd -";
       # Power management (polkit authorizes wheel group)
       zzz = "echo gn && loginctl suspend && echo 'im up bro'";
       ZZZ = "echo gn && loginctl hibernate && echo 'im up bro'";
       bye = "echo cya && loginctl poweroff";
       rrr = "echo 'ok brb' && loginctl reboot";
-      fixnet = "echo 'Restarting iwd...' && sudo sv restart iwd && echo 'Done'";
+      fixnet = if isNixOS
+        then "echo 'Restarting iwd...' && sudo systemctl restart iwd && echo 'Done'"
+        else "echo 'Restarting iwd...' && sudo sv restart iwd && echo 'Done'";
+    } // lib.optionalAttrs (pkgs.stdenv.isLinux && settings.desktop != "xfce" && !isNixOS) {
+      brave-update = "cd ~/void-packages && git -C ./srcpkgs/brave-bin pull && ./xbps-src pkg brave-bin && sudo xbps-install -R hostdir/binpkgs -u brave-bin && cd -";
     } // lib.optionalAttrs (pkgs.stdenv.isLinux && settings.desktop == "xfce") {
       open = "xdg-open";
       zzz = "echo gn && loginctl suspend && echo 'im up bro'";
@@ -97,7 +102,7 @@
     };
 
     # .zprofile - runs on login shell
-    profileExtra = if pkgs.stdenv.isLinux && settings.desktop != "xfce" then ''
+    profileExtra = if pkgs.stdenv.isLinux && settings.desktop != "xfce" && !isNixOS then ''
       # XDG_RUNTIME_DIR for Wayland/Sway
       if [ -z "$XDG_RUNTIME_DIR" ]; then
         export XDG_RUNTIME_DIR=/tmp/$(id -u)-runtime-dir
@@ -255,8 +260,8 @@
         echo "Passwordless sudo enabled for 1 hour."
       }
 
-      ${lib.optionalString pkgs.stdenv.isLinux ''
-      # Fix PATH order - /usr/bin before nix paths (fixes dlopen issues with libclang)
+      ${lib.optionalString (pkgs.stdenv.isLinux && !isNixOS) ''
+      # Foreign-distro PATH order for libraries installed under /usr.
       export PATH="$HOME/.opencode/bin:$HOME/.cargo/bin:$HOME/.local/bin:/usr/bin:/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin"
       ''}
       ${lib.optionalString pkgs.stdenv.isDarwin ''

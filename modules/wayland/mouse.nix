@@ -139,7 +139,7 @@
       }
 
       expecting=0
-      /usr/bin/dbus-monitor --system \
+      ${pkgs.dbus}/bin/dbus-monitor --system \
         "type='signal',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'" 2>/dev/null | \
       while read -r line; do
         case "$line" in
@@ -207,7 +207,7 @@
         # Mirror laptop fullscreen onto each external output
         swaymsg -t get_outputs | $JQ -r '.[].name' | while read -r output; do
           [ "$output" = "$LAPTOP" ] && continue
-          /usr/bin/wl-mirror --fullscreen-output "$output" "$LAPTOP" &
+          ${pkgs.wl-mirror}/bin/wl-mirror --fullscreen-output "$output" "$LAPTOP" &
         done
       fi
     '';

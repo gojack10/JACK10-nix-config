@@ -4,7 +4,7 @@ let
   isNixOS = settings.isNixOS or false;
 in {
 
-  home.packages = [ pkgs.uv ];
+  home.packages = [ pkgs.uv ] ++ lib.optionals (hostname != "work-mac") [ pkgs.lua ];
 
   home.username = settings.username;
   home.homeDirectory = settings.homeDirectory;

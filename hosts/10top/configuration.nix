@@ -78,6 +78,7 @@ in {
 
   networking = {
     hostName = "10top";
+    # Keep a router-side DHCP reservation for this host; the address is not managed here.
     firewall.enable = true;
     wireless.iwd = {
       enable = true;
@@ -128,9 +129,10 @@ in {
       pulse.enable = true;
     };
     logind.settings.Login = {
-      HandleLidSwitch = "suspend-then-hibernate";
+      HandleLidSwitch = "ignore";
       HandleLidSwitchExternalPower = "ignore";
       HandleLidSwitchDocked = "ignore";
+      IdleAction = "ignore";
     };
     cloudflared = {
       enable = true;

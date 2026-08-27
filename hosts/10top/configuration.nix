@@ -44,6 +44,36 @@ let
     exec ${pkgs.systemd}/bin/systemctl suspend
   '';
 
+  imageSync = pkgs.writeShellScript "sifttext-image-sync" ''
+    set -euo pipefail
+    state=/var/lib/sifttext-image-sync
+    manifest=$(mktemp)
+    trap 'rm -f "$manifest"' EXIT
+    ssh=(
+      ${pkgs.openssh}/bin/ssh
+      -i "$state/id_ed25519"
+      -o BatchMode=yes
+      -o StrictHostKeyChecking=accept-new
+      -p 7232 jack@10server.net
+    )
+
+    "''${ssh[@]}" manifest > "$manifest"
+    grep -q '^revision=' "$manifest"
+    [ "$(grep -c '^sifttext|' "$manifest")" -eq 1 ]
+    [ "$(grep -c '^sift-runtime|' "$manifest")" -eq 1 ]
+    "''${ssh[@]}" save | ${pkgs.docker}/bin/docker load
+
+    while IFS='|' read -r service ref expected; do
+      case "$service" in sifttext|sift-runtime) ;; *) continue ;; esac
+      actual=$(${pkgs.docker}/bin/docker image inspect --format '{{.Id}}' "$ref")
+      [ "$actual" = "$expected" ] || {
+        echo "$ref: expected $expected, got $actual" >&2
+        exit 1
+      }
+    done < "$manifest"
+    install -m 0644 "$manifest" "$state/current.manifest"
+  '';
+
   reverseTunnel = pkgs.writeShellScript "reverse-tunnel-10server" ''
     set -eu
 
@@ -105,7 +135,10 @@ in {
 
   nixpkgs.config.allowUnfree = true;
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
-  virtualisation.docker.enable = true;
+  virtualisation.docker = {
+    enable = true;
+    daemon.settings.features.containerd-snapshotter = false;
+  };
 
   hardware = {
     enableRedistributableFirmware = true;
@@ -239,6 +272,17 @@ in {
       };
     };
 
+    sifttext-image-sync = {
+      description = "Sync SiftText images from 10SERVER";
+      wants = [ "network-online.target" ];
+      after = [ "network-online.target" "docker.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${pkgs.util-linux}/bin/flock -n -E 75 /run/sifttext-image-sync.lock ${imageSync}";
+        SuccessExitStatus = [ 75 ];
+      };
+    };
+
     reverse-tunnel-10server = {
       description = "Reverse SSH tunnel to 10SERVER";
       wantedBy = [ "multi-user.target" ];
@@ -252,6 +296,17 @@ in {
         Restart = "always";
         RestartSec = 60;
       };
+    };
+  };
+
+  systemd.timers.sifttext-image-sync = {
+    description = "Sync SiftText images every five minutes";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "2min";
+      OnUnitActiveSec = "5min";
+      RandomizedDelaySec = "30s";
+      Persistent = true;
     };
   };
 

@@ -411,6 +411,8 @@ in
 
     # Fast RAR extraction (official rarlab decoder, solid-archive safe)
     unrar
+  ] ++ lib.optionals (hostname == "m5-max") [
+    vlc-bin
   ] ++ lib.optionals (builtins.elem hostname [ "m5-max" "work-mac" ]) [
     terraform
   ];

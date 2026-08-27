@@ -10,7 +10,7 @@ in {
     ];
   };
 
-  home.packages = with pkgs; [
+  home.packages = (with pkgs; [
     # Fonts (macOS has system emoji, Linux needs these)
     nerd-fonts.jetbrains-mono
     nerd-fonts.symbols-only
@@ -40,14 +40,13 @@ in {
     xdg-utils
     swayimg
 
-    # Browsers & communication
-    brave
-    zoom-us
-
     # Audio
     pavucontrol
 
     # Bluetooth
     bluetuith
-  ];
+  ]) ++ lib.optionals (!isNixOS) (with pkgs; [
+    brave
+    zoom-us
+  ]);
 }

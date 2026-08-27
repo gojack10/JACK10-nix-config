@@ -50,6 +50,7 @@
           fontSizeWaybar = 11.5;
           useSystemSway = false;
           isNixOS = true;
+          profile = "minimal";
         };
         desktop = linuxDefaults;
         setzer = linuxDefaults // {
@@ -164,7 +165,7 @@
                   inherit settings;
                   inherit (settings) fontSize fontSizeFoot fontSizeWaybar useSystemSway;
                 };
-                users.jack.imports = fullSharedModules ++ linuxModules;
+                users.jack.imports = minimalSharedModules ++ linuxModules;
               };
             }
           ];

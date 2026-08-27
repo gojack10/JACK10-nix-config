@@ -16,7 +16,7 @@ in {
     historySubstringSearch.enable = false;
     completionInit = "autoload -U compinit && compinit -C";
 
-    plugins = [
+    plugins = lib.optionals (!isNixOS) [
       {
         name = "fzf-tab";
         src = pkgs.fetchFromGitHub {

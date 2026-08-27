@@ -20,7 +20,7 @@ let
     };
     x86_64-linux = {
       url = "https://developer.salesforce.com/media/salesforce-cli/sf/channels/stable/sf-linux-x64.tar.xz";
-      hash = "sha256-Tpfjf70KTl+pELUTTBxNwzPzz4CKVqkEcZ5T+U/yMqY=";
+      hash = "sha256-CXRfZx4ypvpvsbmzmg+2H4fLYyDPEYkfDVK/BNgqi7Y=";
     };
     aarch64-linux = {
       url = "https://developer.salesforce.com/media/salesforce-cli/sf/channels/stable/sf-linux-arm64.tar.xz";

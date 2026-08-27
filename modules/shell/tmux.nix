@@ -1,6 +1,7 @@
 { config, pkgs, lib, settings, ... }:
 
 let
+  isNixOS = settings.isNixOS or false;
   tmuxChooseTreeBase = "549c35b06165f6ae023115eb76f83f2cbf945395";
   # Tag: jack-tmux-3.5a-r1. Pin the commit, never the movable tag name.
   tmuxChooseTreeTip = "0859a85891e42f9a3b311594dacacb3cbb4e89bc";
@@ -11,7 +12,7 @@ in {
     # copy-mode (macOS crash reports show invalid free in grid_clear_lines via
     # cmd_copy_mode_exec). Pin to the previous stable release until upstream or
     # nixpkgs carries a fix.
-    package = pkgs.tmux.overrideAttrs (old: rec {
+    package = if isNixOS then pkgs.tmux else pkgs.tmux.overrideAttrs (old: rec {
       version = "3.5a";
       src = pkgs.fetchurl {
         url = "https://github.com/tmux/tmux/releases/download/${version}/tmux-${version}.tar.gz";

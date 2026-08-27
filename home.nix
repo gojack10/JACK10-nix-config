@@ -1,4 +1,4 @@
-{ config, pkgs, lib, settings, ... }:
+{ config, pkgs, lib, hostname, settings, ... }:
 
 let
   isNixOS = settings.isNixOS or false;
@@ -27,6 +27,7 @@ in {
   };
 
   home.sessionPath = [
+    "$HOME/.pi/agent/bin"
     "$HOME/.local/bin"
     "$HOME/.nix-profile/bin"
     "$HOME/.cargo/bin"

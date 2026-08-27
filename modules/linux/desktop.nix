@@ -1,6 +1,10 @@
-{ config, pkgs, lib, fontSize, hostname, ... }:
+{ config, pkgs, lib, fontSize, hostname, settings, ... }:
 
-{
+let
+  isNixOS = settings.isNixOS or false;
+  browser = if isNixOS then pkgs.chromium else pkgs.brave;
+  browserDesktop = if isNixOS then "chromium-browser.desktop" else "brave-browser.desktop";
+in {
   # Dark mode for GTK apps
   gtk = {
     enable = true;
@@ -44,7 +48,7 @@
     GSETTINGS_SCHEMA_DIR = "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/gsettings-desktop-schemas-${pkgs.gsettings-desktop-schemas.version}/glib-2.0/schemas";
     XCURSOR_THEME = "retrosmart-xcursor-black";
     XCURSOR_SIZE = "24";
-    CHROME_BINARY = "${pkgs.brave}/bin/brave";
+    CHROME_BINARY = "${browser}/bin/${browser.meta.mainProgram}";
   };
 
   # mpv config
@@ -78,13 +82,13 @@
     enable = true;
     defaultApplications = {
       # Web
-      "text/html" = "brave-browser.desktop";
-      "x-scheme-handler/http" = "brave-browser.desktop";
-      "x-scheme-handler/https" = "brave-browser.desktop";
-      "x-scheme-handler/about" = "brave-browser.desktop";
-      "x-scheme-handler/unknown" = "brave-browser.desktop";
+      "text/html" = browserDesktop;
+      "x-scheme-handler/http" = browserDesktop;
+      "x-scheme-handler/https" = browserDesktop;
+      "x-scheme-handler/about" = browserDesktop;
+      "x-scheme-handler/unknown" = browserDesktop;
       # Documents
-      "application/pdf" = "brave-browser.desktop";
+      "application/pdf" = browserDesktop;
       # Video - mpv
       "video/webm" = "mpv.desktop";
       "video/mp4" = "mpv.desktop";
@@ -124,7 +128,7 @@
   home.file.".local/share/icons/retrosmart-xcursor-black".source = ../../assets/cursors/retrosmart-xcursor-black;
 
   # Zoom - Nix zoom can't use system Mesa GLX inside bwrap sandbox
-  xdg.desktopEntries.Zoom = {
+  xdg.desktopEntries.Zoom = lib.mkIf (!isNixOS) {
     name = "Zoom Workplace";
     comment = "Zoom Video Conference";
     exec = "zoom-wrapper %U";
@@ -136,7 +140,7 @@
   };
 
   # Local scripts
-  home.file.".local/bin/zoom-wrapper" = {
+  home.file.".local/bin/zoom-wrapper" = lib.mkIf (!isNixOS) {
     executable = true;
     text = ''
       #!/bin/sh

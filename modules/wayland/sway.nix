@@ -66,6 +66,7 @@ in
 
   wayland.windowManager.sway = {
     enable = true;
+    checkConfig = false;
     package = if useSystemSway then null else pkgs.sway;
     wrapperFeatures.gtk = true;
     config = {

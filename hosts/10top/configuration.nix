@@ -208,6 +208,7 @@ in {
       group = "jack";
       home = "/home/jack";
       shell = pkgs.zsh;
+      openssh.authorizedKeys.keys = [ "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDBJDWUtn/tqOhWEK10VO4WbgCqZeSbomwB6l7+2GOWj gojack10@gmail.com_m5_max" ];
       extraGroups = [
         "wheel" "audio" "video" "kvm" "input" "cdrom" "optical"
         "dialout" "scanner" "lp" "tty" "disk" "sgx" "usbmon"

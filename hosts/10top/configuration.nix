@@ -59,12 +59,13 @@ let
 
     "''${ssh[@]}" manifest > "$manifest"
     grep -q '^revision=' "$manifest"
-    [ "$(grep -c '^sifttext|' "$manifest")" -eq 1 ]
-    [ "$(grep -c '^sift-runtime|' "$manifest")" -eq 1 ]
+    for service in sifttext sift-runtime postgres redis zitadel; do
+      [ "$(grep -c "^$service|" "$manifest")" -eq 1 ]
+    done
     "''${ssh[@]}" save | ${pkgs.docker}/bin/docker load
 
     while IFS='|' read -r service ref expected; do
-      case "$service" in sifttext|sift-runtime) ;; *) continue ;; esac
+      case "$service" in sifttext|sift-runtime|postgres|redis|zitadel) ;; *) continue ;; esac
       actual=$(${pkgs.docker}/bin/docker image inspect --format '{{.Id}}' "$ref")
       [ "$actual" = "$expected" ] || {
         echo "$ref: expected $expected, got $actual" >&2

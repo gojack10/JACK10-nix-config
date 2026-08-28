@@ -181,6 +181,8 @@ in {
         ingress = {
           "10top-app-origin.sifttext.com" = "http://127.0.0.1:8000";
           "10top-auth-origin.sifttext.com" = "http://127.0.0.1:8085";
+          "app.sifttext.com" = "http://127.0.0.1:8000";
+          "auth.sifttext.com" = "http://127.0.0.1:8085";
         };
         default = "http_status:404";
       };

@@ -241,7 +241,7 @@ run_ui_case() {
   "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s alpha 'sleep 120'
   "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s beta 'sleep 120'
   "$TMUX_BIN" -L "$socket" -f /dev/null set-option -t alpha \
-    @pi_cache_session 'BUSY countdown=9s ctx=10% cost=$1.00'
+    @pi_cache_session '#[fg=yellow]BUSY#[default] countdown=9s ctx=10% cost=$1.00'
   socket_path=$("$TMUX_BIN" -L "$socket" -f /dev/null display-message -p '#{socket_path}')
   server_pid=$("$TMUX_BIN" -L "$socket" -f /dev/null display-message -p '#{pid}')
 
@@ -283,7 +283,18 @@ local function id_named(name)
   for id, value in pairs(M.baseline.by_id) do if value == name then return id end end
   error("missing session " .. name, 0)
 end
+local function bars(text)
+  local positions = {}
+  for index = 1, #text do
+    if text:sub(index, index) == "|" then positions[#positions + 1] = index end
+  end
+  return positions
+end
 
+check(vim.deep_equal(
+  bars(M.aligned_status("prefix| ctx | $ 1.00 | done", { 6, 5, 9 })),
+  bars(M.aligned_status("prefix| ctx | $ 12.00 | done", { 6, 5, 9 }))),
+  "status separators were not aligned")
 check(vim.g.tmux_oil_init_loaded == true, "private init marker is absent")
 check(vim.g.daily_config_loaded == nil, "daily Nvim config sentinel loaded")
 M.start()
@@ -295,13 +306,15 @@ local before_tick = vim.b.changedtick
 local before_modified = vim.bo[M.buf].modified
 local before_undo = vim.fn.undotree().seq_cur
 local before_marks = annotations()
-check(M.last_metadata[alpha] == 'BUSY countdown=9s ctx=10% cost=$1.00',
+check(M.last_metadata[alpha]
+    == '#[fg=yellow]BUSY#[default] countdown=9s ctx=10% cost=$1.00',
   "metadata was not matched by stable session ID")
-check(contains(before_marks, 'BUSY countdown=9s ctx=10% cost=$1.00'),
-  "first poll did not create virtual text")
+check(contains(before_marks, 'BUSY countdown=9s ctx=10% cost=$1.00')
+    and not contains(before_marks, '#[fg='),
+  "first poll did not render clean virtual text")
 
 control({ "set-option", "-t", alpha, "@pi_cache_session",
-  "AGENT DONE countdown=8s ctx=11% cost=$1.25" })
+  "#[fg=green]AGENT DONE#[default] countdown=8s ctx=11% cost=$1.25" })
 local completed = M.completed_polls
 M.poll()
 wait_for(function() return M.completed_polls > completed and M.poll_process == nil end,
@@ -344,12 +357,13 @@ M.test_before_final_reread = function()
   ordered = true
 end
 M.poll()
-local save_ok, save_error = M.save()
+local save_ok, save_error = pcall(vim.cmd, "write")
 M.test_before_final_reread = nil
 check(save_ok, save_error or "unchanged save failed")
 check(ordered, "final-reread ordering hook did not run")
-
-M.start()
+check(vim.api.nvim_buf_is_valid(M.buf) and vim.api.nvim_get_current_buf() == M.buf
+    and M.ui_active and M.timer ~= nil,
+  ":w did not keep the editor open and live")
 wait_for(function() return M.completed_polls >= 1 and M.poll_process == nil end,
   "poll after restart did not complete")
 vim.api.nvim_buf_set_lines(M.buf, 0, 1, false, { "malformed" })
@@ -537,6 +551,9 @@ end
 
 local baseline = M.snapshot()
 check(#baseline.order == 2, "opening snapshot did not contain two sessions")
+local ordered = M.parse_snapshot("20\t$1\tnewer\n10\t$0\tolder")
+check(ordered.order[1] == "$0" and ordered.order[2] == "$1",
+  "snapshot was not ordered oldest-first by creation time")
 local rendered = M.render(baseline)
 local roundtrip = M.parse_manifest(rendered, baseline)
 for _, id in ipairs(baseline.order) do

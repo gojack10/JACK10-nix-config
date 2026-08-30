@@ -108,11 +108,20 @@ function M.parse_snapshot(output)
   end
   local rows = {}
   for _, line in ipairs(vim.split(output, "\n", { plain = true })) do
-    local id, name = split_row(line, "snapshot")
+    local created, id, name = line:match("^(%d+)\t([^\t]+)\t(.*)$")
+    if not created then id, name = split_row(line, "snapshot") end
     if not id:match("^%$%d+$") then
       fail("invalid snapshot session ID " .. id)
     end
-    rows[#rows + 1] = { id = id, name = validate_name(name) }
+    rows[#rows + 1] = {
+      id = id, name = validate_name(name), created = tonumber(created),
+    }
+  end
+  if rows[1] and rows[1].created then
+    table.sort(rows, function(a, b)
+      if a.created ~= b.created then return a.created < b.created end
+      return tonumber(a.id:sub(2)) < tonumber(b.id:sub(2))
+    end)
   end
   return model(rows)
 end
@@ -133,7 +142,7 @@ end
 
 function M.snapshot()
   return M.parse_snapshot(M.tmux({
-    "list-sessions", "-F", "#{session_id}\t#{session_name}",
+    "list-sessions", "-F", "#{session_created}\t#{session_id}\t#{session_name}",
   }))
 end
 
@@ -464,10 +473,84 @@ local function annotation_text(details)
 end
 M.annotation_text = annotation_text
 
+local style_groups = {
+  green = "TmuxOilGreen",
+  yellow = "TmuxOilYellow",
+  red = "TmuxOilRed",
+}
+
+local function styled_chunks(text)
+  local chunks, group, offset = {}, "TmuxOilMeta", 1
+  while offset <= #text do
+    local first, last, style = text:find("#%[([^%]]*)%]", offset)
+    local plain = text:sub(offset, first and first - 1 or #text)
+    if plain ~= "" then chunks[#chunks + 1] = { plain, group } end
+    if not first then break end
+    if style == "default" then
+      group = "TmuxOilMeta"
+    else
+      group = style_groups[style:match("fg=([^,]+)")] or group
+    end
+    offset = last + 1
+  end
+  return chunks
+end
+M.styled_chunks = styled_chunks
+
+local function status_fields(text)
+  local fields = vim.split(text, "|", { plain = true })
+  if #fields ~= 4 then return nil end
+  return fields
+end
+
+local function aligned_status(text, widths)
+  local fields = status_fields(text)
+  if not fields then return text end
+  for index = 1, 3 do
+    local plain = fields[index]:gsub("#%[[^%]]*%]", "")
+    fields[index] = fields[index]
+      .. string.rep(" ", math.max(0, widths[index] - vim.fn.strdisplaywidth(plain)))
+  end
+  return table.concat(fields, "|")
+end
+M.aligned_status = aligned_status
+
+local function refresh_presentation()
+  if not M.buf or not vim.api.nvim_buf_is_valid(M.buf) then return end
+  vim.api.nvim_buf_clear_namespace(M.buf, M.presentation_ns, 0, -1)
+  for row, line in ipairs(vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)) do
+    local tab = line:find('\t"', 1, true)
+    if tab and line:match("^%$%d+\t\"") then
+      vim.api.nvim_buf_set_extmark(M.buf, M.presentation_ns, row - 1, 0, {
+        end_col = tab + 1, conceal = "",
+      })
+    elseif line:sub(1, 3) == '+\t"' then
+      vim.api.nvim_buf_set_extmark(M.buf, M.presentation_ns, row - 1, 1, {
+        end_col = 3, conceal = " ",
+      })
+    end
+    if tab and line:sub(-1) == '"' then
+      vim.api.nvim_buf_set_extmark(M.buf, M.presentation_ns, row - 1, #line - 1, {
+        end_col = #line, conceal = "",
+      })
+    end
+  end
+end
+
 local function annotate(live, metadata)
   if not M.ui_active or not vim.api.nvim_buf_is_valid(M.buf) then return end
   vim.api.nvim_buf_clear_namespace(M.buf, M.ns, 0, -1)
   local seen = {}
+  local widths = { 42, 10, 9 }
+  for _, text in pairs(metadata) do
+    local fields = status_fields(text)
+    if fields then
+      for index = 1, 3 do
+        local plain = fields[index]:gsub("#%[[^%]]*%]", "")
+        widths[index] = math.max(widths[index], vim.fn.strdisplaywidth(plain))
+      end
+    end
+  end
   local lines = vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)
   for row, line in ipairs(lines) do
     local id = line:match("^(%$%d+)\t")
@@ -475,13 +558,19 @@ local function annotate(live, metadata)
       seen[id] = true
       local text, group = metadata[id] or "", "Comment"
       if live.by_id[id] == nil then
-        text, group = "⚠ externally deleted", "WarningMsg"
+        text, group = "⚠ externally deleted", "TmuxOilYellow"
       elseif live.by_id[id] ~= M.baseline.by_id[id] then
-        text, group = "⚠ externally renamed to " .. live.by_id[id], "WarningMsg"
+        text, group = "⚠ externally renamed to " .. live.by_id[id], "TmuxOilYellow"
       end
       if text ~= "" then
+        local chunks
+        if group == "Comment" then
+          chunks = styled_chunks("  " .. aligned_status(text, widths))
+        else
+          chunks = { { "  " .. text:gsub("#%[[^%]]*%]", ""), group } }
+        end
         vim.api.nvim_buf_set_extmark(M.buf, M.ns, row - 1, 0, {
-          virt_text = { { "  " .. text, group } }, virt_text_pos = "eol",
+          virt_text = chunks, virt_text_win_col = M.status_col, hl_mode = "combine",
         })
       end
     end
@@ -495,7 +584,7 @@ local function annotate(live, metadata)
   if #added > 0 then
     vim.api.nvim_buf_set_extmark(M.buf, M.ns, 0, 0, {
       virt_lines = { { { "⚠ external sessions added: " .. table.concat(added, ", "),
-        "WarningMsg" } } }, virt_lines_above = true,
+        "TmuxOilYellow" } } }, virt_lines_above = true,
     })
   end
   M.last_live, M.last_metadata = live, metadata
@@ -568,6 +657,7 @@ function M.save()
     return false, M.last_error
   end
   vim.bo[M.buf].modified = false
+  M.start()
   return true, result
 end
 
@@ -583,6 +673,8 @@ function M.start()
   M.buf = vim.api.nvim_get_current_buf()
   M.baseline = M.snapshot()
   M.ns = M.ns or vim.api.nvim_create_namespace("tmux-oil-live")
+  M.presentation_ns = M.presentation_ns
+    or vim.api.nvim_create_namespace("tmux-oil-presentation")
   M.poll_generation = (M.poll_generation or 0) + 1
   M.started_polls, M.completed_polls, M.overlapping_polls = 0, 0, 0
   vim.api.nvim_buf_set_lines(M.buf, 0, -1, false,
@@ -593,7 +685,34 @@ function M.start()
   vim.bo[M.buf].swapfile = false
   vim.bo[M.buf].undofile = false
   vim.bo[M.buf].modified = false
+  vim.wo.wrap = false
+  vim.wo.cursorline = true
+  vim.wo.cursorlineopt = "line"
+  vim.wo.conceallevel = 3
+  vim.wo.concealcursor = "nvic"
+  vim.api.nvim_set_hl(0, "Normal", {
+    bg = "#000000", fg = "#e4e4e4", ctermbg = 0, ctermfg = 7,
+  })
+  vim.api.nvim_set_hl(0, "NormalFloat", {
+    bg = "#0a0a0a", fg = "#e4e4e4", ctermbg = 0, ctermfg = 7,
+  })
+  vim.api.nvim_set_hl(0, "CursorLine", { bg = "#4f5258", ctermbg = 8 })
+  vim.api.nvim_set_hl(0, "TmuxOilMeta", { fg = "#e4e4e4", ctermfg = 7 })
+  vim.api.nvim_set_hl(0, "TmuxOilGreen", { fg = "#5fff87", ctermfg = 10 })
+  vim.api.nvim_set_hl(0, "TmuxOilYellow", { fg = "#ffff00", ctermfg = 11 })
+  vim.api.nvim_set_hl(0, "TmuxOilRed", { fg = "#ff5f5f", ctermfg = 9 })
+  local longest = 0
+  for _, name in pairs(M.baseline.by_id) do
+    longest = math.max(longest, vim.fn.strdisplaywidth(name))
+  end
+  M.status_col = math.max(42, longest + 4)
+  refresh_presentation()
+  local first = vim.api.nvim_get_current_line():find("\t", 1, true)
+  if first then vim.api.nvim_win_set_cursor(0, { 1, first + 1 }) end
   local group = vim.api.nvim_create_augroup("tmux_oil_private", { clear = true })
+  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+    group = group, buffer = M.buf, callback = refresh_presentation,
+  })
   vim.api.nvim_create_autocmd("BufWriteCmd", {
     group = group, buffer = M.buf,
     callback = function()
@@ -607,7 +726,7 @@ function M.start()
   vim.keymap.set("n", "<CR>", M.jump, { buffer = M.buf, silent = true })
   M.ui_active = true
   M.timer = assert(vim.uv.new_timer())
-  M.timer:start(0, 1000, vim.schedule_wrap(M.poll))
+  M.timer:start(0, 250, vim.schedule_wrap(M.poll))
 end
 
 if vim.env.TMUX_OIL_TEST_LUA then

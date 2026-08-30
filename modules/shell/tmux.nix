@@ -102,7 +102,7 @@ in {
       # Keep choose-tree's terminal preview visible; -N starts hidden.
       # -Z zooms tree mode so the preview can use the whole client.
       set -g @session_tree_format '#{?pane_format,#{pane_index}: #{pane_current_command}#{?pane_active,*,}#{?@pi_cache_pane,  #{@pi_cache_pane},},#{?window_format,#{window_index}: #{window_name}#{window_flags}#{?@pi_cache_window,  #{@pi_cache_window},},#{?@pi_cache_session,#{@pi_cache_session}  ,}#{session_windows} windows#{?session_attached, (attached),}}}'
-      bind s display-popup -w 100% -h 100% -E '$HOME/.local/bin/tmux-oil'
+      bind s display-popup -B -s 'bg=#000000,fg=#e4e4e4' -w 100% -h 100% -E '$HOME/.local/bin/tmux-oil'
 
       # Theme toggle: prefix + t flips between riced theme and tmux defaults
       # (replaces the built-in clock-mode binding).

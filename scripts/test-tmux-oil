@@ -503,7 +503,8 @@ SH
     printf '\002d'
   ) | env -u TMUX -u TMUX_PANE TERM=xterm-256color script -q "$capture" \
     "$TMUX_BIN" -L "$socket" -f /dev/null attach-session -t alpha \
-    \; display-popup -w 80% -h 80% -E "$popup_command" >/dev/null 2>&1
+    \; display-popup -B -s 'bg=#000000,fg=#e4e4e4' \
+    -w 80% -h 80% -E "$popup_command" >/dev/null 2>&1
   transport_status=$?
   set -e
 
@@ -525,13 +526,26 @@ SH
     printf '%s\n' 'popup-open: no rendered stable-ID manifest row was captured' >&2
     return 1
   }
+  row_offset=$(LC_ALL=C grep -aboE '\$[0-9]+[[:space:]]+"alpha"' "$capture" \
+    | head -n 1 | cut -d: -f1)
+  dd if="$capture" of="$tmp/opening" bs=1 count="$row_offset" 2>/dev/null
+  if LC_ALL=C grep -Fq "$(printf '\342\224')" "$tmp/opening"; then
+    printf '%s\n' 'popup-open: popup border flash was captured' >&2
+    return 1
+  fi
+  black_surface=$(printf '\033[38;5;254m\033[48;5;16m')
+  LC_ALL=C grep -Fq "$black_surface" "$tmp/opening" || {
+    printf '%s\n' 'popup-open: first surface did not match the editor background' >&2
+    return 1
+  }
   after=$("$TMUX_BIN" -L "$socket" -f /dev/null list-sessions \
     -F '#{session_created}\t#{session_id}\t#{session_name}')
   [ "$before" = "$after" ] || {
     printf '%s\n' 'popup-open: launcher mutated the throwaway server' >&2
     return 1
   }
-  printf '%s\n' 'PASS popup-open real PTY rendered manifest, exited cleanly, and preserved server state'
+  printf '%s\n' \
+    'PASS popup-open first frame matched editor, had no border flash, and preserved server state'
 }
 
 run_current_cursor_case() {
@@ -577,7 +591,8 @@ LUA
     popup_command="env TMUX_OIL_TEST_LUA=$tmp/cursor.lua TMUX_OIL_CURSOR_MARKER=$marker TMUX_OIL_CURSOR_CONTEXT=$context $PWD/scripts/tmux-oil"
     if [ "$context" = inside-binding ]; then
       "$TMUX_BIN" -L "$socket" -f /dev/null bind-key s \
-        display-popup -w 80% -h 80% -E "$popup_command"
+        display-popup -B -s 'bg=#000000,fg=#e4e4e4' \
+        -w 80% -h 80% -E "$popup_command"
     fi
     set +e
     (
@@ -592,7 +607,8 @@ LUA
     ) | if [ "$context" = outside-attach ]; then
       env -u TMUX -u TMUX_PANE TERM=xterm-256color script -q /dev/null \
         "$TMUX_BIN" -L "$socket" -f /dev/null attach-session -t beta \
-        \; display-popup -w 80% -h 80% -E "$popup_command"
+        \; display-popup -B -s 'bg=#000000,fg=#e4e4e4' \
+        -w 80% -h 80% -E "$popup_command"
     else
       env -u TMUX -u TMUX_PANE TERM=xterm-256color script -q /dev/null \
         "$TMUX_BIN" -L "$socket" -f /dev/null attach-session -t beta

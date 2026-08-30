@@ -20,9 +20,9 @@ in {
       };
       patches = (old.patches or []) ++ [
         (pkgs.fetchpatch {
-          name = "tmux-choose-tree-jack-tmux-3.5a-r1.patch";
+          name = "tmux-choose-tree-jack-tmux-3.5a-r2.patch";
           url = "https://github.com/gojack10/tmux/compare/${tmuxChooseTreeBase}...${tmuxChooseTreeTip}.diff";
-          hash = "sha256-sX4MssExL5YtUPWcCtlexsg761TUz8Ahd4dpzdpmUgg=";
+          hash = "sha256-/w6T9SYQ5mkthBuYzqH7pVlUCYTd37lL9QRmP7aezPE=";
         })
       ];
     });

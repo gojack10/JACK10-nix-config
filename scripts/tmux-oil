@@ -1,0 +1,631 @@
+#!/bin/sh
+set -eu
+
+case "${TMUX-}" in
+  /*,*,*) socket=${TMUX%%,*} ;;
+  *) printf '%s\n' 'tmux-oil: TMUX must identify the invoking tmux socket' >&2; exit 1 ;;
+esac
+
+TMUX_OIL_TMUX_BIN=$(command -v tmux) || { printf '%s\n' 'tmux-oil: tmux not found' >&2; exit 1; }
+TMUX_OIL_NVIM_BIN=$(command -v nvim) || { printf '%s\n' 'tmux-oil: nvim not found' >&2; exit 1; }
+TMUX_OIL_SOCKET=$socket
+export TMUX_OIL_TMUX_BIN TMUX_OIL_SOCKET
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/tmux-oil.XXXXXX")
+chmod 700 "$tmp"
+cleanup() { rm -rf "$tmp"; }
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+cat >"$tmp/init.lua" <<'LUA'
+local M = {}
+_G.tmux_oil = M
+vim.g.tmux_oil_init_loaded = true
+
+local tmux_bin = assert(vim.env.TMUX_OIL_TMUX_BIN, "missing tmux executable")
+local socket = assert(vim.env.TMUX_OIL_SOCKET, "missing tmux socket")
+
+local function fail(message)
+  error("tmux-oil: " .. message, 0)
+end
+
+local function validate_name(name)
+  if type(name) ~= "string" or name == "" then
+    fail("session names must be nonempty strings")
+  end
+  if name:find(":", 1, true) or name:find(".", 1, true) then
+    fail("session names may not contain ':' or '.'")
+  end
+  for i = 1, #name do
+    local byte = name:byte(i)
+    if byte < 32 or byte == 127 then
+      fail("session names may not contain ASCII control characters")
+    end
+  end
+  return name
+end
+M.validate_name = validate_name
+
+local function decode_json_string(text)
+  if #text < 2 or text:byte(1) ~= 34 or text:byte(#text) ~= 34 then
+    fail("name field must be exactly one JSON string")
+  end
+  local i = 2
+  while i < #text do
+    local byte = text:byte(i)
+    if byte == 34 then
+      fail("unexpected text after JSON string")
+    elseif byte == 92 then
+      i = i + 1
+      local escape = text:sub(i, i)
+      if escape == "u" then
+        local hex = text:sub(i + 1, i + 4)
+        if #hex ~= 4 or not hex:match("^[0-9a-fA-F]+$") then
+          fail("invalid JSON unicode escape")
+        end
+        i = i + 4
+      elseif not escape:match('^["\\/bfnrt]$') then
+        fail("invalid JSON escape")
+      end
+    elseif byte < 32 then
+      fail("unescaped control character in JSON string")
+    end
+    i = i + 1
+  end
+  local ok, value = pcall(vim.json.decode, text)
+  if not ok or type(value) ~= "string" then
+    fail("invalid JSON string")
+  end
+  return validate_name(value)
+end
+
+local function split_row(line, source)
+  local tab = line:find("\t", 1, true)
+  if not tab or line:find("\t", tab + 1, true) then
+    fail(source .. " row must contain exactly two TAB-separated fields")
+  end
+  return line:sub(1, tab - 1), line:sub(tab + 1)
+end
+
+local function model(rows)
+  local result = { order = {}, by_id = {} }
+  for _, row in ipairs(rows) do
+    if result.by_id[row.id] then
+      fail("duplicate session ID " .. row.id)
+    end
+    result.order[#result.order + 1] = row.id
+    result.by_id[row.id] = row.name
+  end
+  return result
+end
+
+function M.parse_snapshot(output)
+  if output:sub(-1) == "\n" then
+    output = output:sub(1, -2)
+  end
+  if output == "" then
+    return model({})
+  end
+  local rows = {}
+  for _, line in ipairs(vim.split(output, "\n", { plain = true })) do
+    local id, name = split_row(line, "snapshot")
+    if not id:match("^%$%d+$") then
+      fail("invalid snapshot session ID " .. id)
+    end
+    rows[#rows + 1] = { id = id, name = validate_name(name) }
+  end
+  return model(rows)
+end
+
+function M.argv(tail)
+  local argv = { tmux_bin, "-S", socket }
+  vim.list_extend(argv, tail)
+  return argv
+end
+
+function M.tmux(tail)
+  local result = vim.system(M.argv(tail), { text = true }):wait()
+  if result.code ~= 0 then
+    fail((result.stderr or "tmux command failed"):gsub("%s+$", ""))
+  end
+  return result.stdout or ""
+end
+
+function M.snapshot()
+  return M.parse_snapshot(M.tmux({
+    "list-sessions", "-F", "#{session_id}\t#{session_name}",
+  }))
+end
+
+function M.render(state)
+  local lines = {}
+  for _, id in ipairs(state.order) do
+    lines[#lines + 1] = id .. "\t" .. vim.json.encode(state.by_id[id])
+  end
+  return table.concat(lines, "\n")
+end
+
+function M.parse_manifest(text, baseline)
+  if text:sub(-1) == "\n" then
+    text = text:sub(1, -2)
+  end
+  local intent = { order = {}, existing = {}, new = {} }
+  local names = {}
+  if text == "" then
+    return intent
+  end
+  for _, line in ipairs(vim.split(text, "\n", { plain = true })) do
+    local marker, encoded_name = split_row(line, "manifest")
+    local name = decode_json_string(encoded_name)
+    if names[name] then
+      fail("duplicate resulting session name " .. name)
+    end
+    names[name] = true
+    if marker == "+" then
+      intent.new[#intent.new + 1] = name
+      intent.order[#intent.order + 1] = { marker = marker, name = name }
+    elseif marker:match("^%$%d+$") then
+      if baseline.by_id[marker] == nil then
+        fail("unknown or forged session ID " .. marker)
+      end
+      if intent.existing[marker] ~= nil then
+        fail("duplicate session ID " .. marker)
+      end
+      intent.existing[marker] = name
+      intent.order[#intent.order + 1] = { marker = marker, name = name }
+    else
+      fail("invalid new-row marker or unsupported field " .. marker)
+    end
+  end
+  return intent
+end
+
+local function sorted_ids(state)
+  local ids = vim.tbl_keys(state.by_id)
+  table.sort(ids, function(a, b)
+    return tonumber(a:sub(2)) < tonumber(b:sub(2))
+  end)
+  return ids
+end
+
+function M.structural_drift(baseline, current)
+  if vim.tbl_count(baseline.by_id) ~= vim.tbl_count(current.by_id) then
+    return true
+  end
+  for id, name in pairs(baseline.by_id) do
+    if current.by_id[id] ~= name then
+      return true
+    end
+  end
+  return false
+end
+
+function M.jump_argv(id, baseline)
+  if baseline.by_id[id] == nil then
+    fail("cannot jump to unknown session ID " .. id)
+  end
+  return M.argv({ "switch-client", "-t", id })
+end
+
+function M.plan(baseline, intent, current)
+  if M.structural_drift(baseline, current) then
+    fail("structural drift detected")
+  end
+  local plan = { renames = {}, creates = {}, kills = {}, operations = {} }
+  for _, id in ipairs(sorted_ids(baseline)) do
+    local wanted = intent.existing[id]
+    if wanted == nil then
+      plan.kills[#plan.kills + 1] = {
+        kind = "kill", id = id,
+        argv = M.argv({ "kill-session", "-t", id }),
+      }
+    elseif wanted ~= baseline.by_id[id] then
+      plan.renames[#plan.renames + 1] = {
+        kind = "rename", id = id, name = wanted,
+        argv = M.argv({ "rename-session", "-t", id, "--", wanted }),
+      }
+    end
+  end
+  local creates = vim.deepcopy(intent.new)
+  table.sort(creates)
+  for _, name in ipairs(creates) do
+    plan.creates[#plan.creates + 1] = {
+      kind = "create", name = name,
+      argv = M.argv({ "new-session", "-d", "-s", name }),
+    }
+  end
+  vim.list_extend(plan.operations, plan.renames)
+  vim.list_extend(plan.operations, plan.creates)
+  vim.list_extend(plan.operations, plan.kills)
+  return plan
+end
+
+local function copy_state(state)
+  return { order = vim.deepcopy(state.order), by_id = vim.deepcopy(state.by_id) }
+end
+
+local function remove_id(state, id)
+  state.by_id[id] = nil
+  for index, value in ipairs(state.order) do
+    if value == id then
+      table.remove(state.order, index)
+      return
+    end
+  end
+end
+
+local function execution_plan(plan, current)
+  local operations = {}
+  local simulated = copy_state(current)
+  for _, operation in ipairs(plan.kills) do
+    operations[#operations + 1] = operation
+    remove_id(simulated, operation.id)
+  end
+
+  local pending = {}
+  for _, operation in ipairs(plan.renames) do
+    pending[operation.id] = operation.name
+  end
+  local occupied, reserved = {}, {}
+  for id, name in pairs(simulated.by_id) do occupied[name] = id end
+  for _, operation in ipairs(plan.renames) do reserved[operation.name] = true end
+  for _, operation in ipairs(plan.creates) do reserved[operation.name] = true end
+  local temporary_index = 0
+  while next(pending) do
+    local ids = vim.tbl_keys(pending)
+    table.sort(ids, function(a, b)
+      return tonumber(a:sub(2)) < tonumber(b:sub(2))
+    end)
+    local chosen
+    for _, id in ipairs(ids) do
+      if occupied[pending[id]] == nil then
+        chosen = id
+        break
+      end
+    end
+    if chosen then
+      local name = pending[chosen]
+      operations[#operations + 1] = {
+        kind = "rename", id = chosen, name = name,
+        argv = M.argv({ "rename-session", "-t", chosen, "--", name }),
+      }
+      occupied[simulated.by_id[chosen]] = nil
+      occupied[name] = chosen
+      simulated.by_id[chosen] = name
+      pending[chosen] = nil
+    else
+      chosen = ids[1]
+      local temporary
+      repeat
+        temporary_index = temporary_index + 1
+        temporary = "tmux-oil-tmp-" .. chosen:sub(2) .. "-" .. temporary_index
+      until occupied[temporary] == nil and reserved[temporary] == nil
+      operations[#operations + 1] = {
+        kind = "rename", id = chosen, name = temporary, temporary = true,
+        argv = M.argv({ "rename-session", "-t", chosen, "--", temporary }),
+      }
+      occupied[simulated.by_id[chosen]] = nil
+      occupied[temporary] = chosen
+      simulated.by_id[chosen] = temporary
+    end
+  end
+
+  vim.list_extend(operations, plan.creates)
+  return operations
+end
+
+local function current_session_id()
+  local id = M.tmux({ "display-message", "-p", "#{session_id}" }):gsub("%s+$", "")
+  if not id:match("^%$%d+$") then
+    fail("cannot resolve the invoking/current session safely")
+  end
+  return id
+end
+M.current_session_id = current_session_id
+
+local function report_error(message, report, failed_index)
+  report.error = message
+  for index = failed_index + 1, #report.operations do
+    report.not_run[#report.not_run + 1] = report.operations[index].argv
+  end
+  M.last_apply_report = report
+  local lines = { message, "succeeded argv:" }
+  if #report.succeeded == 0 then
+    lines[#lines + 1] = "  (none)"
+  else
+    for _, argv in ipairs(report.succeeded) do
+      lines[#lines + 1] = "  " .. vim.json.encode(argv)
+    end
+  end
+  if report.failed then
+    lines[#lines + 1] = "failed argv:"
+    lines[#lines + 1] = "  " .. vim.json.encode(report.failed)
+  end
+  lines[#lines + 1] = "never-ran argv:"
+  if #report.not_run == 0 then
+    lines[#lines + 1] = "  (none)"
+  else
+    for _, argv in ipairs(report.not_run) do
+      lines[#lines + 1] = "  " .. vim.json.encode(argv)
+    end
+  end
+  lines[#lines + 1] = "no rollback was attempted"
+  fail(table.concat(lines, "\n"))
+end
+
+function M.apply(baseline, intent)
+  M.last_apply_report = nil
+  local fresh = M.snapshot()
+  local ok, planned = pcall(M.plan, baseline, intent, fresh)
+  if not ok then
+    M.last_apply_report = {
+      before = fresh, operations = {}, succeeded = {}, not_run = {}, error = tostring(planned),
+    }
+    fail(tostring(planned))
+  end
+  if #planned.kills == #fresh.order and #planned.kills > 0 then
+    fail("refusing to kill the last session/server because completion cannot be reported safely")
+  end
+  if #planned.kills > 0 then
+    local current = current_session_id()
+    for _, operation in ipairs(planned.kills) do
+      if operation.id == current then
+        fail("refusing to kill the invoking/current session because completion cannot be reported safely")
+      end
+    end
+  end
+
+  local operations = execution_plan(planned, fresh)
+  local expected = copy_state(fresh)
+  local report = {
+    before = fresh, operations = operations, succeeded = {}, not_run = {}, attempted = {},
+  }
+  for index, operation in ipairs(operations) do
+    local live = M.snapshot()
+    if M.structural_drift(expected, live) then
+      report_error("structural drift detected before operation " .. index, report, index - 1)
+    end
+    if operation.id and live.by_id[operation.id] ~= expected.by_id[operation.id] then
+      report_error("stable session target disappeared before operation " .. index, report, index - 1)
+    end
+    if operation.kind == "kill" and current_session_id() == operation.id then
+      report_error("refusing to kill the invoking/current session before operation "
+        .. index, report, index - 1)
+    end
+    if M.test_before_command then M.test_before_command(index, operation, live) end
+
+    report.attempted[#report.attempted + 1] = operation.argv
+    local result = vim.system(operation.argv, { text = true }):wait()
+    if result.code ~= 0 then
+      report.failed = operation.argv
+      report_error("tmux error at operation " .. index .. ": "
+        .. (result.stderr or "command failed"):gsub("%s+$", ""), report, index)
+    end
+    report.succeeded[#report.succeeded + 1] = operation.argv
+
+    if operation.kind == "kill" then
+      remove_id(expected, operation.id)
+    elseif operation.kind == "rename" then
+      expected.by_id[operation.id] = operation.name
+    elseif operation.kind == "create" then
+      local after_create = M.snapshot()
+      local created_id
+      for id, name in pairs(after_create.by_id) do
+        if expected.by_id[id] == nil and name == operation.name then
+          if created_id then
+            report_error("ambiguous created session after operation " .. index, report, index)
+          end
+          created_id = id
+        end
+      end
+      if not created_id or #after_create.order ~= #expected.order + 1 then
+        report_error("created session could not be resolved by fresh stable ID after operation "
+          .. index, report, index)
+      end
+      expected.order[#expected.order + 1] = created_id
+      expected.by_id[created_id] = operation.name
+      if M.structural_drift(expected, after_create) then
+        report_error("structural drift detected after create operation " .. index, report, index)
+      end
+    end
+  end
+
+  local after = M.snapshot()
+  if M.structural_drift(expected, after) then
+    report_error("structural drift detected after apply", report, #operations)
+  end
+  report.after = after
+  M.last_apply_report = report
+  return report
+end
+
+local function parse_live(output)
+  if output:sub(-1) == "\n" then output = output:sub(1, -2) end
+  local live, metadata = { order = {}, by_id = {} }, {}
+  if output == "" then return live, metadata end
+  for _, line in ipairs(vim.split(output, "\n", { plain = true })) do
+    local id, name, status = line:match("^([^\t]+)\t([^\t]*)\t(.*)$")
+    if not id or not id:match("^%$%d+$") then fail("invalid live metadata row") end
+    validate_name(name)
+    if live.by_id[id] then fail("duplicate live session ID " .. id) end
+    live.order[#live.order + 1] = id
+    live.by_id[id], metadata[id] = name, status
+  end
+  return live, metadata
+end
+
+local function annotation_text(details)
+  local parts = {}
+  for _, chunk in ipairs(details.virt_text or {}) do parts[#parts + 1] = chunk[1] end
+  for _, virtual_line in ipairs(details.virt_lines or {}) do
+    for _, chunk in ipairs(virtual_line) do parts[#parts + 1] = chunk[1] end
+  end
+  return table.concat(parts)
+end
+M.annotation_text = annotation_text
+
+local function annotate(live, metadata)
+  if not M.ui_active or not vim.api.nvim_buf_is_valid(M.buf) then return end
+  vim.api.nvim_buf_clear_namespace(M.buf, M.ns, 0, -1)
+  local seen = {}
+  local lines = vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)
+  for row, line in ipairs(lines) do
+    local id = line:match("^(%$%d+)\t")
+    if id and M.baseline.by_id[id] then
+      seen[id] = true
+      local text, group = metadata[id] or "", "Comment"
+      if live.by_id[id] == nil then
+        text, group = "⚠ externally deleted", "WarningMsg"
+      elseif live.by_id[id] ~= M.baseline.by_id[id] then
+        text, group = "⚠ externally renamed to " .. live.by_id[id], "WarningMsg"
+      end
+      if text ~= "" then
+        vim.api.nvim_buf_set_extmark(M.buf, M.ns, row - 1, 0, {
+          virt_text = { { "  " .. text, group } }, virt_text_pos = "eol",
+        })
+      end
+    end
+  end
+  local added = {}
+  for _, id in ipairs(live.order) do
+    if M.baseline.by_id[id] == nil then
+      added[#added + 1] = id .. " " .. live.by_id[id]
+    end
+  end
+  if #added > 0 then
+    vim.api.nvim_buf_set_extmark(M.buf, M.ns, 0, 0, {
+      virt_lines = { { { "⚠ external sessions added: " .. table.concat(added, ", "),
+        "WarningMsg" } } }, virt_lines_above = true,
+    })
+  end
+  M.last_live, M.last_metadata = live, metadata
+end
+
+function M.poll()
+  if not M.ui_active then return end
+  if M.poll_process then
+    M.poll_pending = true
+    M.overlapping_polls = (M.overlapping_polls or 0) + 1
+    return
+  end
+  local generation = M.poll_generation
+  local process
+  process = vim.system(M.argv({
+    "list-sessions", "-F", "#{session_id}\t#{session_name}\t#{@pi_cache_session}",
+  }), { text = true }, vim.schedule_wrap(function(result)
+    if generation ~= M.poll_generation or process ~= M.poll_process or not M.ui_active then
+      return
+    end
+    M.poll_process = nil
+    M.completed_polls = (M.completed_polls or 0) + 1
+    if result.code == 0 then
+      local ok, live, metadata = pcall(parse_live, result.stdout or "")
+      if ok then annotate(live, metadata) else M.last_poll_error = tostring(live) end
+    else
+      M.last_poll_error = (result.stderr or "tmux metadata query failed"):gsub("%s+$", "")
+    end
+    if M.poll_pending then M.poll_pending = false; M.poll() end
+  end))
+  M.poll_process = process
+  M.started_polls = (M.started_polls or 0) + 1
+end
+
+function M.stop_polling()
+  M.ui_active = false
+  M.poll_generation = (M.poll_generation or 0) + 1
+  M.poll_pending = false
+  if M.timer then
+    M.timer:stop()
+    if not M.timer:is_closing() then M.timer:close() end
+    M.timer = nil
+  end
+  local process = M.poll_process
+  M.poll_process = nil
+  if process then
+    pcall(function() process:kill(15) end)
+    pcall(function() process:wait(1000) end)
+  end
+end
+
+function M.cleanup()
+  M.stop_polling()
+  if M.buf and vim.api.nvim_buf_is_valid(M.buf) and M.ns then
+    vim.api.nvim_buf_clear_namespace(M.buf, M.ns, 0, -1)
+  end
+end
+
+function M.save()
+  M.cleanup()
+  if M.test_before_final_reread then M.test_before_final_reread() end
+  local lines = vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)
+  local ok, result = pcall(function()
+    local intent = M.parse_manifest(table.concat(lines, "\n"), M.baseline)
+    return M.apply(M.baseline, intent)
+  end)
+  if not ok then
+    M.last_error = tostring(result)
+    vim.notify(M.last_error, vim.log.levels.ERROR, { title = "tmux-oil save failed" })
+    return false, M.last_error
+  end
+  vim.bo[M.buf].modified = false
+  return true, result
+end
+
+function M.jump()
+  local line = vim.api.nvim_get_current_line()
+  local id = line:match("^(%$%d+)\t")
+  if not id then fail("place the cursor on an existing session to jump") end
+  M.tmux({ "switch-client", "-t", id })
+end
+
+function M.start()
+  M.cleanup()
+  M.buf = vim.api.nvim_get_current_buf()
+  M.baseline = M.snapshot()
+  M.ns = M.ns or vim.api.nvim_create_namespace("tmux-oil-live")
+  M.poll_generation = (M.poll_generation or 0) + 1
+  M.started_polls, M.completed_polls, M.overlapping_polls = 0, 0, 0
+  vim.api.nvim_buf_set_lines(M.buf, 0, -1, false,
+    vim.split(M.render(M.baseline), "\n", { plain = true }))
+  vim.api.nvim_buf_set_name(M.buf, "tmux-oil://sessions")
+  vim.bo[M.buf].buftype = "acwrite"
+  vim.bo[M.buf].filetype = "tmux-oil"
+  vim.bo[M.buf].swapfile = false
+  vim.bo[M.buf].undofile = false
+  vim.bo[M.buf].modified = false
+  local group = vim.api.nvim_create_augroup("tmux_oil_private", { clear = true })
+  vim.api.nvim_create_autocmd("BufWriteCmd", {
+    group = group, buffer = M.buf,
+    callback = function()
+      local ok, err = M.save()
+      if not ok then error(err, 0) end
+    end,
+  })
+  vim.api.nvim_create_autocmd({ "BufWipeout", "VimLeavePre" }, {
+    group = group, callback = M.cleanup,
+  })
+  vim.keymap.set("n", "<CR>", M.jump, { buffer = M.buf, silent = true })
+  M.ui_active = true
+  M.timer = assert(vim.uv.new_timer())
+  M.timer:start(0, 1000, vim.schedule_wrap(M.poll))
+end
+
+if vim.env.TMUX_OIL_TEST_LUA then
+  local ok, err = pcall(dofile, vim.env.TMUX_OIL_TEST_LUA)
+  if not ok then
+    io.stderr:write(err .. "\n")
+    vim.cmd("cquit 1")
+  elseif not vim.env.TMUX_OIL_TEST_STAY then
+    vim.cmd("qa!")
+  end
+  return
+end
+
+M.start()
+LUA
+
+if [ -n "${TMUX_OIL_TEST_LUA-}" ]; then
+  "$TMUX_OIL_NVIM_BIN" --clean -u "$tmp/init.lua" --headless
+else
+  "$TMUX_OIL_NVIM_BIN" --clean -u "$tmp/init.lua"
+fi

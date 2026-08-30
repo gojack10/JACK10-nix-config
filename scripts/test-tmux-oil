@@ -1,0 +1,638 @@
+#!/bin/sh
+set -eu
+
+run_apply_case() {
+  scenario=$1
+  TMUX_BIN=$(command -v tmux)
+  socket="tmux-oil-seg2-${scenario}-$$-$(date +%s)"
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/tmux-oil-test.XXXXXX")
+  socket_path=
+  cleanup_apply() {
+    status=$?
+    trap - EXIT HUP INT TERM
+    if ! "$TMUX_BIN" -L "$socket" -f /dev/null kill-server >/dev/null 2>&1; then
+      status=1
+    fi
+    rm -rf "$tmp"
+    [ -n "$socket_path" ] && rm -f "$socket_path"
+    if [ -n "$socket_path" ] && [ ! -e "$socket_path" ]; then
+      printf 'cleanup_socket_removed=yes path=%s\n' "$socket_path"
+    else
+      printf 'cleanup_socket_removed=no path=%s\n' "${socket_path:-unknown}" >&2
+      status=1
+    fi
+    exit "$status"
+  }
+  trap cleanup_apply EXIT
+  trap 'exit 1' HUP INT TERM
+
+  printf 'throwaway_socket=%s scenario=%s\n' "$socket" "$scenario"
+  "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s alpha 'sleep 120'
+  "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s beta 'sleep 120'
+  if [ "$scenario" = cycle ]; then
+    "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s gamma 'sleep 120'
+  fi
+  socket_path=$("$TMUX_BIN" -L "$socket" -f /dev/null display-message -p '#{socket_path}')
+  server_pid=$("$TMUX_BIN" -L "$socket" -f /dev/null display-message -p '#{pid}')
+
+  cat >"$tmp/apply.lua" <<'LUA'
+local M = assert(_G.tmux_oil)
+local scenario = assert(vim.env.TMUX_OIL_TEST_SCENARIO)
+local control_socket = assert(vim.env.TMUX_OIL_TEST_SOCKET)
+local tmux_bin = assert(vim.env.TMUX_OIL_TMUX_BIN)
+
+local function check(value, message)
+  if not value then error(message, 0) end
+end
+
+local function control(args)
+  local argv = { tmux_bin, "-L", control_socket, "-f", "/dev/null" }
+  vim.list_extend(argv, args)
+  local result = vim.system(argv, { text = true }):wait()
+  check(result.code == 0, (result.stderr or "throwaway tmux command failed"):gsub("%s+$", ""))
+  return result.stdout or ""
+end
+
+local function id_named(state, name)
+  for id, value in pairs(state.by_id) do
+    if value == name then return id end
+  end
+  error("missing session named " .. name, 0)
+end
+
+local function manifest(baseline, renames, deleted, creates)
+  local lines = {}
+  for _, id in ipairs(baseline.order) do
+    if not deleted[id] then
+      lines[#lines + 1] = id .. "\t" .. vim.json.encode(renames[id] or baseline.by_id[id])
+    end
+  end
+  for _, name in ipairs(creates or {}) do
+    lines[#lines + 1] = "+\t" .. vim.json.encode(name)
+  end
+  return table.concat(lines, "\n")
+end
+
+local function listing(label, state)
+  io.stdout:write(label .. "_ID_LISTING:\n")
+  local rendered = M.render(state)
+  io.stdout:write((rendered == "" and "(empty)" or rendered) .. "\n")
+end
+
+local function intent_listing(text)
+  io.stdout:write("INTENT_ID_LISTING:\n" .. (text == "" and "(empty)" or text) .. "\n")
+end
+
+local function report_argv(report)
+  if not report or not report.attempted or #report.attempted == 0 then
+    io.stdout:write("executor_argv=(none)\n")
+    return
+  end
+  for _, argv in ipairs(report.attempted) do
+    local status = report.failed and vim.deep_equal(argv, report.failed) and "failed" or "succeeded"
+    io.stdout:write("executor_argv=" .. vim.json.encode(argv) .. " status=" .. status .. "\n")
+  end
+  for _, argv in ipairs(report.not_run) do
+    io.stdout:write("executor_argv=" .. vim.json.encode(argv) .. " status=never-ran\n")
+  end
+end
+
+local baseline = M.snapshot()
+listing("BEFORE", baseline)
+local alpha = id_named(baseline, "alpha")
+local beta = id_named(baseline, "beta")
+
+if scenario == "stable" then
+  local text = manifest(baseline, { [alpha] = "alpha-renamed" }, {}, {})
+  intent_listing(text)
+  local report = M.apply(baseline, M.parse_manifest(text, baseline))
+  local after = M.snapshot()
+  listing("AFTER", after)
+  report_argv(report)
+  check(after.by_id[alpha] == "alpha-renamed", "rename did not retain the stable session ID")
+  check(after.by_id[beta] == "beta", "rename changed the wrong stable session ID")
+elseif scenario == "create-kill" then
+  local text = manifest(baseline, { [beta] = "alpha" }, { [alpha] = true },
+    { "gamma-created" })
+  intent_listing(text)
+  local report = M.apply(baseline, M.parse_manifest(text, baseline))
+  local after = M.snapshot()
+  listing("AFTER", after)
+  report_argv(report)
+  check(vim.tbl_count(after.by_id) == 2, "create+kill final session count is wrong")
+  check(after.by_id[beta] == "alpha" and after.by_id[alpha] == nil,
+    "create+kill changed or retained the wrong stable ID")
+  check(id_named(after, "gamma-created") ~= nil, "created session is missing")
+elseif scenario == "cycle" then
+  local gamma = id_named(baseline, "gamma")
+  local text = manifest(baseline, {
+    [alpha] = "beta", [beta] = "gamma", [gamma] = "alpha",
+  }, {}, {})
+  intent_listing(text)
+  local report = M.apply(baseline, M.parse_manifest(text, baseline))
+  local after = M.snapshot()
+  listing("AFTER", after)
+  report_argv(report)
+  check(after.by_id[alpha] == "beta" and after.by_id[beta] == "gamma"
+    and after.by_id[gamma] == "alpha", "rename cycle final state is wrong")
+  local temporary = 0
+  for _, operation in ipairs(report.operations) do
+    if operation.temporary then temporary = temporary + 1 end
+  end
+  check(temporary == 1, "rename cycle did not use exactly one temporary name")
+elseif scenario == "drift" then
+  local text = M.render(baseline)
+  intent_listing(text)
+  control({ "rename-session", "-t", alpha, "--", "external-drift" })
+  local immediately_before = M.snapshot()
+  listing("IMMEDIATELY_BEFORE_APPLY", immediately_before)
+  local ok, err = pcall(M.apply, baseline, M.parse_manifest(text, baseline))
+  check(not ok and tostring(err):find("structural drift detected", 1, true),
+    "drift immediately before apply was not rejected")
+  local after = M.snapshot()
+  listing("AFTER", after)
+  report_argv(M.last_apply_report)
+  check(vim.deep_equal(immediately_before, after), "drift rejection executed a mutation")
+elseif scenario == "mid-failure" then
+  local text = manifest(baseline, {
+    [alpha] = "alpha-renamed", [beta] = "beta-renamed",
+  }, {}, { "never-created" })
+  intent_listing(text)
+  M.test_before_command = function(index, operation)
+    if index == 2 then control({ "kill-session", "-t", operation.id }) end
+  end
+  local ok, err = pcall(M.apply, baseline, M.parse_manifest(text, baseline))
+  M.test_before_command = nil
+  check(not ok and tostring(err):find("tmux error at operation 2", 1, true),
+    "forced mid-apply tmux error was not reported")
+  check(tostring(err):find("no rollback was attempted", 1, true),
+    "mid-apply error made an incorrect rollback claim")
+  local report = assert(M.last_apply_report)
+  local after = M.snapshot()
+  listing("AFTER", after)
+  report_argv(report)
+  check(#report.succeeded == 1 and report.failed ~= nil and #report.not_run == 1,
+    "partial apply report did not distinguish success, failure, and never-ran commands")
+  check(after.by_id[alpha] == "alpha-renamed" and after.by_id[beta] == nil,
+    "mid-apply failure did not preserve the exact partial state")
+elseif scenario == "safety" then
+  io.stdout:write("safety_policy=reject invoking/current-session and last-session kills before mutation\n")
+  local current = M.current_session_id()
+  local text = manifest(baseline, {}, { [current] = true }, {})
+  intent_listing(text)
+  local before_current = M.snapshot()
+  local ok_current, current_err = pcall(M.apply, baseline, M.parse_manifest(text, baseline))
+  check(not ok_current and tostring(current_err):find("invoking/current session", 1, true),
+    "current-session kill was not safely rejected")
+  check(vim.deep_equal(before_current, M.snapshot()), "current-session rejection mutated state")
+  report_argv(M.last_apply_report)
+
+  local other = current == alpha and beta or alpha
+  control({ "kill-session", "-t", other })
+  local last_baseline = M.snapshot()
+  listing("LAST_SESSION_BEFORE", last_baseline)
+  intent_listing("")
+  local ok_last, last_err = pcall(M.apply, last_baseline, M.parse_manifest("", last_baseline))
+  check(not ok_last and tostring(last_err):find("last session/server", 1, true),
+    "last-session kill was not safely rejected")
+  local after = M.snapshot()
+  listing("AFTER", after)
+  check(vim.deep_equal(last_baseline, after), "last-session rejection mutated state")
+  report_argv(M.last_apply_report)
+else
+  error("unknown apply scenario " .. scenario, 0)
+end
+io.stdout:flush()
+LUA
+
+  TMUX="$socket_path,$server_pid,0" \
+  TMUX_OIL_TEST_LUA="$tmp/apply.lua" \
+  TMUX_OIL_TEST_SOCKET="$socket" \
+  TMUX_OIL_TEST_SCENARIO="$scenario" \
+  ./scripts/tmux-oil
+}
+
+run_ui_case() {
+  TMUX_BIN=$(command -v tmux)
+  socket="tmux-oil-seg3-ui-$$-$(date +%s)"
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/tmux-oil-ui-test.XXXXXX")
+  runtime="$tmp/runtime"
+  mkdir -p "$runtime" "$tmp/xdg/nvim"
+  printf '%s\n' 'vim.g.daily_config_loaded = true' >"$tmp/xdg/nvim/init.lua"
+  socket_path=
+  cleanup_ui() {
+    status=$?
+    trap - EXIT HUP INT TERM
+    "$TMUX_BIN" -L "$socket" -f /dev/null kill-server >/dev/null 2>&1 || true
+    [ -n "$socket_path" ] && rm -f "$socket_path"
+    rm -rf "$tmp"
+    if [ -n "$socket_path" ] && [ ! -e "$socket_path" ]; then
+      printf 'cleanup_socket_removed=yes path=%s\n' "$socket_path"
+    else
+      printf 'cleanup_socket_removed=no path=%s\n' "${socket_path:-unknown}" >&2
+      status=1
+    fi
+    exit "$status"
+  }
+  trap cleanup_ui EXIT
+  trap 'exit 1' HUP INT TERM
+
+  printf 'throwaway_socket=%s mode=ui\n' "$socket"
+  "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s alpha 'sleep 120'
+  "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s beta 'sleep 120'
+  "$TMUX_BIN" -L "$socket" -f /dev/null set-option -t alpha \
+    @pi_cache_session 'BUSY countdown=9s ctx=10% cost=$1.00'
+  socket_path=$("$TMUX_BIN" -L "$socket" -f /dev/null display-message -p '#{socket_path}')
+  server_pid=$("$TMUX_BIN" -L "$socket" -f /dev/null display-message -p '#{pid}')
+
+  cat >"$tmp/ui.lua" <<'LUA'
+local M = assert(_G.tmux_oil)
+local control_socket = assert(vim.env.TMUX_OIL_TEST_SOCKET)
+local tmux_bin = assert(vim.env.TMUX_OIL_TMUX_BIN)
+
+local function check(value, message)
+  if not value then error(message, 0) end
+end
+local function control(args)
+  local argv = { tmux_bin, "-L", control_socket, "-f", "/dev/null" }
+  vim.list_extend(argv, args)
+  local result = vim.system(argv, { text = true }):wait()
+  check(result.code == 0, (result.stderr or "throwaway tmux command failed"):gsub("%s+$", ""))
+  return result.stdout or ""
+end
+local function wait_for(predicate, message)
+  check(vim.wait(3000, predicate, 10), message)
+end
+local function lines()
+  return vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)
+end
+local function annotations()
+  local result = {}
+  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(M.buf, M.ns, 0, -1,
+    { details = true })) do
+    local text = M.annotation_text(mark[4])
+    if text ~= "" then result[#result + 1] = mark[2] .. ":" .. text end
+  end
+  table.sort(result)
+  return result
+end
+local function contains(values, needle)
+  return table.concat(values, "\n"):find(needle, 1, true) ~= nil
+end
+local function id_named(name)
+  for id, value in pairs(M.baseline.by_id) do if value == name then return id end end
+  error("missing session " .. name, 0)
+end
+
+check(vim.g.tmux_oil_init_loaded == true, "private init marker is absent")
+check(vim.g.daily_config_loaded == nil, "daily Nvim config sentinel loaded")
+M.start()
+wait_for(function() return M.completed_polls >= 1 and M.poll_process == nil end,
+  "first metadata poll did not complete")
+local alpha = id_named("alpha")
+local before_lines = lines()
+local before_tick = vim.b.changedtick
+local before_modified = vim.bo[M.buf].modified
+local before_undo = vim.fn.undotree().seq_cur
+local before_marks = annotations()
+check(M.last_metadata[alpha] == 'BUSY countdown=9s ctx=10% cost=$1.00',
+  "metadata was not matched by stable session ID")
+check(contains(before_marks, 'BUSY countdown=9s ctx=10% cost=$1.00'),
+  "first poll did not create virtual text")
+
+control({ "set-option", "-t", alpha, "@pi_cache_session",
+  "AGENT DONE countdown=8s ctx=11% cost=$1.25" })
+local completed = M.completed_polls
+M.poll()
+wait_for(function() return M.completed_polls > completed and M.poll_process == nil end,
+  "metadata tick did not complete")
+local after_lines = lines()
+local after_marks = annotations()
+local after_tick = vim.b.changedtick
+local after_modified = vim.bo[M.buf].modified
+local after_undo = vim.fn.undotree().seq_cur
+check(vim.deep_equal(before_lines, after_lines), "metadata tick changed real buffer lines")
+check(contains(after_marks, "AGENT DONE countdown=8s ctx=11% cost=$1.25"),
+  "metadata tick did not update virtual text")
+check(not contains(after_marks, "BUSY countdown=9s"), "old metadata extmark remained")
+check(before_tick == after_tick and before_modified == after_modified
+  and before_undo == after_undo, "metadata tick changed edit or undo state")
+
+control({ "new-session", "-d", "-s", "external-created", "sleep 120" })
+local topology_lines = lines()
+completed = M.completed_polls
+M.poll()
+wait_for(function() return M.completed_polls > completed and M.poll_process == nil end,
+  "topology poll did not complete")
+check(vim.deep_equal(topology_lines, lines()), "external topology was merged into real lines")
+check(contains(annotations(), "external sessions added"),
+  "external topology warning is not visible")
+control({ "kill-session", "-t", "external-created" })
+
+local started, overlaps = M.started_polls, M.overlapping_polls
+M.poll()
+M.poll()
+wait_for(function()
+  return M.started_polls >= started + 2 and M.poll_process == nil
+end, "coalesced poll did not finish")
+check(M.overlapping_polls == overlaps + 1, "overlapping poll was not coalesced")
+
+local ordered = false
+M.test_before_final_reread = function()
+  check(M.timer == nil and M.poll_process == nil and not M.ui_active,
+    "save reached final reread before poll shutdown")
+  ordered = true
+end
+M.poll()
+local save_ok, save_error = M.save()
+M.test_before_final_reread = nil
+check(save_ok, save_error or "unchanged save failed")
+check(ordered, "final-reread ordering hook did not run")
+
+M.start()
+wait_for(function() return M.completed_polls >= 1 and M.poll_process == nil end,
+  "poll after restart did not complete")
+vim.api.nvim_buf_set_lines(M.buf, 0, 1, false, { "malformed" })
+local write_ok, write_error = pcall(vim.cmd, "wq")
+check(not write_ok and tostring(write_error):find("tmux%-oil"),
+  "failed :wq did not return a useful error")
+check(vim.api.nvim_buf_is_valid(M.buf) and vim.api.nvim_get_current_buf() == M.buf,
+  "failed save closed the editor buffer")
+
+io.stdout:write("BUFFER_BEFORE_METADATA_TICK=" .. vim.json.encode(before_lines) .. "\n")
+io.stdout:write("BUFFER_AFTER_METADATA_TICK=" .. vim.json.encode(after_lines) .. "\n")
+io.stdout:write("EXTMARKS_BEFORE_METADATA_TICK=" .. vim.json.encode(before_marks) .. "\n")
+io.stdout:write("EXTMARKS_AFTER_METADATA_TICK=" .. vim.json.encode(after_marks) .. "\n")
+io.stdout:write("b:modified before=" .. tostring(before_modified)
+  .. " after=" .. tostring(after_modified) .. "\n")
+io.stdout:write("b:changedtick before=" .. before_tick .. " after=" .. after_tick .. "\n")
+io.stdout:write("undo_seq before=" .. before_undo .. " after=" .. after_undo .. "\n")
+for _, result in ipairs({
+  "PASS self-contained init loaded",
+  "PASS daily Nvim config sentinel did not load",
+  "PASS first poll creates stable-ID-matched virtual text",
+  "PASS ticking metadata changes extmark without changing lines",
+  "PASS ticking metadata leaves modified flag and undo history unchanged",
+  "PASS external topology change is visibly flagged but not merged",
+  "PASS overlapping polls are suppressed or coalesced",
+  "PASS :wq stops timer and in-flight poll before final reread",
+  "PASS failed save remains open",
+}) do io.stdout:write(result .. "\n") end
+io.stdout:flush()
+LUA
+
+  TMUX="$socket_path,$server_pid,0" \
+  TMPDIR="$runtime" \
+  XDG_CONFIG_HOME="$tmp/xdg" \
+  TMUX_OIL_TEST_LUA="$tmp/ui.lua" \
+  TMUX_OIL_TEST_SOCKET="$socket" \
+  ./scripts/tmux-oil
+
+  cat >"$tmp/success.lua" <<'LUA'
+local M = assert(_G.tmux_oil)
+M.start()
+vim.api.nvim_create_autocmd("VimLeavePre", {
+  once = true,
+  callback = function()
+    local file = assert(io.open(assert(vim.env.TMUX_OIL_POPUP_MARKER), "w"))
+    file:write("popup-save-exited\n")
+    file:close()
+  end,
+})
+vim.defer_fn(function() vim.cmd("wq") end, 100)
+LUA
+  marker="$tmp/popup-exited"
+  popup_command="env TMUX_OIL_TEST_LUA=$tmp/success.lua TMUX_OIL_TEST_STAY=1 TMUX_OIL_POPUP_MARKER=$marker TMPDIR=$runtime XDG_CONFIG_HOME=$tmp/xdg $PWD/scripts/tmux-oil"
+  printf 'popup_launch=tmux -L %s display-popup -E %s\n' "$socket" "$popup_command"
+  ( sleep 3; "$TMUX_BIN" -L "$socket" -f /dev/null kill-server >/dev/null 2>&1 || true ) &
+  server_killer=$!
+  set +e
+  env -u TMUX -u TMUX_PANE TERM=xterm-256color script -q /dev/null \
+    "$TMUX_BIN" -L "$socket" -f /dev/null attach-session -t alpha \
+    \; display-popup -E "$popup_command" >/dev/null 2>&1
+  pty_status=$?
+  set -e
+  wait "$server_killer"
+  printf 'pty_transport_exit=%s (server deliberately stopped after popup exit)\n' "$pty_status"
+  grep -q '^popup-save-exited$' "$marker"
+  printf '%s\n' 'PASS successful save exits popup'
+
+  if find "$runtime" -name 'tmux-oil.*' -print -quit | grep -q .; then
+    printf '%s\n' 'tmux-oil private temporary files leaked' >&2
+    return 1
+  fi
+}
+
+if [ "${1-}" = all ] && [ "$#" -eq 1 ]; then
+  "$0" state
+  "$0" apply
+  "$0" ui
+  exit
+fi
+
+if [ "${1-}" = _ui_case ] && [ "$#" -eq 1 ]; then
+  run_ui_case
+  exit
+fi
+
+if [ "${1-}" = ui ] && [ "$#" -eq 1 ]; then
+  output=$(mktemp "${TMPDIR:-/tmp}/tmux-oil-ui-output.XXXXXX")
+  if "$0" _ui_case >"$output" 2>&1; then
+    cat "$output"
+    grep -q '^cleanup_socket_removed=yes ' "$output"
+    rm -f "$output"
+    printf '%s\n' 'PASS all temporary files and throwaway sockets cleaned'
+  else
+    status=$?
+    cat "$output" >&2
+    rm -f "$output"
+    exit "$status"
+  fi
+  exit
+fi
+
+if [ "${1-}" = _apply_case ] && [ "$#" -eq 2 ]; then
+  run_apply_case "$2"
+  exit
+fi
+
+if [ "${1-}" = apply ] && [ "$#" -eq 1 ]; then
+  for result in \
+    'stable|rename targets stable session ID' \
+    'create-kill|create and kill produce exact requested final state' \
+    'cycle|rename collision/cycle produces exact requested final state' \
+    'drift|drift immediately before apply executes zero mutations' \
+    'mid-failure|mid-apply tmux failure stops and reports partial state' \
+    'safety|current/last-session case follows documented safe behavior'
+  do
+    scenario=${result%%|*}
+    message=${result#*|}
+    "$0" _apply_case "$scenario"
+    printf 'PASS %s\n' "$message"
+  done
+  printf '%s\n' 'PASS every test used and cleaned a throwaway socket'
+  exit
+fi
+
+if [ "${1-}" != state ] || [ "$#" -ne 1 ]; then
+  printf 'usage: %s state|apply|ui|all\n' "$0" >&2
+  exit 2
+fi
+
+TMUX_BIN=$(command -v tmux)
+socket="tmux-oil-seg1-state-$$-$(date +%s)"
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/tmux-oil-test.XXXXXX")
+socket_path=
+cleanup() {
+  status=$?
+  trap - EXIT HUP INT TERM
+  if ! "$TMUX_BIN" -L "$socket" -f /dev/null kill-server >/dev/null 2>&1; then
+    status=1
+  fi
+  rm -rf "$tmp"
+  [ -n "$socket_path" ] && rm -f "$socket_path"
+  if [ -n "$socket_path" ] && [ ! -e "$socket_path" ]; then
+    printf 'cleanup_socket_removed=yes path=%s\n' "$socket_path"
+  else
+    printf 'cleanup_socket_removed=no path=%s\n' "${socket_path:-unknown}" >&2
+    status=1
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+printf 'throwaway_socket=%s\n' "$socket"
+special_open='-base $; "quoted" with space'
+"$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s "$special_open" 'sleep 120'
+"$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s beta 'sleep 120'
+socket_path=$("$TMUX_BIN" -L "$socket" -f /dev/null display-message -p '#{socket_path}')
+server_pid=$("$TMUX_BIN" -L "$socket" -f /dev/null display-message -p '#{pid}')
+
+cat >"$tmp/state.lua" <<'LUA'
+local M = assert(_G.tmux_oil)
+local control_socket = assert(vim.env.TMUX_OIL_TEST_SOCKET)
+local tmux_bin = assert(vim.env.TMUX_OIL_TMUX_BIN)
+
+local function check(value, message)
+  if not value then error(message, 0) end
+end
+
+local function control(args)
+  local argv = { tmux_bin, "-L", control_socket, "-f", "/dev/null" }
+  vim.list_extend(argv, args)
+  local result = vim.system(argv, { text = true }):wait()
+  check(result.code == 0, (result.stderr or "throwaway tmux command failed"):gsub("%s+$", ""))
+  return result.stdout or ""
+end
+
+local function rejects(text, baseline)
+  return not pcall(M.parse_manifest, text, baseline)
+end
+
+local function plan_rejects(baseline, intent, current)
+  local ok, err = pcall(M.plan, baseline, intent, current)
+  return not ok and tostring(err):find("structural drift detected", 1, true) ~= nil
+end
+
+local baseline = M.snapshot()
+check(#baseline.order == 2, "opening snapshot did not contain two sessions")
+local rendered = M.render(baseline)
+local roundtrip = M.parse_manifest(rendered, baseline)
+for _, id in ipairs(baseline.order) do
+  check(roundtrip.existing[id] == baseline.by_id[id], "round-trip changed an ID or name")
+end
+local pass_roundtrip = true
+
+local first, second = baseline.order[1], baseline.order[2]
+local special = '-leading $; quote="ok" with space'
+local special_create = '-create $; quote="ok" with space'
+local special_text = first .. "\t" .. vim.json.encode(special) .. "\n"
+  .. second .. "\t" .. vim.json.encode(baseline.by_id[second]) .. "\n"
+  .. "+\t" .. vim.json.encode(special_create)
+local special_plan = M.plan(baseline, M.parse_manifest(special_text, baseline), M.snapshot())
+check(#special_plan.renames == 1, "special-character rename was not planned")
+local special_argv = special_plan.renames[1].argv
+check(#special_argv == 8 and special_argv[7] == "--" and special_argv[8] == special,
+  "special-character rename was not preserved as one argv value")
+local create_argv = special_plan.creates[1].argv
+check(#create_argv == 7 and create_argv[6] == "-s" and create_argv[7] == special_create,
+  "special-character create was not preserved as one argv value")
+local jump_argv = M.jump_argv(first, baseline)
+check(#jump_argv == 6 and jump_argv[4] == "switch-client"
+  and jump_argv[5] == "-t" and jump_argv[6] == first,
+  "jump did not use the frozen stable-ID argv mapping")
+local pass_argv = true
+
+local duplicate_id = first .. "\t\"one\"\n" .. first .. "\t\"two\""
+local duplicate_name = first .. "\t\"same\"\n" .. second .. "\t\"same\""
+check(rejects("malformed", baseline), "malformed row accepted")
+check(rejects(duplicate_id, baseline), "duplicate ID accepted")
+check(rejects("$999\t\"forged\"", baseline), "forged ID accepted")
+check(rejects(first .. "\t\"name\"\textra", baseline), "unsupported third field accepted")
+check(rejects("_\t\"invalid-marker\"", baseline), "invalid new-row marker accepted")
+check(rejects(duplicate_name, baseline), "duplicate resulting name accepted")
+check(rejects("+\t\"colon:name\"", baseline), "tmux-normalized name accepted")
+check(vim.deep_equal(M.snapshot(), baseline), "validation changed throwaway state")
+local pass_validation = true
+
+local intent_text = first .. "\t\"renamed\"\n+\t\"z-create\"\n+\t\"a-create\""
+local intent = M.parse_manifest(intent_text, baseline)
+local deterministic = M.plan(baseline, intent, M.snapshot())
+local deterministic_again = M.plan(baseline, intent, M.snapshot())
+check(vim.deep_equal(deterministic, deterministic_again), "plan changed between identical inputs")
+check(#deterministic.operations == 4, "deterministic plan has wrong operation count")
+check(deterministic.operations[1].kind == "rename" and deterministic.operations[1].id == first,
+  "deterministic rename is wrong")
+check(deterministic.operations[2].kind == "create" and deterministic.operations[2].name == "a-create",
+  "creates are not deterministic")
+check(deterministic.operations[3].kind == "create" and deterministic.operations[3].name == "z-create",
+  "creates are not deterministic")
+check(deterministic.operations[4].kind == "kill" and deterministic.operations[4].id == second,
+  "deterministic kill is wrong")
+check(vim.deep_equal(M.snapshot(), baseline), "planning mutated throwaway state")
+local pass_plan, pass_not_mutated = true, true
+
+control({ "set-option", "-t", first, "@pi_cache_session", "BUSY 9s $4.20" })
+check(not M.structural_drift(baseline, M.snapshot()), "volatile cache text caused structural drift")
+local pass_cache = true
+
+control({ "new-session", "-d", "-s", "external-create", "sleep 120" })
+local after_create = M.snapshot()
+check(plan_rejects(baseline, roundtrip, after_create), "external create was not rejected")
+local created_id
+for id, _ in pairs(after_create.by_id) do
+  if baseline.by_id[id] == nil then created_id = id end
+end
+check(created_id ~= nil, "external create ID not found")
+control({ "kill-session", "-t", created_id })
+local pass_create = true
+
+control({ "rename-session", "-t", first, "--", "external-rename" })
+check(plan_rejects(baseline, roundtrip, M.snapshot()), "external rename was not rejected")
+control({ "rename-session", "-t", first, "--", baseline.by_id[first] })
+local pass_rename = true
+
+control({ "kill-session", "-t", second })
+check(plan_rejects(baseline, roundtrip, M.snapshot()), "external kill was not rejected")
+local pass_kill = true
+
+local results = {
+  "PASS round-trip keeps stable IDs and names",
+  "PASS special characters remain one argv value",
+  "PASS malformed and duplicate IDs rejected before apply",
+  "PASS unchanged baseline produces the expected deterministic plan",
+  "PASS volatile cache-only change is not structural drift",
+  "PASS external create rejected",
+  "PASS external kill rejected",
+  "PASS external rename rejected",
+  "PASS throwaway server state was not mutated",
+}
+for _, line in ipairs(results) do io.stdout:write(line .. "\n") end
+io.stdout:flush()
+LUA
+
+TMUX="$socket_path,$server_pid,0" \
+TMUX_OIL_TEST_LUA="$tmp/state.lua" \
+TMUX_OIL_TEST_SOCKET="$socket" \
+./scripts/tmux-oil

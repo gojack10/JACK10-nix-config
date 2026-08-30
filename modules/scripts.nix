@@ -1,4 +1,12 @@
-{ config, lib, pkgs, ... }: {
+{ config, lib, pkgs, ... }:
+
+let
+  tmuxOil = pkgs.writeShellApplication {
+    name = "tmux-oil";
+    runtimeInputs = [ config.programs.tmux.package pkgs.neovim ];
+    text = builtins.readFile ../scripts/tmux-oil;
+  };
+in {
   # Scripts sourced from ../scripts/ are managed by Home Manager and linked to ~/.local/bin.
   # Add new script entries below following the same pattern.
 
@@ -70,6 +78,12 @@
 
   home.file.".local/bin/pi-push" = {
     source = ../scripts/pi-push;
+    executable = true;
+    force = true;
+  };
+
+  home.file.".local/bin/tmux-oil" = {
+    source = "${tmuxOil}/bin/tmux-oil";
     executable = true;
     force = true;
   };

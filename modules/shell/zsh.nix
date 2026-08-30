@@ -38,7 +38,7 @@ in {
     };
 
     shellAliases = {
-      ts = "tmux attach-session \\; display-popup -E \"$HOME/.local/bin/tmux-oil\"";
+      ts = "tmux attach-session \\; display-popup -w 100% -h 100% -E \"$HOME/.local/bin/tmux-oil\"";
       claudeyolo = "claude --dangerously-skip-permissions";
       plainpi = "command pi --no-extensions --no-skills --no-prompt-templates --no-tools --system-prompt '' -e $HOME/.pi/agent/extensions/context-session-footer.ts -e $HOME/.pi/agent/extensions/plain.ts --plain";
       rsync = "rsync -ah --info=progress2 --no-i-r --stats";

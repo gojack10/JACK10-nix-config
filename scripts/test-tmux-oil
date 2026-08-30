@@ -366,10 +366,20 @@ check(vim.api.nvim_buf_is_valid(M.buf) and vim.api.nvim_get_current_buf() == M.b
   ":w did not keep the editor open and live")
 wait_for(function() return M.completed_polls >= 1 and M.poll_process == nil end,
   "poll after restart did not complete")
-vim.api.nvim_buf_set_lines(M.buf, 0, 1, false, { "malformed" })
+vim.api.nvim_buf_set_lines(M.buf, -1, -1, false, { "created-by-plain-line" })
+local create_ok, create_error = pcall(vim.cmd, "write")
+check(create_ok, create_error or "plain-line create failed")
+check(vim.tbl_contains(vim.tbl_values(M.baseline.by_id), "created-by-plain-line"),
+  "plain new line did not create a session")
+vim.api.nvim_buf_set_lines(M.buf, -1, -1, false, { "bad:name" })
 local write_ok, write_error = pcall(vim.cmd, "wq")
-check(not write_ok and tostring(write_error):find("tmux%-oil"),
+local helpful_error = tostring(write_error)
+check(not write_ok and helpful_error:find("tmux%-oil"),
   "failed :wq did not return a useful error")
+check(helpful_error:find("plain line like: work", 1, true)
+    and helpful_error:find('+<TAB>"work"', 1, true)
+    and helpful_error:find('$N<TAB>"name"', 1, true),
+  "validation error did not explain plain and encoded row forms")
 check(vim.api.nvim_buf_is_valid(M.buf) and vim.api.nvim_get_current_buf() == M.buf,
   "failed save closed the editor buffer")
 
@@ -390,6 +400,8 @@ for _, result in ipairs({
   "PASS external topology change is visibly flagged but not merged",
   "PASS overlapping polls are suppressed or coalesced",
   "PASS :wq stops timer and in-flight poll before final reread",
+  "PASS plain new line creates a session on save",
+  "PASS validation error explains plain and encoded row forms",
   "PASS failed save remains open",
 }) do io.stdout:write(result .. "\n") end
 io.stdout:flush()
@@ -522,16 +534,99 @@ SH
   printf '%s\n' 'PASS popup-open real PTY rendered manifest, exited cleanly, and preserved server state'
 }
 
+run_current_cursor_case() {
+  TMUX_BIN=$(command -v tmux)
+  socket="tmux-oil-current-cursor-$$-$(date +%s)"
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/tmux-oil-current-cursor.XXXXXX")
+  socket_path=
+  cleanup_current_cursor() {
+    status=$?
+    trap - EXIT HUP INT TERM
+    "$TMUX_BIN" -L "$socket" -f /dev/null kill-server >/dev/null 2>&1 || status=1
+    [ -n "$socket_path" ] && rm -f "$socket_path"
+    rm -rf "$tmp"
+    [ -n "$socket_path" ] && [ ! -e "$socket_path" ] || status=1
+    exit "$status"
+  }
+  trap cleanup_current_cursor EXIT
+  trap 'exit 1' HUP INT TERM
+
+  "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s alpha 'sleep 120'
+  "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s beta 'sleep 120'
+  socket_path=$("$TMUX_BIN" -L "$socket" -f /dev/null display-message -p '#{socket_path}')
+
+  cat >"$tmp/cursor.lua" <<'LUA'
+local M = assert(_G.tmux_oil)
+M.start()
+local current = M.current_session_id()
+local cursor = vim.api.nvim_win_get_cursor(0)
+local line = vim.api.nvim_buf_get_lines(M.buf, cursor[1] - 1, cursor[1], false)[1]
+assert(current == M.baseline.order[2] and M.baseline.by_id[current] == "beta",
+  "popup did not resolve the attached client's non-first session")
+assert(cursor[1] == 2 and line:sub(1, #current + 1) == current .. "\t",
+  "cursor did not start on the current session row")
+local file = assert(io.open(assert(vim.env.TMUX_OIL_CURSOR_MARKER), "w"))
+file:write("context=" .. vim.env.TMUX_OIL_CURSOR_CONTEXT .. " current=" .. current
+  .. " cursor_line=" .. cursor[1] .. " buffer_line=" .. line .. "\n")
+file:close()
+LUA
+
+  run_context() {
+    context=$1
+    marker="$tmp/$context"
+    popup_command="env TMUX_OIL_TEST_LUA=$tmp/cursor.lua TMUX_OIL_CURSOR_MARKER=$marker TMUX_OIL_CURSOR_CONTEXT=$context $PWD/scripts/tmux-oil"
+    if [ "$context" = inside-binding ]; then
+      "$TMUX_BIN" -L "$socket" -f /dev/null bind-key s \
+        display-popup -w 80% -h 80% -E "$popup_command"
+    fi
+    set +e
+    (
+      if [ "$context" = inside-binding ]; then sleep .5; printf '\002s'; fi
+      attempts=0
+      while [ ! -s "$marker" ] && [ "$attempts" -lt 100 ]; do
+        sleep .05
+        attempts=$((attempts + 1))
+      done
+      sleep .1
+      printf '\002d'
+    ) | if [ "$context" = outside-attach ]; then
+      env -u TMUX -u TMUX_PANE TERM=xterm-256color script -q /dev/null \
+        "$TMUX_BIN" -L "$socket" -f /dev/null attach-session -t beta \
+        \; display-popup -w 80% -h 80% -E "$popup_command"
+    else
+      env -u TMUX -u TMUX_PANE TERM=xterm-256color script -q /dev/null \
+        "$TMUX_BIN" -L "$socket" -f /dev/null attach-session -t beta
+    fi >/dev/null 2>&1
+    transport_status=$?
+    set -e
+    [ "$transport_status" -eq 0 ]
+    test -s "$marker"
+    grep -q "^context=$context current=\\\$[0-9][0-9]* cursor_line=2 buffer_line=\\\$[0-9][0-9]*" "$marker"
+    cat "$marker"
+  }
+
+  run_context outside-attach
+  run_context inside-binding
+  printf '%s\n' \
+    'PASS current-session cursor targets non-first row in outside attach and inside binding popups'
+}
+
 if [ "${1-}" = all ] && [ "$#" -eq 1 ]; then
   "$0" state
   "$0" apply
   "$0" ui
   "$0" popup-open
+  "$0" current-cursor
   exit
 fi
 
 if [ "${1-}" = popup-open ] && [ "$#" -eq 1 ]; then
   run_popup_open_case
+  exit
+fi
+
+if [ "${1-}" = current-cursor ] && [ "$#" -eq 1 ]; then
+  run_current_cursor_case
   exit
 fi
 
@@ -580,7 +675,7 @@ if [ "${1-}" = apply ] && [ "$#" -eq 1 ]; then
 fi
 
 if [ "${1-}" != state ] || [ "$#" -ne 1 ]; then
-  printf 'usage: %s state|apply|ui|popup-open|all\n' "$0" >&2
+  printf 'usage: %s state|apply|ui|popup-open|current-cursor|all\n' "$0" >&2
   exit 2
 fi
 

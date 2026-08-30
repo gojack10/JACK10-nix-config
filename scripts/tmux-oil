@@ -665,7 +665,11 @@ function M.jump()
   local line = vim.api.nvim_get_current_line()
   local id = line:match("^(%$%d+)\t")
   if not id then fail("place the cursor on an existing session to jump") end
+  if vim.bo[M.buf].modified then
+    fail("buffer has unsaved changes - :wq to apply or abandon before jumping")
+  end
   M.tmux({ "switch-client", "-t", id })
+  vim.cmd("q!")
 end
 
 function M.start()

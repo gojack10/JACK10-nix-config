@@ -11,13 +11,15 @@ TMUX_OIL_NVIM_BIN=$(command -v nvim) || { printf '%s\n' 'tmux-oil: nvim not foun
 TMUX_OIL_SOCKET=$socket
 export TMUX_OIL_TMUX_BIN TMUX_OIL_SOCKET
 
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/tmux-oil.XXXXXX")
-chmod 700 "$tmp"
-cleanup() { rm -rf "$tmp"; }
-trap cleanup EXIT
-trap 'exit 1' HUP INT TERM
+TMUX_OIL_INIT=$(awk '
+  /^# __TMUX_OIL_LUA_BEGIN__$/ { emit=1; next }
+  /^# __TMUX_OIL_LUA_END__$/ { exit }
+  emit
+' "$0")
+export TMUX_OIL_INIT
 
-cat >"$tmp/init.lua" <<'LUA'
+: <<'TMUX_OIL_LUA'
+# __TMUX_OIL_LUA_BEGIN__
 local M = {}
 _G.tmux_oil = M
 vim.g.tmux_oil_init_loaded = true
@@ -745,10 +747,13 @@ if vim.env.TMUX_OIL_TEST_LUA then
 end
 
 M.start()
-LUA
+# __TMUX_OIL_LUA_END__
+TMUX_OIL_LUA
 
 if [ -n "${TMUX_OIL_TEST_LUA-}" ]; then
-  "$TMUX_OIL_NVIM_BIN" --clean -u "$tmp/init.lua" --headless
+  exec "$TMUX_OIL_NVIM_BIN" --clean -u NONE \
+    --cmd "lua assert(load(vim.env.TMUX_OIL_INIT, '@tmux-oil'))()" --headless
 else
-  "$TMUX_OIL_NVIM_BIN" --clean -u "$tmp/init.lua"
+  exec "$TMUX_OIL_NVIM_BIN" --clean -u NONE \
+    --cmd "lua assert(load(vim.env.TMUX_OIL_INIT, '@tmux-oil'))()"
 fi

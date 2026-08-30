@@ -9,7 +9,12 @@ esac
 TMUX_OIL_TMUX_BIN=$(command -v tmux) || { printf '%s\n' 'tmux-oil: tmux not found' >&2; exit 1; }
 TMUX_OIL_NVIM_BIN=$(command -v nvim) || { printf '%s\n' 'tmux-oil: nvim not found' >&2; exit 1; }
 TMUX_OIL_SOCKET=$socket
-export TMUX_OIL_TMUX_BIN TMUX_OIL_SOCKET
+if "$TMUX_OIL_TMUX_BIN" -S "$TMUX_OIL_SOCKET" list-commands move-session >/dev/null 2>&1; then
+  TMUX_OIL_PERSISTENT_ORDER=1
+else
+  TMUX_OIL_PERSISTENT_ORDER=0
+fi
+export TMUX_OIL_TMUX_BIN TMUX_OIL_SOCKET TMUX_OIL_PERSISTENT_ORDER
 
 TMUX_OIL_INIT=$(awk '
   /^# __TMUX_OIL_LUA_BEGIN__$/ { emit=1; next }
@@ -26,6 +31,8 @@ vim.g.tmux_oil_init_loaded = true
 
 local tmux_bin = assert(vim.env.TMUX_OIL_TMUX_BIN, "missing tmux executable")
 local socket = assert(vim.env.TMUX_OIL_SOCKET, "missing tmux socket")
+local persistent_order = vim.env.TMUX_OIL_PERSISTENT_ORDER == "1"
+M.persistent_order = persistent_order
 
 local function fail(message)
   error("tmux-oil: " .. message, 0)
@@ -110,18 +117,18 @@ function M.parse_snapshot(output)
   end
   local rows = {}
   for _, line in ipairs(vim.split(output, "\n", { plain = true })) do
-    local created, id, name = line:match("^(%d+)\t([^\t]+)\t(.*)$")
-    if not created then id, name = split_row(line, "snapshot") end
+    local rank, id, name = line:match("^(%d+)\t([^\t]+)\t(.*)$")
+    if not rank then id, name = split_row(line, "snapshot") end
     if not id:match("^%$%d+$") then
       fail("invalid snapshot session ID " .. id)
     end
     rows[#rows + 1] = {
-      id = id, name = validate_name(name), created = tonumber(created),
+      id = id, name = validate_name(name), rank = tonumber(rank),
     }
   end
-  if rows[1] and rows[1].created then
+  if rows[1] and rows[1].rank then
     table.sort(rows, function(a, b)
-      if a.created ~= b.created then return a.created < b.created end
+      if a.rank ~= b.rank then return a.rank < b.rank end
       return tonumber(a.id:sub(2)) < tonumber(b.id:sub(2))
     end)
   end
@@ -143,8 +150,9 @@ function M.tmux(tail)
 end
 
 function M.snapshot()
+  local rank = persistent_order and "#{session_order}" or "#{session_created}"
   return M.parse_snapshot(M.tmux({
-    "list-sessions", "-F", "#{session_created}\t#{session_id}\t#{session_name}",
+    "list-sessions", "-F", rank .. "\t#{session_id}\t#{session_name}",
   }))
 end
 
@@ -208,7 +216,7 @@ function M.structural_drift(baseline, current)
       return true
     end
   end
-  return false
+  return persistent_order and not vim.deep_equal(baseline.order, current.order)
 end
 
 function M.jump_argv(id, baseline)
@@ -263,6 +271,46 @@ local function remove_id(state, id)
       return
     end
   end
+end
+
+local function intended_order_changed(baseline, intent)
+  local before, after = {}, {}
+  for _, id in ipairs(baseline.order) do
+    if intent.existing[id] ~= nil then before[#before + 1] = id end
+  end
+  for _, row in ipairs(intent.order) do
+    if row.marker ~= "+" then after[#after + 1] = row.marker end
+  end
+  return not vim.deep_equal(before, after)
+end
+
+local function desired_order(intent, state)
+  local ids = {}
+  for _, row in ipairs(intent.order) do
+    if row.marker ~= "+" then
+      ids[#ids + 1] = row.marker
+    else
+      local found
+      for id, name in pairs(state.by_id) do
+        if name == row.name then found = id; break end
+      end
+      if not found then fail("created session has no stable ID: " .. row.name) end
+      ids[#ids + 1] = found
+    end
+  end
+  return ids
+end
+
+local function move_before(state, id, target)
+  local source_index, target_index
+  for index, value in ipairs(state.order) do
+    if value == id then source_index = index end
+    if value == target then target_index = index end
+  end
+  if not source_index or not target_index then fail("cannot reorder missing stable session ID") end
+  table.remove(state.order, source_index)
+  if source_index < target_index then target_index = target_index - 1 end
+  table.insert(state.order, target_index, id)
 end
 
 local function execution_plan(plan, current)
@@ -391,12 +439,15 @@ function M.apply(baseline, intent)
   local report = {
     before = fresh, operations = operations, succeeded = {}, not_run = {}, attempted = {},
   }
-  for index, operation in ipairs(operations) do
+  local function execute(operation, index)
     local live = M.snapshot()
     if M.structural_drift(expected, live) then
       report_error("structural drift detected before operation " .. index, report, index - 1)
     end
     if operation.id and live.by_id[operation.id] ~= expected.by_id[operation.id] then
+      report_error("stable session target disappeared before operation " .. index, report, index - 1)
+    end
+    if operation.target and live.by_id[operation.target] ~= expected.by_id[operation.target] then
       report_error("stable session target disappeared before operation " .. index, report, index - 1)
     end
     if operation.kind == "kill" and current_session_id() == operation.id then
@@ -418,6 +469,8 @@ function M.apply(baseline, intent)
       remove_id(expected, operation.id)
     elseif operation.kind == "rename" then
       expected.by_id[operation.id] = operation.name
+    elseif operation.kind == "move" then
+      move_before(expected, operation.id, operation.target)
     elseif operation.kind == "create" then
       local after_create = M.snapshot()
       local created_id
@@ -439,6 +492,23 @@ function M.apply(baseline, intent)
         report_error("structural drift detected after create operation " .. index, report, index)
       end
     end
+  end
+
+  for index, operation in ipairs(operations) do execute(operation, index) end
+
+  if persistent_order then
+    local wanted = desired_order(intent, expected)
+    local first_move = #operations + 1
+    for index = #wanted - 1, 1, -1 do
+      operations[#operations + 1] = {
+        kind = "move", id = wanted[index], target = wanted[index + 1],
+        argv = M.argv({ "move-session", "-b", "-s", wanted[index], "-t", wanted[index + 1] }),
+      }
+    end
+    for index = first_move, #operations do execute(operations[index], index) end
+  elseif intended_order_changed(baseline, intent) then
+    report.warning = "server lacks move-session; row reordering was not persisted; "
+      .. "restart with the patched tmux binary to enable persistent ordering"
   end
 
   local after = M.snapshot()
@@ -678,6 +748,9 @@ function M.save()
     M.last_error = tostring(result)
     vim.notify(M.last_error, vim.log.levels.ERROR, { title = "tmux-oil save failed" })
     return false, M.last_error
+  end
+  if result.warning then
+    vim.notify(result.warning, vim.log.levels.WARN, { title = "tmux-oil ordering skipped" })
   end
   vim.bo[M.buf].modified = false
   M.start()

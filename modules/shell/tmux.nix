@@ -3,8 +3,8 @@
 let
   isNixOS = settings.isNixOS or false;
   tmuxChooseTreeBase = "549c35b06165f6ae023115eb76f83f2cbf945395";
-  # Tag: jack-tmux-3.5a-r1. Pin the commit, never the movable tag name.
-  tmuxChooseTreeTip = "0859a85891e42f9a3b311594dacacb3cbb4e89bc";
+  # Tag: jack-tmux-3.5a-r2. Pin the commit, never the movable tag name.
+  tmuxChooseTreeTip = "b47f68012eb24a64c405f64cfb9248a2b02cea7b";
 in {
   programs.tmux = {
     enable = true;

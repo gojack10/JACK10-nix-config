@@ -180,7 +180,10 @@ in {
         credentialsFile = "/var/lib/cloudflared/c4c8f0cc-c904-43f4-b1bd-823b198e0d76.json";
         ingress = {
           "10top-app-origin.sifttext.com" = "http://127.0.0.1:8000";
-          "10top-auth-origin.sifttext.com" = "http://127.0.0.1:8085";
+          "10top-auth-origin.sifttext.com" = {
+            service = "http://127.0.0.1:8085";
+            originRequest.httpHostHeader = "auth.sifttext.com";
+          };
           "app.sifttext.com" = "http://127.0.0.1:8000";
           "auth.sifttext.com" = "http://127.0.0.1:8085";
         };

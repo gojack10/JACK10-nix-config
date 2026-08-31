@@ -427,9 +427,23 @@ function M.apply(baseline, intent)
   end
   if #planned.kills > 0 then
     local current = current_session_id()
+    local killing = {}
+    for _, operation in ipairs(planned.kills) do
+      killing[operation.id] = true
+    end
     for _, operation in ipairs(planned.kills) do
       if operation.id == current then
-        fail("refusing to kill the invoking/current session because completion cannot be reported safely")
+        local survivor = nil
+        for _, id in ipairs(fresh.order) do
+          if killing[id] == nil then survivor = id; break end
+        end
+        if survivor == nil then
+          fail("refusing to kill the last session/server because completion cannot be reported safely")
+        end
+        -- Deleting the session the user is in must not tear down the popup:
+        -- move the invoking client to a surviving session first so the ts
+        -- menu stays open while the kill lands.
+        M.tmux({ "switch-client", "-t", survivor })
       end
     end
   end

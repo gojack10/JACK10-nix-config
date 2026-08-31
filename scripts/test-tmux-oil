@@ -18,6 +18,11 @@ run_apply_case() {
   cleanup_apply() {
     status=$?
     trap - EXIT HUP INT TERM
+    if [ -n "$attach_pid" ]; then
+      kill "$attach_pid" 2>/dev/null || true
+      wait "$attach_pid" 2>/dev/null || true
+      attach_pid=
+    fi
     if ! "$TMUX_BIN" -L "$socket" -f /dev/null kill-server >/dev/null 2>&1; then
       status=1
     fi
@@ -42,6 +47,27 @@ run_apply_case() {
   fi
   socket_path=$("$TMUX_BIN" -L "$socket" -f /dev/null display-message -p '#{socket_path}')
   server_pid=$("$TMUX_BIN" -L "$socket" -f /dev/null display-message -p '#{pid}')
+  attach_pid=
+  if [ "$scenario" = self-delete ]; then
+    client_capture="$tmp/client-capture"
+    set +e
+    env -u TMUX -u TMUX_PANE TERM=xterm-256color script -q "$client_capture" \
+      "$TMUX_BIN" -L "$socket" -f /dev/null attach-session -t beta >/dev/null 2>&1 &
+    attach_pid=$!
+    set -e
+    clients=
+    attempts=0
+    while [ "$attempts" -lt 100 ]; do
+      clients=$("$TMUX_BIN" -L "$socket" -f /dev/null list-clients -F '#{session_name}' 2>/dev/null | head -n 1)
+      [ "$clients" = beta ] && break
+      attempts=$((attempts + 1))
+      sleep .05
+    done
+    if [ "$clients" != beta ]; then
+      printf 'self-delete: attached client did not reach beta\n' >&2
+      return 1
+    fi
+  fi
 
   cat >"$tmp/apply.lua" <<'LUA'
 local M = assert(_G.tmux_oil)
@@ -184,17 +210,8 @@ elseif scenario == "mid-failure" then
   check(after.by_id[alpha] == "alpha-renamed" and after.by_id[beta] == nil,
     "mid-apply failure did not preserve the exact partial state")
 elseif scenario == "safety" then
-  io.stdout:write("safety_policy=reject invoking/current-session and last-session kills before mutation\n")
+  io.stdout:write("safety_policy=the last surviving session kill is rejected before mutation\n")
   local current = M.current_session_id()
-  local text = manifest(baseline, {}, { [current] = true }, {})
-  intent_listing(text)
-  local before_current = M.snapshot()
-  local ok_current, current_err = pcall(M.apply, baseline, M.parse_manifest(text, baseline))
-  check(not ok_current and tostring(current_err):find("invoking/current session", 1, true),
-    "current-session kill was not safely rejected")
-  check(vim.deep_equal(before_current, M.snapshot()), "current-session rejection mutated state")
-  report_argv(M.last_apply_report)
-
   local other = current == alpha and beta or alpha
   control({ "kill-session", "-t", other })
   local last_baseline = M.snapshot()
@@ -207,6 +224,31 @@ elseif scenario == "safety" then
   listing("AFTER", after)
   check(vim.deep_equal(last_baseline, after), "last-session rejection mutated state")
   report_argv(M.last_apply_report)
+elseif scenario == "self-delete" then
+  io.stdout:write("self_delete_policy=the invoking client moves to a surviving session before the kill\n")
+  local current = M.current_session_id()
+  check(current == beta, "did not resolve the attached client's session as current")
+  local text = manifest(baseline, {}, { [beta] = true }, {})
+  intent_listing(text)
+  local observed = nil
+  M.test_before_command = function(index, operation)
+    if operation.kind == "kill" and operation.id == beta then
+      observed = control({ "list-clients", "-F", "#{session_name}" }):gsub("%s+$", "")
+    end
+  end
+  local ok, err = pcall(M.apply, baseline, M.parse_manifest(text, baseline))
+  M.test_before_command = nil
+  check(ok, "self-delete apply failed: " .. tostring(err))
+  check(observed == "alpha", "the invoking client did not move to alpha before the kill")
+  local after = M.snapshot()
+  listing("AFTER", after)
+  report_argv(M.last_apply_report)
+  check(after.by_id[beta] == nil and after.by_id[alpha] == "alpha",
+    "self-delete did not land in the exact surviving state")
+  check(M.last_apply_report and #M.last_apply_report.succeeded == 1,
+    "self-delete report did not record exactly one succeeded command")
+  check(control({ "list-clients", "-F", "#{session_name}" }):gsub("%s+$", "") == "alpha",
+    "the invoking client did not stay on the surviving session")
 else
   error("unknown apply scenario " .. scenario, 0)
 end
@@ -883,7 +925,8 @@ if [ "${1-}" = apply ] && [ "$#" -eq 1 ]; then
     'cycle|rename collision/cycle produces exact requested final state' \
     'drift|drift immediately before apply executes zero mutations' \
     'mid-failure|mid-apply tmux failure stops and reports partial state' \
-    'safety|current/last-session case follows documented safe behavior'
+    'safety|last surviving session kill is safely rejected' \
+    'self-delete|deleting the invoking session keeps the ts menu alive'
   do
     scenario=${result%%|*}
     message=${result#*|}

@@ -771,11 +771,22 @@ function M.save()
   return true, result
 end
 
--- Session rows are whole lines. A mouse drag or a plain v used to open a
--- character-wise selection whose highlight stopped at the visible name;
--- route every selection through here so it opens (or converts to) line-wise
--- and the highlight covers the full row width, exactly like the cursor line
--- does in normal mode.
+-- Session rows are whole lines. Route mouse drags and plain v through
+-- line-wise Visual mode for row operations; refresh_visual_lines supplies
+-- the screen-width paint that Neovim's built-in Visual range omits after EOL.
+local function refresh_visual_lines()
+  vim.api.nvim_buf_clear_namespace(M.buf, M.visual_ns, 0, -1)
+  if vim.fn.mode() ~= "V" then return end
+  local anchor = vim.fn.line("v")
+  local cursor = vim.api.nvim_win_get_cursor(0)[1]
+  for row = math.min(anchor, cursor), math.max(anchor, cursor) do
+    vim.api.nvim_buf_set_extmark(M.buf, M.visual_ns, row - 1, 0, {
+      line_hl_group = "Visual",
+    })
+  end
+end
+M.refresh_visual_lines = refresh_visual_lines
+
 local function drag_linewise(pos)
   if pos == nil then pos = vim.fn.getmousepos() end
   local row = tonumber(pos and pos.line)
@@ -792,6 +803,7 @@ local function drag_linewise(pos)
     vim.cmd("normal! V")
     vim.api.nvim_win_set_cursor(0, { row, 0 })
   end
+  refresh_visual_lines()
 end
 M.drag_linewise = drag_linewise
 
@@ -813,6 +825,7 @@ function M.start()
   M.ns = M.ns or vim.api.nvim_create_namespace("tmux-oil-live")
   M.presentation_ns = M.presentation_ns
     or vim.api.nvim_create_namespace("tmux-oil-presentation")
+  M.visual_ns = M.visual_ns or vim.api.nvim_create_namespace("tmux-oil-visual-lines")
   M.poll_generation = (M.poll_generation or 0) + 1
   M.started_polls, M.completed_polls, M.overlapping_polls = 0, 0, 0
   vim.api.nvim_buf_set_lines(M.buf, 0, -1, false,
@@ -855,6 +868,9 @@ function M.start()
   local group = vim.api.nvim_create_augroup("tmux_oil_private", { clear = true })
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
     group = group, buffer = M.buf, callback = refresh_presentation,
+  })
+  vim.api.nvim_create_autocmd({ "ModeChanged", "CursorMoved" }, {
+    group = group, buffer = M.buf, callback = refresh_visual_lines,
   })
   vim.api.nvim_create_autocmd("BufWriteCmd", {
     group = group, buffer = M.buf,

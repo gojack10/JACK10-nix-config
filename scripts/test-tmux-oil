@@ -526,6 +526,14 @@ check(vim.fn.mode() == "V", "drag did not open a line-wise selection")
 check(vim.api.nvim_win_get_cursor(0)[1] == 1, "drag did not anchor on the dragged row")
 M.drag_linewise({ line = 2, column = 0 })
 check(vim.api.nvim_win_get_cursor(0)[1] == 2, "drag did not extend onto the dragged row")
+local visual_marks = vim.api.nvim_buf_get_extmarks(M.buf, M.visual_ns, 0, -1, { details = true })
+check(#visual_marks == 2 and #vim.tbl_filter(function(mark)
+  return mark[4].line_hl_group == "Visual"
+end, visual_marks) == 2, "whole-line Visual paint did not cover exactly the selected rows")
+vim.cmd("normal! \27")
+M.refresh_visual_lines()
+check(#vim.api.nvim_buf_get_extmarks(M.buf, M.visual_ns, 0, -1, {}) == 0,
+  "whole-line paint did not clear when visual mode ended")
 vim.cmd("normal! \27")
 check(vim.fn.line("'<") == 1 and vim.fn.line("'>") == 2,
   "line-wise selection did not span the dragged rows")

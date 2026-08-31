@@ -757,6 +757,30 @@ function M.save()
   return true, result
 end
 
+-- Session rows are whole lines. A mouse drag or a plain v used to open a
+-- character-wise selection whose highlight stopped at the visible name;
+-- route every selection through here so it opens (or converts to) line-wise
+-- and the highlight covers the full row width, exactly like the cursor line
+-- does in normal mode.
+local function drag_linewise(pos)
+  if pos == nil then pos = vim.fn.getmousepos() end
+  local row = tonumber(pos and pos.line)
+  if row == nil or row < 1 then return end
+  local last = vim.api.nvim_buf_line_count(M.buf)
+  if row > last then row = last end
+  local mode = vim.fn.mode()
+  if mode == "V" then
+    vim.api.nvim_win_set_cursor(0, { row, 0 })
+  elseif mode == "n" then
+    vim.cmd("normal! V")
+    vim.api.nvim_win_set_cursor(0, { row, 0 })
+  else
+    vim.cmd("normal! V")
+    vim.api.nvim_win_set_cursor(0, { row, 0 })
+  end
+end
+M.drag_linewise = drag_linewise
+
 function M.jump()
   local line = vim.api.nvim_get_current_line()
   local id = line:match("^(%$%d+)\t")
@@ -829,6 +853,11 @@ function M.start()
     group = group, callback = M.cleanup,
   })
   vim.keymap.set("n", "<CR>", M.jump, { buffer = M.buf, silent = true })
+  -- Highlights must cover the whole row: mouse drags select line-wise, and v
+  -- opens the same line-wise selection (char-wise stays reachable by pressing
+  -- v again inside the selection, or double-click for a word).
+  vim.keymap.set({ "n", "v" }, "<LeftDrag>", M.drag_linewise, { buffer = M.buf })
+  vim.keymap.set("n", "v", "V", { buffer = M.buf })
   M.ui_active = true
   M.timer = assert(vim.uv.new_timer())
   M.timer:start(0, 250, vim.schedule_wrap(M.poll))

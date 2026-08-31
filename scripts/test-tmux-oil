@@ -473,6 +473,43 @@ check(contains(before_marks, 'BUSY countdown=9s ctx=10% cost=$1.00')
     and not contains(before_marks, '#[fg='),
   "first poll did not render clean virtual text")
 
+-- Issue: a highlight used to stop at the visible name instead of covering
+-- the whole horizontal space. Drags (and v) must open line-wise selections.
+check(vim.fn.maparg("v", "n") == "V", "v did not map to a line-wise selection")
+check(vim.fn.maparg("<LeftDrag>", "n") ~= "", "left drag did not map to a line-wise handler")
+check(vim.fn.maparg("<LeftDrag>", "v") ~= "", "visual-mode drag did not map to a line-wise handler")
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+M.drag_linewise({ line = 1, column = 0 })
+check(vim.fn.mode() == "V", "drag did not open a line-wise selection")
+check(vim.api.nvim_win_get_cursor(0)[1] == 1, "drag did not anchor on the dragged row")
+M.drag_linewise({ line = 2, column = 0 })
+check(vim.api.nvim_win_get_cursor(0)[1] == 2, "drag did not extend onto the dragged row")
+vim.cmd("normal! \27")
+check(vim.fn.line("'<") == 1 and vim.fn.line("'>") == 2,
+  "line-wise selection did not span the dragged rows")
+check(vim.b[M.buf].changedtick == before_tick and vim.bo[M.buf].modified == before_modified
+    and vim.fn.undotree().seq_cur == before_undo,
+  "selecting rows changed the buffer, modified flag, or undo history")
+vim.api.nvim_win_set_cursor(0, { 2, 0 })
+M.drag_linewise({ line = 9, column = 0 })
+check(vim.fn.mode() == "V" and vim.api.nvim_win_get_cursor(0)[1]
+    == vim.api.nvim_buf_line_count(M.buf), "drag past the last row did not clamp")
+vim.cmd("normal! \27")
+M.drag_linewise({ line = 0, column = 0 })
+check(vim.fn.mode() == "n", "drag outside the rows started a selection")
+M.drag_linewise(nil)
+check(vim.fn.mode() == "n", "drag without a mouse position started a selection")
+vim.api.nvim_win_set_cursor(0, { 2, 0 })
+vim.cmd("normal! v")
+vim.cmd("normal! j")
+M.drag_linewise({ line = 1, column = 0 })
+check(vim.fn.mode() == "V", "drag did not convert a running selection to line-wise")
+vim.cmd("normal! \27")
+check(vim.fn.line("'<") == 1 and vim.fn.line("'>") == 2,
+  "converted selection did not span the running rows")
+M.drag_linewise({ line = 2, column = 0 })
+vim.cmd("normal! \27")
+
 control({ "set-option", "-t", alpha, "@pi_cache_session",
   "#[fg=green]AGENT DONE#[default] countdown=8s ctx=11% cost=$1.25" })
 local completed = M.completed_polls
@@ -563,6 +600,7 @@ for _, result in ipairs({
   "PASS plain new line creates a session on save",
   "PASS validation error explains plain and encoded row forms",
   "PASS failed save remains open",
+  "PASS drag and v highlights cover the whole row",
 }) do io.stdout:write(result .. "\n") end
 io.stdout:flush()
 LUA

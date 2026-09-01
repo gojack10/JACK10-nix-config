@@ -97,40 +97,72 @@ local function split_row(line, source)
 end
 
 local function model(rows)
-  local result = { order = {}, by_id = {} }
-  for _, row in ipairs(rows) do
-    if result.by_id[row.id] then
-      fail("duplicate session ID " .. row.id)
-    end
-    result.order[#result.order + 1] = row.id
-    result.by_id[row.id] = row.name
-  end
-  return result
-end
-
-function M.parse_snapshot(output)
-  if output:sub(-1) == "\n" then
-    output = output:sub(1, -2)
-  end
-  if output == "" then
-    return model({})
-  end
-  local rows = {}
-  for _, line in ipairs(vim.split(output, "\n", { plain = true })) do
-    local rank, id, name = line:match("^(%d+)\t([^\t]+)\t(.*)$")
-    if not rank then id, name = split_row(line, "snapshot") end
-    if not id:match("^%$%d+$") then
-      fail("invalid snapshot session ID " .. id)
-    end
-    rows[#rows + 1] = {
-      id = id, name = validate_name(name), rank = tonumber(rank),
-    }
-  end
   if rows[1] and rows[1].rank then
     table.sort(rows, function(a, b)
       if a.rank ~= b.rank then return a.rank < b.rank end
       return tonumber(a.id:sub(2)) < tonumber(b.id:sub(2))
     end)
+  end
+  local result = {
+    order = {}, by_id = {}, parent_by_id = {}, parent_option_by_id = {},
+    tree_prefix_by_id = {},
+  }
+  local raw_order, raw_parent = {}, {}
+  for _, row in ipairs(rows) do
+    if result.by_id[row.id] then fail("duplicate session ID " .. row.id) end
+    raw_order[#raw_order + 1] = row.id
+    result.by_id[row.id] = row.name
+    result.parent_option_by_id[row.id] = row.parent
+    raw_parent[row.id] = row.parent
+  end
+  local children, roots = {}, {}
+  for _, id in ipairs(raw_order) do
+    local parent = raw_parent[id]
+    if parent and result.by_id[parent] and parent ~= id then
+      local seen = { [id] = true }
+      local ancestor = parent
+      while ancestor and not seen[ancestor] do
+        seen[ancestor] = true
+        ancestor = raw_parent[ancestor]
+      end
+      if not ancestor then
+        result.parent_by_id[id] = parent
+        children[parent] = children[parent] or {}
+        children[parent][#children[parent] + 1] = id
+      else
+        roots[#roots + 1] = id
+      end
+    else
+      roots[#roots + 1] = id
+    end
+  end
+  local function append(id, display_prefix, child_prefix)
+    result.order[#result.order + 1] = id
+    result.tree_prefix_by_id[id] = display_prefix
+    local descendants = children[id] or {}
+    for index, child in ipairs(descendants) do
+      local last = index == #descendants
+      append(child, child_prefix .. (last and " └── " or " ├── "),
+        child_prefix .. (last and "     " or " │   "))
+    end
+  end
+  for _, id in ipairs(roots) do append(id, "", "") end
+  return result
+end
+
+function M.parse_snapshot(output)
+  if output:sub(-1) == "\n" then output = output:sub(1, -2) end
+  if output == "" then return model({}) end
+  local rows = {}
+  for _, line in ipairs(vim.split(output, "\n", { plain = true })) do
+    local rank, id, name, parent = line:match("^(%d+)\t([^\t]+)\t([^\t]*)\t([^\t]*)$")
+    if not rank then rank, id, name = line:match("^(%d+)\t([^\t]+)\t(.*)$") end
+    if not rank then id, name = split_row(line, "snapshot") end
+    if not id:match("^%$%d+$") then fail("invalid snapshot session ID " .. id) end
+    rows[#rows + 1] = {
+      id = id, name = validate_name(name), rank = tonumber(rank),
+      parent = parent and parent:match("^%$%d+$") and parent or nil,
+    }
   end
   return model(rows)
 end
@@ -152,7 +184,8 @@ end
 function M.snapshot()
   local rank = persistent_order and "#{session_order}" or "#{session_created}"
   return M.parse_snapshot(M.tmux({
-    "list-sessions", "-F", rank .. "\t#{session_id}\t#{session_name}",
+    "list-sessions", "-F", rank
+      .. "\t#{session_id}\t#{session_name}\t#{@pi_subagent_parent_id}",
   }))
 end
 
@@ -208,11 +241,11 @@ local function sorted_ids(state)
 end
 
 function M.structural_drift(baseline, current)
-  if vim.tbl_count(baseline.by_id) ~= vim.tbl_count(current.by_id) then
-    return true
-  end
+  if vim.tbl_count(baseline.by_id) ~= vim.tbl_count(current.by_id) then return true end
   for id, name in pairs(baseline.by_id) do
-    if current.by_id[id] ~= name then
+    if current.by_id[id] ~= name
+        or (current.parent_option_by_id or {})[id]
+          ~= (baseline.parent_option_by_id or {})[id] then
       return true
     end
   end
@@ -260,11 +293,21 @@ function M.plan(baseline, intent, current)
 end
 
 local function copy_state(state)
-  return { order = vim.deepcopy(state.order), by_id = vim.deepcopy(state.by_id) }
+  return {
+    order = vim.deepcopy(state.order),
+    by_id = vim.deepcopy(state.by_id),
+    parent_by_id = vim.deepcopy(state.parent_by_id or {}),
+    parent_option_by_id = vim.deepcopy(state.parent_option_by_id or {}),
+    tree_prefix_by_id = vim.deepcopy(state.tree_prefix_by_id or {}),
+  }
 end
 
 local function remove_id(state, id)
-  state.by_id[id] = nil
+  state.by_id[id], state.parent_by_id[id], state.parent_option_by_id[id],
+    state.tree_prefix_by_id[id] = nil, nil, nil, nil
+  for child, parent in pairs(state.parent_by_id) do
+    if parent == id then state.parent_by_id[child] = nil end
+  end
   for index, value in ipairs(state.order) do
     if value == id then
       table.remove(state.order, index)
@@ -536,17 +579,20 @@ end
 
 local function parse_live(output)
   if output:sub(-1) == "\n" then output = output:sub(1, -2) end
-  local live, metadata = { order = {}, by_id = {} }, {}
-  if output == "" then return live, metadata end
+  if output == "" then return model({}), {} end
+  local rows, metadata = {}, {}
   for _, line in ipairs(vim.split(output, "\n", { plain = true })) do
-    local id, name, status = line:match("^([^\t]+)\t([^\t]*)\t(.*)$")
+    local rank, id, name, status, parent = line:match(
+      "^(%d+)\t([^\t]+)\t([^\t]*)\t([^\t]*)\t([^\t]*)$")
     if not id or not id:match("^%$%d+$") then fail("invalid live metadata row") end
     validate_name(name)
-    if live.by_id[id] then fail("duplicate live session ID " .. id) end
-    live.order[#live.order + 1] = id
-    live.by_id[id], metadata[id] = name, status
+    rows[#rows + 1] = {
+      rank = tonumber(rank), id = id, name = name,
+      parent = parent:match("^%$%d+$") and parent or nil,
+    }
+    metadata[id] = status
   end
-  return live, metadata
+  return model(rows), metadata
 end
 
 local function annotation_text(details)
@@ -626,7 +672,6 @@ end
 local function annotate(live, metadata)
   if not M.ui_active or not vim.api.nvim_buf_is_valid(M.buf) then return end
   vim.api.nvim_buf_clear_namespace(M.buf, M.ns, 0, -1)
-  local seen = {}
   local widths = { 42, 10, 9 }
   for _, text in pairs(metadata) do
     local fields = status_fields(text)
@@ -641,19 +686,37 @@ local function annotate(live, metadata)
   for row, line in ipairs(lines) do
     local id = line:match("^(%$%d+)\t")
     if id and M.baseline.by_id[id] then
-      seen[id] = true
       local text, group = metadata[id] or "", "Comment"
+      local marker, marker_group = "[ ] ", "TmuxOilMeta"
       if live.by_id[id] == nil then
         text, group = "⚠ externally deleted", "TmuxOilYellow"
+        marker, marker_group = "[x] ", "TmuxOilRed"
       elseif live.by_id[id] ~= M.baseline.by_id[id] then
         text, group = "⚠ externally renamed to " .. live.by_id[id], "TmuxOilYellow"
+        marker, marker_group = "[~] ", "TmuxOilYellow"
+      elseif text:find("AGENT DONE", 1, true) then
+        marker, marker_group = "[✓] ", "TmuxOilGreen"
+      elseif text:find("BUSY", 1, true) or text:find("CACHE", 1, true) then
+        marker, marker_group = "[~] ", "TmuxOilYellow"
       end
+      local prefix = live.tree_prefix_by_id[id] or M.baseline.tree_prefix_by_id[id] or ""
+      local label = {}
+      if prefix ~= "" then label[#label + 1] = { prefix, "TmuxOilMeta" } end
+      label[#label + 1] = { marker, marker_group }
+      local parent_option = live.parent_option_by_id[id]
+      if parent_option and not live.parent_by_id[id] then
+        label[#label + 1] = { "[orphan " .. parent_option .. "] ", "TmuxOilYellow" }
+      end
+      vim.api.nvim_buf_set_extmark(M.buf, M.ns, row - 1, 0, {
+        virt_text = label, virt_text_pos = "inline", hl_mode = "combine",
+        right_gravity = false,
+      })
       if text ~= "" then
         local chunks
         if group == "Comment" then
-          chunks = styled_chunks("  " .. aligned_status(text, widths))
+          chunks = styled_chunks(aligned_status(text, widths))
         else
-          chunks = { { "  " .. text:gsub("#%[[^%]]*%]", ""), group } }
+          chunks = { { text:gsub("#%[[^%]]*%]", ""), group } }
         end
         vim.api.nvim_buf_set_extmark(M.buf, M.ns, row - 1, 0, {
           virt_text = chunks, virt_text_win_col = M.status_col, hl_mode = "combine",
@@ -685,8 +748,11 @@ function M.poll()
   end
   local generation = M.poll_generation
   local process
+  local rank = persistent_order and "#{session_order}" or "#{session_created}"
   process = vim.system(M.argv({
-    "list-sessions", "-F", "#{session_id}\t#{session_name}\t#{@pi_cache_session}",
+    "list-sessions", "-F", rank
+      .. "\t#{session_id}\t#{session_name}\t#{@pi_cache_session}"
+      .. "\t#{@pi_subagent_parent_id}",
   }), { text = true }, vim.schedule_wrap(function(result)
     if generation ~= M.poll_generation or process ~= M.poll_process or not M.ui_active then
       return
@@ -839,6 +905,7 @@ function M.start()
   vim.wo.wrap = false
   vim.wo.cursorline = true
   vim.wo.cursorlineopt = "line"
+  vim.opt.laststatus = 0
   vim.wo.conceallevel = 3
   vim.wo.concealcursor = "nvic"
   vim.api.nvim_set_hl(0, "Normal", {
@@ -853,8 +920,13 @@ function M.start()
   vim.api.nvim_set_hl(0, "TmuxOilYellow", { fg = "#ffff00", ctermfg = 11 })
   vim.api.nvim_set_hl(0, "TmuxOilRed", { fg = "#ff5f5f", ctermfg = 9 })
   local longest = 0
-  for _, name in pairs(M.baseline.by_id) do
-    longest = math.max(longest, vim.fn.strdisplaywidth(name))
+  for id, name in pairs(M.baseline.by_id) do
+    local prefix = M.baseline.tree_prefix_by_id[id] or ""
+    local parent_option = M.baseline.parent_option_by_id[id]
+    local orphan = parent_option and not M.baseline.parent_by_id[id]
+      and "[orphan " .. parent_option .. "] " or ""
+    longest = math.max(longest,
+      vim.fn.strdisplaywidth(prefix .. "[ ] " .. orphan .. name))
   end
   M.status_col = math.max(42, longest + 4)
   refresh_presentation()

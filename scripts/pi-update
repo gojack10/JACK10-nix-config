@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016
 set -euo pipefail
 
 REPO="$HOME/.local/share/pi-mono"
 BASELINE="$REPO/.audit-baseline.txt"
 PATCHES_DIR="$HOME/.pi/agent/patches"
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+RUNTIME_BRANCH="${PI_RUNTIME_BRANCH:-coding-agent/local-runtime-patches}"
+CANDIDATE_ROOT="${PI_UPDATE_CANDIDATE_ROOT:-$HOME/.local/state/pi-update/candidates}"
 NODE_BIN="${PI_NODE:-node}"
 NPM_BIN="npm"
 if command -v mise >/dev/null 2>&1; then
@@ -47,9 +49,19 @@ write_pi_launcher() {
   cat > "$launcher" <<'EOF'
 #!/usr/bin/env bash
 # pi — launcher using compiled JS from the local checkout.
-REPO="$HOME/.local/share/pi-mono"
+REPO="${PI_REPO:-$HOME/.local/share/pi-mono}"
 CLI="$REPO/packages/coding-agent/dist/cli.js"
+RUNTIME_BRANCH="${PI_RUNTIME_BRANCH:-coding-agent/local-runtime-patches}"
 export PI_PACKAGE_DIR="$REPO/packages/coding-agent"
+if [[ -z "${PI_ALLOW_UNRECONCILED:-}" ]] && git -C "$REPO" show-ref --verify --quiet "refs/heads/$RUNTIME_BRANCH"; then
+  active="$(git -C "$REPO" rev-parse HEAD)"
+  expected="$(git -C "$REPO" rev-parse "$RUNTIME_BRANCH")"
+  if [[ "$active" != "$expected" ]]; then
+    echo "Pi runtime is not the reconciled $RUNTIME_BRANCH branch." >&2
+    echo "Run pi-update after reconciling the candidate, or set PI_ALLOW_UNRECONCILED=1 for recovery." >&2
+    exit 1
+  fi
+fi
 # Make SiftText available when Pi is launched outside an interactive shell.
 if [[ -z "${SIFTTEXT_API_KEY:-}" && -f "$HOME/.config/pi-secrets/env" ]]; then
   # shellcheck source=/dev/null
@@ -199,7 +211,8 @@ sync_pi_agent() {
     git_url="$(prompt_pi_agent_git_url)"
     echo "Cloning pi-agent from $git_url ..."
     if [[ -e "$agent_dir" ]]; then
-      local backup="$HOME/.local/state/pi-update/backups/pi-agent-$(date +%Y%m%d-%H%M%S)"
+      local backup
+      backup="$HOME/.local/state/pi-update/backups/pi-agent-$(date +%Y%m%d-%H%M%S)"
       mkdir -p "$(dirname "$backup")"
       cp -a "$agent_dir" "$backup"
       rm -rf "$agent_dir"
@@ -212,43 +225,126 @@ sync_pi_agent() {
   fi
 }
 
-# ── Report patches (no auto-apply) ──────────────────────────────────
+# ── Transactional runtime reconciliation ────────────────────────────
 
-report_patches() {
-  if [[ -x "$SCRIPT_DIR/pi-patches" ]]; then
-    "$SCRIPT_DIR/pi-patches" "$REPO" "$PATCHES_DIR"
-    return 0
+assert_patch_branch() {
+  local target="$1"
+  local legacy_patches=("$PATCHES_DIR"/*.patch)
+  if [[ -f "${legacy_patches[0]}" ]]; then
+    echo "Legacy .patch files still exist in $PATCHES_DIR." >&2
+    echo "Port, discard, or refactor them onto $RUNTIME_BRANCH, then remove the duplicate artifacts." >&2
+    return 1
   fi
-
-  if [[ ! -d "$PATCHES_DIR" ]]; then
-    echo "No patches directory at $PATCHES_DIR"
-    echo "Patches: none"
-    return 0
+  if ! git show-ref --verify --quiet "refs/heads/$RUNTIME_BRANCH"; then
+    echo "Missing authoritative runtime branch: $RUNTIME_BRANCH" >&2
+    return 1
   fi
-
-  local patches=("$PATCHES_DIR"/*.patch)
-  if [[ ! -f "${patches[0]}" ]]; then
-    echo "No patch files found in $PATCHES_DIR"
-    echo "Patches: none"
-    return 0
+  if ! git merge-base --is-ancestor "$target" "$RUNTIME_BRANCH"; then
+    return 2
   fi
+}
 
-  echo "Patches available at $PATCHES_DIR:"
-  local any=0
-  for patch in "${patches[@]}"; do
-    local name; name="$(basename "$patch")"
-    if git apply --check "$patch" 2>/dev/null; then
-      echo "  ✅ $name  (applies cleanly)"
-    else
-      echo "  ❌ $name  (DOES NOT APPLY — upstream likely changed)"
+check_active_runtime() {
+  local target="$1"
+  local status
+  if assert_patch_branch "$target"; then
+    :
+  else
+    status=$?
+    if [[ $status -eq 2 ]]; then
+      echo "$RUNTIME_BRANCH has not been reconciled with $(git log -1 --format='%h %s' "$target")." >&2
     fi
-    any=1
-  done
-  echo ""
-  echo "Action required: review each patch above."
-  echo "  - ✅ = remove if upstream has adopted the fix (check changelog)"
-  echo "  - ❌ = regenerate patch (git diff) or drop if superseded"
-  echo ""
+    return "$status"
+  fi
+  local active expected
+  active="$(git rev-parse HEAD)"
+  expected="$(git rev-parse "$RUNTIME_BRANCH")"
+  if [[ "$active" != "$expected" ]]; then
+    echo "Active checkout is not $RUNTIME_BRANCH." >&2
+    return 1
+  fi
+  echo "Runtime reconciled: $RUNTIME_BRANCH contains $(git log -1 --format='%h %s' "$target")"
+}
+
+run_candidate_checks() {
+  local candidate_dir="$1"
+  (
+    cd "$candidate_dir"
+    echo "Installing candidate dependencies..."
+    $NPM_BIN ci --ignore-scripts --silent
+    echo "Checking candidate..."
+    $NPM_BIN run check --silent
+    echo "Testing candidate..."
+    $NPM_BIN --workspace packages/ai test --silent
+    $NPM_BIN --workspace packages/coding-agent test --silent
+    echo "Building candidate..."
+    $NPM_BIN run build --silent
+    PI_PACKAGE_DIR="$candidate_dir/packages/coding-agent" \
+      $NODE_BIN "$candidate_dir/packages/coding-agent/dist/cli.js" --no-extensions --version
+  )
+}
+
+promote_candidate() {
+  local candidate_dir="$1"
+  local target="$2"
+  local current_head candidate_head candidate_branch stamp backup_branch rebase_merge rebase_apply
+  if [[ ! -d "$candidate_dir" ]]; then
+    echo "Candidate worktree not found: $candidate_dir" >&2
+    return 1
+  fi
+  if ! git -C "$candidate_dir" merge-base --is-ancestor "$target" HEAD; then
+    echo "Candidate does not contain the requested upstream target." >&2
+    return 1
+  fi
+  rebase_merge="$(git -C "$candidate_dir" rev-parse --git-path rebase-merge)"
+  rebase_apply="$(git -C "$candidate_dir" rev-parse --git-path rebase-apply)"
+  if [[ -d "$rebase_merge" || -d "$rebase_apply" ]]; then
+    echo "Candidate still has an unresolved rebase: $candidate_dir" >&2
+    return 1
+  fi
+  if ! run_candidate_checks "$candidate_dir"; then
+    echo "Update blocked: candidate checks failed; active Pi remains unchanged." >&2
+    echo "Candidate retained at: $candidate_dir" >&2
+    return 1
+  fi
+
+  current_head="$(git rev-parse "$RUNTIME_BRANCH")"
+  candidate_head="$(git -C "$candidate_dir" rev-parse HEAD)"
+  candidate_branch="$(git -C "$candidate_dir" branch --show-current)"
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  backup_branch="backup/pi-runtime-$stamp"
+  git worktree remove --force "$candidate_dir"
+  git branch "$backup_branch" "$current_head"
+  if [[ "$(git branch --show-current)" == "$RUNTIME_BRANCH" ]]; then
+    git reset --hard "$candidate_head"
+  else
+    git switch -C "$RUNTIME_BRANCH" "$candidate_head"
+  fi
+  git branch -D "$candidate_branch" >/dev/null
+  PROMOTED_FROM="$current_head"
+  echo "Candidate promoted. Previous runtime: $backup_branch"
+}
+
+reconcile_candidate() {
+  local target="$1"
+  local target_label="$2"
+  local base stamp candidate_branch candidate_dir
+  base="$(git merge-base "$target" "$RUNTIME_BRANCH")"
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  candidate_branch="pi-update/candidate-$stamp"
+  candidate_dir="$CANDIDATE_ROOT/${target_label//\//-}-$stamp"
+
+  mkdir -p "$CANDIDATE_ROOT"
+  git worktree add --quiet -b "$candidate_branch" "$candidate_dir" "$RUNTIME_BRANCH"
+  echo "Reconciling $RUNTIME_BRANCH against $target_label in $candidate_dir..."
+  if ! git -C "$candidate_dir" -c core.hooksPath=/dev/null rebase --onto "$target" "$base"; then
+    echo >&2
+    echo "Update blocked: runtime commits need manual porting." >&2
+    echo "Candidate retained at: $candidate_dir" >&2
+    echo "Resolve every commit there, then run: pi-update --candidate=$candidate_dir" >&2
+    return 1
+  fi
+  promote_candidate "$candidate_dir" "$target"
 }
 
 # ── Main ─────────────────────────────────────────────────────────────
@@ -256,22 +352,32 @@ report_patches() {
 YES=false
 REPAIR=false
 TRACK_MAIN=false
+CHECK_ONLY=false
+SKIP_AGENT_SYNC=false
+CANDIDATE_DIR=""
+PROMOTED_FROM=""
 for arg in "$@"; do
   case "$arg" in
     -y|--yes) YES=true ;;
     --repair) REPAIR=true ;;
     --main) TRACK_MAIN=true ;;
+    --check) CHECK_ONLY=true ;;
+    --skip-agent-sync) SKIP_AGENT_SYNC=true ;;
+    --candidate=*) CANDIDATE_DIR="${arg#*=}" ;;
     -h|--help)
       cat <<'EOF'
-Usage: pi-update [--yes] [--repair] [--main]
+Usage: pi-update [--yes] [--repair] [--main] [--check] [--skip-agent-sync] [--candidate=PATH]
 
-Updates the local pi checkout, syncs ~/.pi/agent, updates pi packages, reports
-local patch status, rewrites the machine-local launcher, and checks npm audit
-against the reviewed baseline.
+Updates Pi transactionally through coding-agent/local-runtime-patches. New
+upstream releases are first rebased, checked, tested, and built in an isolated
+candidate worktree; the working runtime is promoted only after success.
 
   --yes     Do not prompt for upgrade/audit baseline confirmation
   --repair  Reinstall dependencies and rebuild even if already current
-  --main    Track current upstream main instead of the latest release tag
+  --main    Reconcile against current upstream main instead of the latest tag
+  --check   Verify runtime reconciliation without changing the checkout
+  --skip-agent-sync  Continue when the pi-agent remote is unavailable
+  --candidate=PATH  Verify and promote a manually resolved candidate worktree
 EOF
       exit 0
       ;;
@@ -310,47 +416,72 @@ else
   fi
 fi
 
-if [[ "$(git rev-parse HEAD)" == "$(git rev-parse "$TARGET")" ]]; then
-  echo "Already current: $LATEST_LABEL"
+if $CHECK_ONLY; then
+  check_active_runtime "$TARGET"
+  exit $?
+fi
+
+# Sync pi-agent before reconciliation so removed/superseded compatibility
+# artifacts cannot silently survive into a new runtime.
+if ! $SKIP_AGENT_SYNC; then
+  sync_pi_agent
+fi
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "Refusing to update a dirty Pi source checkout." >&2
+  git status --short >&2
+  exit 1
+fi
+
+if [[ -n "$CANDIDATE_DIR" ]]; then
+  promote_candidate "$CANDIDATE_DIR" "$TARGET"
+  REPAIR=true
+fi
+
+if assert_patch_branch "$TARGET"; then
+  expected="$(git rev-parse "$RUNTIME_BRANCH")"
+  if [[ "$(git rev-parse HEAD)" == "$expected" ]]; then
+    echo "Already reconciled with $LATEST_LABEL: $RUNTIME_BRANCH"
+  else
+    echo "Activating reconciled runtime branch $RUNTIME_BRANCH..."
+    git switch "$RUNTIME_BRANCH"
+    REPAIR=true
+  fi
 else
+  status=$?
+  if [[ $status -ne 2 ]]; then
+    exit "$status"
+  fi
+
   echo "Current: $CURRENT_LABEL"
   echo "Latest:  $LATEST_LABEL"
-  echo
-  echo "Changes:"
-  if ! git log --oneline --no-decorate "HEAD..${TARGET}" 2>/dev/null; then
-    echo "  (unable to diff; showing recent history for $TARGET)"
-    git log --oneline --no-decorate "$TARGET" -20
-  fi
-  echo
-
+  echo "The runtime branch requires reconciliation; the active runtime will remain untouched until checks pass."
   if ! $YES; then
-    read -rp "Upgrade to $LATEST_LABEL? [y/N] " reply
+    read -rp "Prepare and verify an isolated $LATEST_LABEL candidate? [y/N] " reply
     if [[ ! "$reply" =~ ^[yY]$ ]]; then
-      echo "Aborted."
+      echo "Aborted; current runtime unchanged."
       exit 1
     fi
   fi
 
-  echo "Checking out $LATEST_LABEL..."
-  git checkout --force --quiet "$TARGET"
-
+  PROMOTED_FROM="$(git rev-parse "$RUNTIME_BRANCH")"
+  reconcile_candidate "$TARGET" "$LATEST_LABEL"
   REPAIR=true
 fi
-
-# Sync pi-agent even when pi-mono is already on latest. Extensions, patches,
-# settings, and auth-adjacent config can change independently of release tags.
-sync_pi_agent
-
-# Report patch status only. Patch reconciliation belongs to a live pi agent,
-# not this bootstrap/update script.
-report_patches
 
 write_pi_launcher
 
 if $REPAIR || needs_rebuild; then
-  install_and_build
+  if ! install_and_build; then
+    if [[ -n "$PROMOTED_FROM" ]]; then
+      echo "Activation build failed; restoring previous runtime $PROMOTED_FROM..." >&2
+      git reset --hard "$PROMOTED_FROM"
+      install_and_build || true
+    fi
+    exit 1
+  fi
   echo
-  echo "pi install/build complete. pi is at $LATEST"
+  echo "pi install/build complete. Pi is reconciled with $LATEST_LABEL"
 else
   echo "Dependencies/build look present. Use --repair to force npm ci + build."
 fi

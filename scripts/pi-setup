@@ -346,19 +346,26 @@ def write_secret_file(target: Path, content: str) -> None:
     target.chmod(0o600)
 
 
-def report_local_pi_patches(home: Path) -> None:
-    patches_dir = home / ".pi/agent/patches"
-    if not patches_dir.is_dir():
-        print("No patches directory; bare setup will continue.")
-        return
-
-    patch_files = sorted(patches_dir.glob("*.patch"))
-    if not patch_files:
-        print("No patch files found; bare setup will continue.")
-        return
-
-    print(f"Found {len(patch_files)} local pi patch(es) in {patches_dir}; not applying during setup.")
-    print("Bare pi setup will install/build the rsynced checkout. Run pi after setup and let the agent handle patches.")
+def verify_pi_runtime_branch(home: Path) -> None:
+    repo = home / ".local/share/pi-mono"
+    branch = os.environ.get("PI_RUNTIME_BRANCH", "coding-agent/local-runtime-patches")
+    expected = run(
+        ["git", "rev-parse", f"refs/heads/{branch}"],
+        cwd=repo,
+        capture_output=True,
+        check=False,
+        announce=False,
+    )
+    if expected.returncode != 0:
+        raise PiSetupError(f"Missing authoritative Pi runtime branch: {branch}")
+    active = run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        announce=False,
+    )
+    if active.stdout.strip() != expected.stdout.strip():
+        raise PiSetupError(f"Pi checkout is not the reconciled {branch} runtime")
 
 
 def sync_pi_agent(source: str, port: int | None, remote_home: str, home: Path) -> None:
@@ -386,7 +393,7 @@ def rebuild_local_state(home: Path) -> None:
     if not pi_repo.is_dir():
         raise PiSetupError(f"Expected pi repo at {pi_repo}")
 
-    report_local_pi_patches(home)
+    verify_pi_runtime_branch(home)
 
     run(["npm", "ci", "--ignore-scripts", "--silent"], cwd=pi_repo)
     run(["npm", "run", "build", "--silent"], cwd=pi_repo)

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO="${1:-$HOME/.local/share/pi-mono}"
-PATCHES_DIR="${2:-$HOME/.pi/agent/patches}"
+RUNTIME_BRANCH="${PI_RUNTIME_BRANCH:-coding-agent/local-runtime-patches}"
 
 if [[ ! -d "$REPO/.git" ]]; then
   echo "pi-mono not found at $REPO" >&2
@@ -10,36 +10,30 @@ if [[ ! -d "$REPO/.git" ]]; then
 fi
 
 cd "$REPO"
-
-if [[ ! -d "$PATCHES_DIR" ]]; then
-  echo "No patches directory at $PATCHES_DIR"
-  echo "Patches: none"
-  exit 0
+if ! git show-ref --verify --quiet "refs/heads/$RUNTIME_BRANCH"; then
+  echo "Missing authoritative runtime branch: $RUNTIME_BRANCH" >&2
+  exit 1
 fi
 
-shopt -s nullglob
-patches=("$PATCHES_DIR"/*.patch)
-if (( ${#patches[@]} == 0 )); then
-  echo "No patch files found in $PATCHES_DIR"
-  echo "Patches: none"
-  exit 0
+latest="$(git tag -l 'v*' --sort=-version:refname | head -1)"
+if [[ -z "$latest" ]]; then
+  echo "No release tags found." >&2
+  exit 1
 fi
 
-echo "Patches available at $PATCHES_DIR:"
-for patch in "${patches[@]}"; do
-  name="$(basename "$patch")"
-  if git apply --check "$patch" 2>/dev/null; then
-    echo "  ✅ $name  (applies cleanly)"
-  elif git apply --reverse --check "$patch" 2>/dev/null; then
-    echo "  ✅ $name  (already present)"
-  else
-    echo "  ❌ $name  (NEEDS RECONCILIATION — upstream likely changed)"
-  fi
-done
-cat <<'EOF'
+status=0
+if git merge-base --is-ancestor "$latest" "$RUNTIME_BRANCH"; then
+  echo "✅ $RUNTIME_BRANCH contains $latest"
+else
+  echo "❌ $RUNTIME_BRANCH must be reconciled with $latest"
+  status=1
+fi
 
-Action required: review each patch above.
-  - ✅ applies cleanly = available for a clean upstream checkout
-  - ✅ already present = active in this checkout
-  - ❌ = regenerate patch or drop if superseded
-EOF
+if [[ "$(git rev-parse HEAD)" == "$(git rev-parse "$RUNTIME_BRANCH")" ]]; then
+  echo "✅ active checkout matches $RUNTIME_BRANCH"
+else
+  echo "❌ active checkout is not $RUNTIME_BRANCH"
+  status=1
+fi
+
+exit "$status"

@@ -46,8 +46,8 @@ let
       -N \
       -T \
       -o ExitOnForwardFailure=yes \
-      -o ServerAliveInterval=30 \
-      -o ServerAliveCountMax=3 \
+      -o ServerAliveInterval=15 \
+      -o ServerAliveCountMax=2 \
       -o BatchMode=yes \
       -o StrictHostKeyChecking=accept-new \
       -o ConnectTimeout=10

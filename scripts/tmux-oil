@@ -104,8 +104,8 @@ local function model(rows)
     end)
   end
   local result = {
-    order = {}, by_id = {}, parent_by_id = {}, parent_option_by_id = {},
-    tree_prefix_by_id = {},
+    order = {}, server_order = {}, by_id = {}, parent_by_id = {},
+    parent_option_by_id = {}, tree_prefix_by_id = {},
   }
   local raw_order, raw_parent = {}, {}
   for _, row in ipairs(rows) do
@@ -115,6 +115,7 @@ local function model(rows)
     result.parent_option_by_id[row.id] = row.parent
     raw_parent[row.id] = row.parent
   end
+  result.server_order = raw_order
   local children, roots = {}, {}
   for _, id in ipairs(raw_order) do
     local parent = raw_parent[id]
@@ -249,7 +250,9 @@ function M.structural_drift(baseline, current)
       return true
     end
   end
-  return persistent_order and not vim.deep_equal(baseline.order, current.order)
+  local baseline_order = baseline.server_order or baseline.order
+  local current_order = current.server_order or current.order
+  return persistent_order and not vim.deep_equal(baseline_order, current_order)
 end
 
 function M.jump_argv(id, baseline)
@@ -295,6 +298,7 @@ end
 local function copy_state(state)
   return {
     order = vim.deepcopy(state.order),
+    server_order = vim.deepcopy(state.server_order or state.order),
     by_id = vim.deepcopy(state.by_id),
     parent_by_id = vim.deepcopy(state.parent_by_id or {}),
     parent_option_by_id = vim.deepcopy(state.parent_option_by_id or {}),
@@ -311,6 +315,12 @@ local function remove_id(state, id)
   for index, value in ipairs(state.order) do
     if value == id then
       table.remove(state.order, index)
+      break
+    end
+  end
+  for index, value in ipairs(state.server_order or {}) do
+    if value == id then
+      table.remove(state.server_order, index)
       return
     end
   end
@@ -345,15 +355,16 @@ local function desired_order(intent, state)
 end
 
 local function move_before(state, id, target)
+  local order = state.server_order or state.order
   local source_index, target_index
-  for index, value in ipairs(state.order) do
+  for index, value in ipairs(order) do
     if value == id then source_index = index end
     if value == target then target_index = index end
   end
   if not source_index or not target_index then fail("cannot reorder missing stable session ID") end
-  table.remove(state.order, source_index)
+  table.remove(order, source_index)
   if source_index < target_index then target_index = target_index - 1 end
-  table.insert(state.order, target_index, id)
+  table.insert(order, target_index, id)
 end
 
 local function execution_plan(plan, current)
@@ -544,6 +555,7 @@ function M.apply(baseline, intent)
           .. index, report, index)
       end
       expected.order[#expected.order + 1] = created_id
+      expected.server_order[#expected.server_order + 1] = created_id
       expected.by_id[created_id] = operation.name
       if M.structural_drift(expected, after_create) then
         report_error("structural drift detected after create operation " .. index, report, index)

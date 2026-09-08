@@ -42,29 +42,43 @@ run_apply_case() {
   printf 'throwaway_socket=%s scenario=%s\n' "$socket" "$scenario"
   "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s alpha 'sleep 120'
   "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s beta 'sleep 120'
-  if [ "$scenario" = cycle ]; then
+  if [ "$scenario" = cycle ] || [ "$scenario" = tree-delete ]; then
     "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s gamma 'sleep 120'
+  fi
+  if [ "$scenario" = tree-delete ]; then
+    "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s delta 'sleep 120'
+    alpha_id=$("$TMUX_BIN" -L "$socket" -f /dev/null display-message -p -t alpha '#{session_id}')
+    "$TMUX_BIN" -L "$socket" -f /dev/null set-option -t beta \
+      @pi_subagent_parent_id "$alpha_id"
+    "$TMUX_BIN" -L "$socket" -f /dev/null set-option -t gamma \
+      @pi_subagent_parent_id "$alpha_id"
+    # Leave a root between the parent and its children in server order. The
+    # display tree flattens this, which used to make a planned child kill look
+    # like external order drift after the parent was removed.
+    "$TMUX_BIN" -L "$socket" -f /dev/null move-session -b -s delta -t beta
   fi
   socket_path=$("$TMUX_BIN" -L "$socket" -f /dev/null display-message -p '#{socket_path}')
   server_pid=$("$TMUX_BIN" -L "$socket" -f /dev/null display-message -p '#{pid}')
   attach_pid=
-  if [ "$scenario" = self-delete ]; then
+  if [ "$scenario" = self-delete ] || [ "$scenario" = tree-delete ]; then
     client_capture="$tmp/client-capture"
+    attach_target=beta
+    [ "$scenario" = tree-delete ] && attach_target=delta
     set +e
     env -u TMUX -u TMUX_PANE TERM=xterm-256color script -q "$client_capture" \
-      "$TMUX_BIN" -L "$socket" -f /dev/null attach-session -t beta >/dev/null 2>&1 &
+      "$TMUX_BIN" -L "$socket" -f /dev/null attach-session -t "$attach_target" >/dev/null 2>&1 &
     attach_pid=$!
     set -e
     clients=
     attempts=0
     while [ "$attempts" -lt 100 ]; do
       clients=$("$TMUX_BIN" -L "$socket" -f /dev/null list-clients -F '#{session_name}' 2>/dev/null | head -n 1)
-      [ "$clients" = beta ] && break
+      [ "$clients" = "$attach_target" ] && break
       attempts=$((attempts + 1))
       sleep .05
     done
-    if [ "$clients" != beta ]; then
-      printf 'self-delete: attached client did not reach beta\n' >&2
+    if [ "$clients" != "$attach_target" ]; then
+      printf '%s: attached client did not reach %s\n' "$scenario" "$attach_target" >&2
       return 1
     fi
   fi
@@ -249,6 +263,27 @@ elseif scenario == "self-delete" then
     "self-delete report did not record exactly one succeeded command")
   check(control({ "list-clients", "-F", "#{session_name}" }):gsub("%s+$", "") == "alpha",
     "the invoking client did not stay on the surviving session")
+elseif scenario == "tree-delete" then
+  io.stdout:write("tree_delete_policy=drift checks use raw server order, not flattened tree display order\n")
+  local text = manifest(baseline, {}, {
+    [id_named(baseline, "alpha")] = true,
+    [id_named(baseline, "beta")] = true,
+    [id_named(baseline, "gamma")] = true,
+  }, {})
+  intent_listing(text)
+  local ok, err = pcall(M.apply, baseline, M.parse_manifest(text, baseline))
+  check(ok, "interleaved parent-tree deletion failed: " .. tostring(err))
+  local after = M.snapshot()
+  listing("AFTER", after)
+  report_argv(M.last_apply_report)
+  check(after.by_id[id_named(baseline, "delta")] == "delta"
+    and after.by_id[id_named(baseline, "alpha")] == nil
+    and after.by_id[id_named(baseline, "beta")] == nil
+    and after.by_id[id_named(baseline, "gamma")] == nil,
+    "interleaved parent-tree deletion left the wrong sessions")
+  check(M.last_apply_report and #M.last_apply_report.succeeded == 3
+    and #M.last_apply_report.not_run == 0,
+    "interleaved parent-tree deletion did not run every planned kill")
 else
   error("unknown apply scenario " .. scenario, 0)
 end
@@ -1041,7 +1076,8 @@ if [ "${1-}" = apply ] && [ "$#" -eq 1 ]; then
     'drift|drift immediately before apply executes zero mutations' \
     'mid-failure|mid-apply tmux failure stops and reports partial state' \
     'safety|last surviving session kill is safely rejected' \
-    'self-delete|deleting the invoking session keeps the ts menu alive'
+    'self-delete|deleting the invoking session keeps the ts menu alive' \
+    'tree-delete|deleting an interleaved parent tree runs every planned kill'
   do
     scenario=${result%%|*}
     message=${result#*|}

@@ -7,7 +7,6 @@
       position = "top";
       height = 18;
       modules-left = [ "sway/workspaces" "sway/mode" ];
-      modules-center = [ "custom/deepwork" ];
       modules-right = [ "cpu" "custom/gpu" "memory" "custom/network" "battery" "custom/volume" "custom/clock" ];
 
       "sway/workspaces" = {
@@ -67,12 +66,6 @@
         on-scroll-up = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+";
         on-scroll-down = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-";
       };
-
-      "custom/deepwork" = {
-        exec = "~/.local/bin/deepwork status 2>/dev/null || echo '󰔟 Ready'";
-        interval = 1;
-        on-click = "foot ~/.local/bin/deepwork stats";
-      };
     };
 
     ".config/waybar/style.css".text = ''
@@ -105,7 +98,7 @@
         color: #ffffff;
       }
 
-      #cpu, #custom-gpu, #memory, #custom-network, #battery, #custom-volume, #custom-clock, #custom-deepwork {
+      #cpu, #custom-gpu, #memory, #custom-network, #battery, #custom-volume, #custom-clock {
         padding: 0 10px;
         color: #d0d0d0;
       }

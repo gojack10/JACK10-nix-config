@@ -94,12 +94,6 @@ in {
     force = true;
   };
 
-  home.file.".local/bin/deepwork-status" = lib.mkIf pkgs.stdenv.isDarwin {
-    source = ../scripts/deepwork-status;
-    executable = true;
-    force = true;
-  };
-
   home.file.".local/bin/stimulant" = lib.mkIf pkgs.stdenv.isDarwin {
     source = ../scripts/stimulant;
     executable = true;

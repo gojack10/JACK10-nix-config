@@ -124,9 +124,6 @@ in {
         display "Theme: default"
       }
 
-      # Deepwork toggle: prefix + I
-      bind -r u run-shell 'deepwork toggle >/dev/null 2>&1'
-
       # F12: toggle between local (default) and passthrough
       # Passthrough: all keys go to inner/remote tmux
       # Local: prefix works on this tmux instance
@@ -153,16 +150,13 @@ in {
       set -g status-interval 1
       set -g message-style 'bg=black fg=white'
 
-      # Two status lines
-      set -g status 2
+      set -g status 1
 
       # Line 0: session+windows left, stats+date right
       # tmux-continuum normally injects its save hook into status-right, but
       # status-format[] bypasses status-right. Run the same hook invisibly here.
       set -g status-format[0] '#(${pkgs.tmuxPlugins.continuum}/share/tmux-plugins/continuum/scripts/continuum_save.sh)#[align=left fg=white] #S #{W:#{?window_active,#[fg=green] #I:#W #[fg=white], #I:#W }}#[align=right fg=white]#{?#{==:#{client_key_table},off},#[fg=green]PASS#[fg=white],LOCAL} | #(~/.local/bin/tmux-status) '
 
-      # Line 1: deepwork centered
-      set -g status-format[1] '#[align=centre fg=white]#(~/.local/bin/deepwork-status)'
     '';
   };
 
@@ -181,24 +175,6 @@ in {
       else
         sudo -n ${fanMode} normal
         notify-send -t 2000 "Fan" "Normal" 2>/dev/null
-      fi
-    '';
-  };
-
-  home.file.".local/bin/deepwork-status" = lib.mkIf pkgs.stdenv.isLinux {
-    executable = true;
-    text = ''
-      #!/bin/sh
-      DW=$(~/.local/bin/deepwork status 2>/dev/null) || DW="Ready"
-      # Cache fbterm check (terminal won't change mid-session)
-      cache=/tmp/.tmux-is-fbterm
-      if [ ! -f "$cache" ]; then
-        tmux display-message -p '#{client_termname}' > "$cache"
-      fi
-      if [ "$(cat "$cache")" = "fbterm" ]; then
-        echo "$DW" | sed 's/󰔟/[DW]/g'
-      else
-        echo "$DW"
       fi
     '';
   };

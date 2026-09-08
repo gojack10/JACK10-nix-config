@@ -1,3 +1,0 @@
-#!/bin/sh
-DW=$(deepwork status 2>/dev/null) || DW="Ready"
-echo "$DW"

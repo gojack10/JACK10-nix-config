@@ -80,7 +80,6 @@
         ./modules/packages/common.nix
         ./modules/packages/notion-cli.nix
         ./modules/packages/salesforce-cli.nix
-        ./modules/packages/timer.nix
         ./modules/scripts.nix
         ./modules/shell/zsh.nix
         ./modules/shell/tmux.nix
@@ -118,7 +117,6 @@
       # Darwin-only modules
       darwinModules = [
         ./modules/packages/darwin.nix
-        ./modules/packages/deepwork.nix
         ./modules/packages/ghostty.nix
         ./modules/darwin/defaults.nix
         ./modules/darwin/fan.nix

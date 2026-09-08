@@ -197,9 +197,6 @@ in
         # Screenshot (idempotent - won't spawn duplicates)
         "Print" = "exec pgrep -x slurp || grim -g \"$(slurp)\" - | swappy -f -";
 
-        # Deep work timer toggle
-        "${modifier}+Shift+d" = "exec ~/.local/bin/deepwork toggle";
-
         # Resize mode
         "${modifier}+r" = "mode resize";
       };

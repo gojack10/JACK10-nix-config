@@ -44,6 +44,21 @@ let
     exec ${pkgs.systemd}/bin/systemctl suspend
   '';
 
+  sifttextReady = pkgs.writeShellApplication {
+    name = "sifttext-ready";
+    runtimeInputs = [ pkgs.coreutils pkgs.inetutils pkgs.util-linux pkgs.docker pkgs.curl ];
+    text = ''
+      set -eu
+      # The durable fence wins before every other VIP predicate.
+      [ ! -e /var/lib/sifttext/fenced ] && [ ! -L /var/lib/sifttext/fenced ]
+      authority=/var/lib/sifttext/primary-authority
+      [ -f "$authority" ] && [ ! -L "$authority" ]
+      [ "$(stat -c '%u:%a' "$authority")" = 0:600 ]
+      [ "$(cat "$authority")" = "$(hostname)" ]
+      exec /usr/local/sbin/sifttext-ready
+    '';
+  };
+
   imageSync = pkgs.writeShellScript "sifttext-image-sync" ''
     set -euo pipefail
     state=/var/lib/sifttext-image-sync
@@ -110,7 +125,13 @@ in {
   networking = {
     hostName = "10top";
     # Keep a router-side DHCP reservation for this host; the address is not managed here.
-    firewall.enable = true;
+    firewall = {
+      enable = true;
+      allowedTCPPorts = [ 80 443 ];
+      extraInputRules = ''
+        ip saddr 192.168.51.100 ip daddr 192.168.51.92 meta l4proto 112 accept
+      '';
+    };
     wireless.iwd = {
       enable = true;
       settings = {
@@ -153,6 +174,76 @@ in {
   };
 
   services = {
+    nginx = {
+      enable = true;
+      recommendedProxySettings = true;
+      recommendedTlsSettings = true;
+      virtualHosts = {
+        "app.sifttext.com" = {
+          forceSSL = true;
+          sslCertificate = "/var/lib/sifttext-ingress/app/fullchain.pem";
+          sslCertificateKey = "/var/lib/sifttext-ingress/app/privkey.pem";
+          locations = {
+            "/".proxyPass = "http://127.0.0.1:8000";
+            "/api/" = {
+              proxyPass = "http://127.0.0.1:8000";
+              extraConfig = "proxy_buffering off;";
+            };
+            "/api/events" = {
+              proxyPass = "http://127.0.0.1:8000";
+              proxyWebsockets = true;
+              extraConfig = ''
+                proxy_buffering off;
+                proxy_read_timeout 86400s;
+                proxy_send_timeout 86400s;
+              '';
+            };
+          };
+        };
+        "auth.sifttext.com" = {
+          forceSSL = true;
+          sslCertificate = "/var/lib/sifttext-ingress/auth/fullchain.pem";
+          sslCertificateKey = "/var/lib/sifttext-ingress/auth/privkey.pem";
+          locations."/".proxyPass = "http://127.0.0.1:8085";
+        };
+      };
+    };
+    keepalived = {
+      enable = true;
+      enableScriptSecurity = true;
+      extraConfig = ''
+        vrrp_script sifttext_ready {
+            script "${sifttextReady}/bin/sifttext-ready"
+            interval 2
+            timeout 2
+            user root
+            fall 3
+            rise 10
+        }
+
+        vrrp_instance SIFTTEXT_INGRESS {
+            state BACKUP
+            interface enp4s0
+            virtual_router_id 51
+            priority 100
+            advert_int 1
+            nopreempt
+
+            unicast_src_ip 192.168.51.92
+            unicast_peer {
+                192.168.51.100
+            }
+
+            virtual_ipaddress {
+                192.168.51.50/24 dev enp4s0
+            }
+
+            track_script {
+                sifttext_ready
+            }
+        }
+      '';
+    };
     openssh = {
       enable = true;
       settings = {
@@ -271,6 +362,13 @@ in {
   '';
 
   systemd.services = {
+    keepalived = {
+      wantedBy = [ "multi-user.target" ];
+      wants = [ "network-online.target" ];
+      after = [ "network-online.target" "docker.service" ];
+      requires = [ "docker.service" ];
+    };
+
     thinkpad-fan-min = {
       description = "Keep the ThinkPad EC fan near its minimum active speed";
       wantedBy = [ "multi-user.target" ];
@@ -292,6 +390,31 @@ in {
         Type = "oneshot";
         ExecStart = "${pkgs.util-linux}/bin/flock -n -E 75 /run/sifttext-image-sync.lock ${imageSync}";
         SuccessExitStatus = [ 75 ];
+      };
+    };
+
+    sifttext-postgres-hairpin = {
+      description = "Enable PostgreSQL container access to its 10top LAN bind";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "docker.service" ];
+      requires = [ "docker.service" ];
+      before = [ "sifttext-repmgr-status.service" ];
+      path = [ pkgs.coreutils pkgs.docker pkgs.gawk pkgs.iproute2 pkgs.iptables ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "/usr/local/sbin/sifttext-postgres-hairpin";
+        RemainAfterExit = true;
+      };
+    };
+
+    sifttext-repmgr-status = {
+      description = "Record read-only repmgr cluster status";
+      after = [ "docker.service" "sifttext-postgres-hairpin.service" ];
+      requires = [ "docker.service" "sifttext-postgres-hairpin.service" ];
+      path = [ pkgs.coreutils pkgs.docker pkgs.gawk pkgs.gnugrep ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "/usr/local/sbin/sifttext-repmgr-status";
       };
     };
 
@@ -318,6 +441,17 @@ in {
       OnBootSec = "2min";
       OnUnitActiveSec = "5min";
       RandomizedDelaySec = "30s";
+      Persistent = true;
+    };
+  };
+
+  systemd.timers.sifttext-repmgr-status = {
+    description = "Record repmgr cluster status every minute";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "30s";
+      OnUnitActiveSec = "60s";
+      AccuracySec = "5s";
       Persistent = true;
     };
   };

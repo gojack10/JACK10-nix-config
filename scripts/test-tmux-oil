@@ -297,6 +297,537 @@ LUA
   ./scripts/tmux-oil
 }
 
+run_reconcile_case() {
+  scenario=$1
+  TMUX_BIN=$(command -v tmux)
+  socket="tmux-oil-reconcile-${scenario}-$$-$(date +%s)"
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/tmux-oil-reconcile.XXXXXX")
+  socket_path=
+  attach_pid=
+  cleanup_reconcile() {
+    status=$?
+    trap - EXIT HUP INT TERM
+    if [ -n "$attach_pid" ]; then
+      kill "$attach_pid" 2>/dev/null || true
+      wait "$attach_pid" 2>/dev/null || true
+    fi
+    "$TMUX_BIN" -L "$socket" -f /dev/null kill-server >/dev/null 2>&1 || true
+    [ -n "$socket_path" ] && rm -f "$socket_path"
+    rm -rf "$tmp"
+    exit "$status"
+  }
+  trap cleanup_reconcile EXIT
+  trap 'exit 1' HUP INT TERM
+
+  printf 'throwaway_socket=%s scenario=%s\n' "$socket" "$scenario"
+  case "$scenario" in
+    adjacent-new|refresh-adjacent-new|trace-a|compatible-rename|equal-rename|trace-c|\
+      external-delete-edited|local-delete-live-renamed|already-deleted-local|\
+      repeated-failure|conflict-recovery)
+      "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s alpha 'sleep 120'
+      "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s beta 'sleep 120'
+      ;;
+    trace-b|compatible-parent)
+      "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s alpha 'sleep 120'
+      "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s beta 'sleep 120'
+      "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s gamma 'sleep 120'
+      alpha_id=$($TMUX_BIN -L "$socket" -f /dev/null display-message -p -t alpha '#{session_id}')
+      "$TMUX_BIN" -L "$socket" -f /dev/null set-option -t beta \
+        @pi_subagent_parent_id "$alpha_id"
+      ;;
+    partial-create-recovery)
+      for name in alpha beta gamma delta; do
+        "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s "$name" 'sleep 120'
+      done
+      ;;
+    partial-recovery)
+      for name in alpha beta gamma delta epsilon zeta eta theta iota kappa lambda; do
+        "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s "$name" 'sleep 120'
+      done
+      ;;
+    parent-tree-raw-reorder|parent-tree-refresh|dirty-name-parent-tree-refresh)
+      for name in alpha beta gamma delta; do
+        "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s "$name" 'sleep 120'
+      done
+      alpha_id=$($TMUX_BIN -L "$socket" -f /dev/null display-message -p -t alpha '#{session_id}')
+      "$TMUX_BIN" -L "$socket" -f /dev/null set-option -t beta \
+        @pi_subagent_parent_id "$alpha_id"
+      "$TMUX_BIN" -L "$socket" -f /dev/null set-option -t gamma \
+        @pi_subagent_parent_id "$alpha_id"
+      ;;
+    parent-change-local-reorder|pending-reorder-refresh|pristine-refresh|live-order|\
+      local-order-addition|equal-order|local-order-deleted|divergent-order)
+      "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s alpha 'sleep 120'
+      "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s beta 'sleep 120'
+      "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s gamma 'sleep 120'
+      ;;
+    *) printf 'unknown reconcile scenario: %s\n' "$scenario" >&2; exit 2 ;;
+  esac
+  if [ "$scenario" = compatible-parent ]; then
+    "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s other 'sleep 120'
+  fi
+
+  socket_path=$($TMUX_BIN -L "$socket" -f /dev/null display-message -p '#{socket_path}')
+  server_pid=$($TMUX_BIN -L "$socket" -f /dev/null display-message -p '#{pid}')
+  if [ "$scenario" = trace-b ] || [ "$scenario" = partial-recovery ]; then
+    env -u TMUX -u TMUX_PANE TERM=xterm-256color script -q "$tmp/client-capture" \
+      "$TMUX_BIN" -L "$socket" -f /dev/null attach-session -t alpha >/dev/null 2>&1 &
+    attach_pid=$!
+    attempts=0
+    while [ "$attempts" -lt 100 ]; do
+      clients=$($TMUX_BIN -L "$socket" -f /dev/null list-clients -F '#{session_name}' 2>/dev/null | head -n 1)
+      [ "$clients" = alpha ] && break
+      attempts=$((attempts + 1))
+      sleep .05
+    done
+    [ "$clients" = alpha ] || { printf '%s attach failed\n' "$scenario" >&2; exit 1; }
+  fi
+  cat >"$tmp/reconcile.lua" <<'LUA'
+local M = assert(_G.tmux_oil)
+local scenario = assert(vim.env.TMUX_OIL_TEST_SCENARIO)
+local control_socket = assert(vim.env.TMUX_OIL_TEST_SOCKET)
+local tmux_bin = assert(vim.env.TMUX_OIL_TMUX_BIN)
+local failures = {}
+
+local function expect(value, message)
+  if not value then failures[#failures + 1] = message end
+end
+local function control(args)
+  local argv = { tmux_bin, "-L", control_socket, "-f", "/dev/null" }
+  vim.list_extend(argv, args)
+  local result = vim.system(argv, { text = true }):wait()
+  expect(result.code == 0, (result.stderr or "control command failed"):gsub("%s+$", ""))
+  return result.stdout or ""
+end
+local function id_named(state, name)
+  for id, value in pairs(state.by_id) do
+    if value == name then return id end
+  end
+  error("missing session " .. name, 0)
+end
+local function lines()
+  return vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)
+end
+local function row_for(id, values)
+  for row, line in ipairs(values or lines()) do
+    if line:sub(1, #id + 1) == id .. "\t" then return row end
+  end
+end
+local function replace_name(id, name)
+  local values = lines()
+  local row = row_for(id, values)
+  expect(row ~= nil, "buffer lost row for " .. id)
+  if row then
+    values[row] = id .. "\t" .. vim.json.encode(name)
+    vim.api.nvim_buf_set_lines(M.buf, 0, -1, false, values)
+  end
+end
+local function delete_row(id)
+  local values = lines()
+  local row = row_for(id, values)
+  expect(row ~= nil, "buffer did not contain row for local deletion " .. id)
+  if row then
+    table.remove(values, row)
+    vim.api.nvim_buf_set_lines(M.buf, 0, -1, false, values)
+  end
+end
+local function reorder(ids)
+  local values, result = lines(), {}
+  for _, id in ipairs(ids) do
+    local row = row_for(id, values)
+    expect(row ~= nil, "buffer did not contain row for reorder " .. id)
+    if row then result[#result + 1] = values[row] end
+  end
+  if #result == #ids then vim.api.nvim_buf_set_lines(M.buf, 0, -1, false, result) end
+end
+local function has_row(id, name)
+  local row = row_for(id)
+  return row ~= nil and lines()[row] == id .. "\t" .. vim.json.encode(name)
+end
+local function ids_in_buffer()
+  local result = {}
+  for _, line in ipairs(lines()) do
+    result[#result + 1] = line:match("^(%$%d+)\t") or line
+  end
+  return result
+end
+local function names_in_order(state)
+  local result = {}
+  for _, id in ipairs(state.order) do result[#result + 1] = state.by_id[id] end
+  return result
+end
+local function expect_names(state, wanted, label)
+  expect(vim.deep_equal(names_in_order(state), wanted),
+    label .. ": got " .. table.concat(names_in_order(state), ","))
+end
+local function save()
+  local ok, result = M.save()
+  return ok, result, M.last_apply_report or {}
+end
+local function first_line(value)
+  return tostring(value):match("^[^\n]+") or tostring(value)
+end
+local function has_text(value, needle)
+  return tostring(value):find(needle, 1, true) ~= nil
+end
+local function log_text()
+  local paths = vim.fn.glob(vim.env.TMUX_OIL_ERROR_DIR .. "/*.log", false, true)
+  if #paths == 0 then return "" end
+  return table.concat(vim.fn.readfile(paths[#paths]), "\n")
+end
+local function no_operations(report, label)
+  expect(report.operations and #report.operations == 0, label .. " planned operations")
+  expect(not report.attempted or #report.attempted == 0, label .. " attempted a command")
+  expect(not report.succeeded or #report.succeeded == 0, label .. " succeeded a command")
+end
+
+M.start()
+local baseline = M.baseline
+local alpha = id_named(baseline, "alpha")
+local beta = id_named(baseline, "beta")
+local gamma
+for id, name in pairs(baseline.by_id) do
+  if name == "gamma" then gamma = id; break end
+end
+local before_lines = lines()
+
+if scenario == "adjacent-new" then
+  vim.api.nvim_buf_set_lines(M.buf, -1, -1, false, {
+    '+\t"new-one"', '+\t"new-two"',
+  })
+  local ok, result = save()
+  expect(ok, "adjacent local new rows were rejected: " .. first_line(result))
+  if ok then expect_names(M.snapshot(), { "alpha", "beta", "new-one", "new-two" },
+    "adjacent local new rows") end
+elseif scenario == "refresh-adjacent-new" then
+  vim.api.nvim_buf_set_lines(M.buf, -1, -1, false, {
+    '+\t"new-one"', '+\t"new-two"',
+  })
+  local ok, result = M.refresh()
+  local refreshed = lines()
+  expect(ok, "refresh rejected adjacent local new rows: " .. first_line(result))
+  expect(vim.bo[M.buf].modified and refreshed[#refreshed - 1] == '+\t"new-one"'
+    and refreshed[#refreshed] == '+\t"new-two"',
+    "refresh did not retain adjacent new rows")
+elseif scenario == "parent-tree-raw-reorder" then
+  control({ "move-session", "-b", "-s", id_named(baseline, "delta"), "-t", beta })
+  local live = M.snapshot()
+  local raw = vim.deepcopy(live.server_order)
+  local ok, result = save()
+  expect(ok, "unchanged tree save rejected raw live reorder: " .. first_line(result))
+  if ok then
+    expect(vim.deep_equal(M.snapshot().server_order, raw),
+      "unchanged tree save overwrote the concurrent raw order")
+  end
+elseif scenario == "parent-tree-refresh" then
+  control({ "move-session", "-b", "-s", id_named(baseline, "delta"), "-t", beta })
+  local raw = M.snapshot().server_order
+  local ok, result = M.refresh()
+  expect(ok, "pristine parent-tree refresh failed: " .. first_line(result))
+  expect(vim.deep_equal(ids_in_buffer(), baseline.order) and not vim.bo[M.buf].modified,
+    "pristine parent-tree refresh changed display rows or dirty state")
+  expect(vim.deep_equal(M.snapshot().server_order, raw),
+    "pristine parent-tree refresh changed raw server order")
+elseif scenario == "dirty-name-parent-tree-refresh" then
+  replace_name(alpha, "Mine")
+  control({ "move-session", "-b", "-s", id_named(baseline, "delta"), "-t", beta })
+  local raw = M.snapshot().server_order
+  local ok, result = M.refresh()
+  expect(ok, "dirty-name parent-tree refresh failed: " .. first_line(result))
+  expect(vim.deep_equal(ids_in_buffer(), baseline.order) and has_row(alpha, "Mine")
+    and vim.bo[M.buf].modified,
+    "dirty-name parent-tree refresh lost display or local name intent")
+  expect(vim.deep_equal(M.snapshot().server_order, raw),
+    "dirty-name parent-tree refresh changed raw server order")
+elseif scenario == "pending-reorder-refresh" then
+  reorder({ beta, alpha, gamma })
+  local ok, result = M.refresh()
+  expect(ok, "pending reorder refresh failed: " .. first_line(result))
+  expect(vim.deep_equal(ids_in_buffer(), { beta, alpha, gamma }) and vim.bo[M.buf].modified,
+    "pending reorder refresh flattened away the user display intent")
+  local save_ok, save_result = save()
+  expect(save_ok, "pending reorder did not round-trip after refresh: " .. first_line(save_result))
+  if save_ok then
+    expect(vim.deep_equal(M.snapshot().server_order, { beta, alpha, gamma }),
+      "pending reorder round-trip lost raw order")
+  end
+elseif scenario == "pristine-refresh" then
+  local before = lines()
+  local ok, result = M.refresh()
+  expect(ok, "pristine refresh failed: " .. first_line(result))
+  expect(vim.deep_equal(lines(), before) and not vim.bo[M.buf].modified,
+    "pristine refresh changed a clean buffer")
+elseif scenario == "parent-change-local-reorder" then
+  local gamma_id = id_named(baseline, "gamma")
+  control({ "set-option", "-t", beta, "@pi_subagent_parent_id", gamma_id })
+  reorder({ beta, alpha, gamma_id })
+  local ok, result = save()
+  expect(ok, "parent change plus local reorder conflicted: " .. first_line(result))
+  if ok then
+    local after = M.snapshot()
+    expect(after.parent_option_by_id[beta] == gamma_id,
+      "parent change was not preserved")
+    expect(vim.deep_equal(after.server_order, { beta, alpha, gamma_id }),
+      "local reorder did not produce the intended raw order")
+  end
+elseif scenario == "partial-create-recovery" then
+  local values = {}
+  for index = #baseline.order, 1, -1 do
+    values[#values + 1] = lines()[index]
+  end
+  values[#values + 1] = '+\t"created-once"'
+  vim.api.nvim_buf_set_lines(M.buf, 0, -1, false, values)
+  local injected = false
+  M.test_before_command = function(index, operation)
+    if index == 2 and not injected then
+      injected = true
+      control({ "rename-session", "-t", operation.id, "--", "external" })
+    end
+  end
+  local first_ok, first_result, first_report = save()
+  M.test_before_command = nil
+  expect(not first_ok and injected, "partial create setup did not fail after a create")
+  local created_id = first_report.created_ids and first_report.created_ids["created-once"]
+  expect(created_id ~= nil, "partial create did not acknowledge the created stable ID")
+  local second_ok, second_result, second_report = save()
+  expect(second_ok, "partial create recovery failed: " .. first_line(second_result))
+  if second_ok then
+    expect(M.snapshot().by_id[created_id] == "created-once",
+      "partial create recovery did not reuse the acknowledged stable ID")
+  end
+  for _, argv in ipairs(second_report.attempted or {}) do
+    expect(argv[4] ~= "new-session", "partial create recovery repeated the create")
+  end
+elseif scenario == "partial-recovery" then
+  local delete_alpha, delete_beta = id_named(baseline, "alpha"), id_named(baseline, "beta")
+  delete_row(delete_alpha)
+  delete_row(delete_beta)
+  local wanted = {}
+  for _, name in ipairs({ "lambda", "kappa", "iota", "theta", "eta", "zeta", "epsilon", "delta", "gamma" }) do
+    wanted[#wanted + 1] = id_named(baseline, name)
+  end
+  reorder(wanted)
+  local dirty_lines = lines()
+  local notifications, notify = {}, vim.notify
+  vim.notify = function(message) notifications[#notifications + 1] = tostring(message) end
+  local injected = false
+  M.test_before_command = function(index, operation)
+    if index == 8 and not injected then
+      injected = true
+      control({ "rename-session", "-t", operation.id, "--", "external" })
+    end
+  end
+  local write_ok, write_error = pcall(vim.cmd, "write")
+  M.test_before_command = nil
+  vim.notify = notify
+  local first_report = assert(M.last_apply_report)
+  expect(write_ok, "BufWriteCmd rethrew partial save: " .. tostring(write_error))
+  expect(injected, "partial recovery did not inject before operation 8")
+  expect(#first_report.succeeded >= 8 and #first_report.not_run > 0,
+    "partial recovery did not record completed and pending operations")
+  expect(M.ui_active and M.timer ~= nil, "partial save left polling stopped")
+  expect(vim.bo[M.buf].modified, "partial save cleared the dirty buffer")
+  expect(vim.deep_equal(lines(), dirty_lines), "partial save replaced the dirty buffer")
+  expect(#notifications == 1, "partial save emitted more than one notification")
+  local message = notifications[1] or ""
+  expect(has_text(message, "completed") and has_text(message, "pending")
+    and has_text(message, "Diagnostic saved to:"),
+    "partial save notification was not concise/countable")
+  expect(not has_text(message, "succeeded argv:"), "partial save notification leaked full report")
+  expect(has_text(log_text(), "succeeded argv:") and has_text(log_text(), "never-ran argv:"),
+    "partial save diagnostic omitted command evidence")
+
+  local second_ok, second_error = pcall(vim.cmd, "write")
+  local second_report = M.last_apply_report or {}
+  expect(second_ok, "recovery BufWriteCmd failed: " .. tostring(second_error))
+  for _, argv in ipairs(second_report.attempted or {}) do
+    expect(argv[4] ~= "kill-session" and argv[4] ~= "new-session",
+      "recovery repeated a completed destructive operation")
+  end
+elseif scenario == "trace-a" then
+  replace_name(alpha, "AA")
+  control({ "new-session", "-d", "-s", "c", "sleep 120" })
+  local c_id = control({ "display-message", "-p", "-t", "c", "#{session_id}" }):gsub("%s+$", "")
+  local ok, result = save()
+  expect(ok, "Trace A compatible addition was rejected: " .. first_line(result))
+  if ok then
+    local after = M.snapshot()
+    expect_names(after, { "AA", "beta", "c" }, "Trace A final names")
+    expect(after.by_id[alpha] == "AA", "Trace A changed the wrong stable ID")
+    expect(after.by_id[c_id] == "c", "Trace A did not preserve the live addition's stable ID")
+  end
+elseif scenario == "compatible-rename" then
+  replace_name(alpha, "AA")
+  control({ "rename-session", "-t", beta, "--", "Bee" })
+  local ok, result = save()
+  expect(ok, "compatible live rename was rejected: " .. first_line(result))
+  if ok then expect_names(M.snapshot(), { "AA", "Bee" }, "compatible rename final names") end
+elseif scenario == "equal-rename" then
+  replace_name(alpha, "Theirs")
+  control({ "rename-session", "-t", alpha, "--", "Theirs" })
+  local ok, result = save()
+  expect(ok, "equal concurrent rename was rejected: " .. first_line(result))
+  if ok then expect_names(M.snapshot(), { "Theirs", "beta" }, "equal rename final names") end
+elseif scenario == "trace-b" then
+  delete_row(beta)
+  control({ "kill-session", "-t", gamma })
+  local ok, result = save()
+  expect(ok, "Trace B compatible child/unrelated deletion was rejected: " .. first_line(result))
+  if ok then
+    local after = M.snapshot()
+    expect_names(after, { "alpha" }, "Trace B final names")
+    expect(after.by_id[alpha] == "alpha", "Trace B deleted the parent")
+    expect(after.by_id[beta] == nil and after.by_id[gamma] == nil,
+      "Trace B retained a deleted session")
+  end
+elseif scenario == "compatible-parent" then
+  local other = id_named(baseline, "other")
+  replace_name(alpha, "ParentMine")
+  control({ "set-option", "-t", beta, "@pi_subagent_parent_id", other })
+  local ok, result = save()
+  expect(ok, "compatible live parent change was rejected: " .. first_line(result))
+  if ok then
+    local after = M.snapshot()
+    expect(after.by_id[alpha] == "ParentMine", "parent rename did not retain its stable ID")
+    expect(after.parent_option_by_id[beta] == other,
+      "compatible parent change was not preserved")
+  end
+elseif scenario == "trace-c" then
+  replace_name(alpha, "Mine")
+  control({ "rename-session", "-t", alpha, "--", "Theirs" })
+  local ok, result, report = save()
+  local text = tostring(result)
+  expect(not ok, "Trace C divergent rename silently succeeded")
+  no_operations(report, "Trace C conflict")
+  expect(has_row(alpha, "Mine"), "Trace C did not preserve the local buffer choice")
+  expect(M.ui_active and M.timer ~= nil, "Trace C stopped polling after conflict")
+  expect(has_text(text, "conflict") and has_text(text, alpha) and has_text(text, "name"),
+    "Trace C conflict omitted the stable ID or changed name field")
+  expect(has_text(log_text(), alpha) and has_text(log_text(), "name"),
+    "Trace C diagnostic omitted the stable ID or changed name field")
+elseif scenario == "external-delete-edited" then
+  replace_name(alpha, "Mine")
+  control({ "kill-session", "-t", alpha })
+  local ok, result, report = save()
+  local text = tostring(result)
+  expect(not ok, "edited target deletion silently succeeded")
+  no_operations(report, "edited-target deletion conflict")
+  expect(has_row(alpha, "Mine"), "edited-target deletion lost the local buffer edit")
+  expect(M.ui_active and M.timer ~= nil, "edited-target deletion stopped polling")
+  expect(has_text(text, "deleted") and has_text(text, alpha) and has_text(text, "name"),
+    "edited-target deletion omitted the stable ID or changed name field")
+elseif scenario == "local-delete-live-renamed" then
+  delete_row(alpha)
+  control({ "rename-session", "-t", alpha, "--", "Theirs" })
+  local ok, result, report = save()
+  local text = tostring(result)
+  expect(not ok, "local deletion of live-renamed target silently succeeded")
+  no_operations(report, "delete/live-rename conflict")
+  expect(M.snapshot().by_id[alpha] == "Theirs", "delete/live-rename mutated the live target")
+  expect(not has_row(alpha, "A"), "delete/live-rename restored a local row")
+  expect(M.ui_active and M.timer ~= nil, "delete/live-rename stopped polling")
+  expect(has_text(text, "renam") and has_text(text, alpha) and has_text(text, "name"),
+    "delete/live-rename omitted the stable ID or changed name field")
+elseif scenario == "already-deleted-local" then
+  delete_row(alpha)
+  control({ "kill-session", "-t", alpha })
+  local ok, result = save()
+  expect(ok, "already externally deleted local deletion was not satisfied: " .. first_line(result))
+  if ok then expect_names(M.snapshot(), { "beta" }, "already-deleted final names") end
+elseif scenario == "repeated-failure" then
+  replace_name(alpha, "Mine")
+  control({ "rename-session", "-t", alpha, "--", "Theirs" })
+  local ok1, err1, report1 = save()
+  local first_buffer = has_row(alpha, "Mine")
+  local ok2, err2, report2 = save()
+  expect(not ok1 and not ok2, "repeated conflict did not fail both saves")
+  no_operations(report1, "first repeated conflict")
+  no_operations(report2, "second repeated conflict")
+  expect(first_buffer and has_row(alpha, "Mine"), "repeated conflict lost the local edit")
+  expect(M.ui_active and M.timer ~= nil, "repeated conflict left polling inactive")
+  expect(has_text(err1, alpha) and has_text(err2, alpha),
+    "repeated conflict did not identify the stable ID on both attempts")
+elseif scenario == "conflict-recovery" then
+  replace_name(alpha, "Mine")
+  control({ "rename-session", "-t", alpha, "--", "Theirs" })
+  local first_ok, first_error, first_report = save()
+  expect(not first_ok, "conflict recovery setup did not reject the divergent rename")
+  no_operations(first_report, "conflict recovery first save")
+  expect(has_row(alpha, "Mine"), "conflict recovery lost local edit before explicit choice")
+  expect(M.ui_active and M.timer ~= nil, "conflict recovery stopped polling before choice")
+  local refresh_ok, refresh_error = pcall(vim.cmd, "TmuxOilRefresh")
+  expect(refresh_ok, "explicit refresh raised a command error: " .. tostring(refresh_error))
+  expect(has_row(alpha, "Mine") and vim.bo[M.buf].modified,
+    "conflicting refresh silently discarded the local edit")
+  replace_name(alpha, "Theirs")
+  local second_ok, second_result = save()
+  expect(second_ok, "accept-live in-buffer recovery failed: " .. first_line(second_result))
+  if second_ok then expect_names(M.snapshot(), { "Theirs", "beta" }, "conflict recovery final names") end
+elseif scenario == "live-order" then
+  control({ "move-session", "-b", "-s", beta, "-t", alpha })
+  local ok, result = save()
+  expect(ok, "unchanged local order did not adopt live order: " .. first_line(result))
+  if ok then expect_names(M.snapshot(), { "beta", "alpha", "gamma" }, "live-order final names") end
+elseif scenario == "local-order-addition" then
+  reorder({ beta, alpha })
+  control({ "new-session", "-d", "-s", "c", "sleep 120" })
+  local c_id = control({ "display-message", "-p", "-t", "c", "#{session_id}" }):gsub("%s+$", "")
+  local ok, result = save()
+  expect(ok, "local reorder with live addition was rejected: " .. first_line(result))
+  if ok then
+    local after = M.snapshot()
+    expect_names(after, { "beta", "c", "alpha" }, "local-order-addition final names")
+    expect(after.by_id[c_id] == "c", "local-order-addition did not preserve the live addition's stable ID")
+  end
+elseif scenario == "equal-order" then
+  reorder({ beta, alpha, gamma })
+  control({ "move-session", "-b", "-s", beta, "-t", alpha })
+  local ok, result = save()
+  expect(ok, "equal concurrent reorder was rejected: " .. first_line(result))
+  if ok then expect_names(M.snapshot(), { "beta", "alpha", "gamma" }, "equal-order final names") end
+elseif scenario == "local-order-deleted" then
+  reorder({ beta, alpha, gamma })
+  control({ "kill-session", "-t", beta })
+  local ok, result, report = save()
+  local text = tostring(result)
+  expect(not ok, "local reorder of externally deleted target silently succeeded")
+  no_operations(report, "local-order/deleted conflict")
+  expect_names(M.snapshot(), { "alpha", "gamma" }, "local-order/deleted live names")
+  expect(vim.deep_equal(ids_in_buffer(), { beta, alpha, gamma }),
+    "local-order/deleted lost the local order")
+  expect(M.ui_active and M.timer ~= nil, "local-order/deleted stopped polling")
+  expect(has_text(text, "delet") and has_text(text, beta) and has_text(text, "order"),
+    "local-order/deleted conflict omitted the stable ID or changed ordering field")
+elseif scenario == "divergent-order" then
+  reorder({ beta, alpha, gamma })
+  control({ "move-session", "-b", "-s", gamma, "-t", beta })
+  local ok, result, report = save()
+  local text = tostring(result)
+  expect(not ok, "divergent concurrent reorder silently succeeded")
+  no_operations(report, "divergent-order conflict")
+  expect(vim.deep_equal(names_in_order(M.snapshot()), { "alpha", "gamma", "beta" }),
+    "divergent-order mutated live ordering")
+  expect(vim.deep_equal(ids_in_buffer(), { beta, alpha, gamma }),
+    "divergent-order lost the local order")
+  expect(has_text(text, "order") and has_text(text, alpha) and has_text(text, beta),
+    "divergent-order conflict omitted the stable IDs or ordering field")
+end
+
+if #failures > 0 then
+  error("reconcile " .. scenario .. " failed:\n - " .. table.concat(failures, "\n - "), 0)
+end
+io.stdout:write("PASS reconcile " .. scenario .. "\n")
+io.stdout:flush()
+LUA
+
+  TMUX="$socket_path,$server_pid,0" \
+  TMUX_OIL_ERROR_DIR="$tmp/errors" \
+  TMUX_OIL_TEST_LUA="$tmp/reconcile.lua" \
+  TMUX_OIL_TEST_SCENARIO="$scenario" \
+  TMUX_OIL_TEST_SOCKET="$socket" \
+  ./scripts/tmux-oil
+}
+
 run_order_case() {
   scenario=$1
   TMUX_BIN=$2
@@ -540,6 +1071,21 @@ wait_for(function() return M.completed_polls >= 1 and M.poll_process == nil end,
   "first metadata poll did not complete")
 local alpha = id_named("alpha")
 local before_lines = lines()
+check(vim.fn.maparg("A", "n") ~= "", "A did not map to the JSON-safe name appender")
+local original_line = before_lines[1]
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+M.append_name()
+local insert_col = vim.api.nvim_win_get_cursor(0)[2]
+check(insert_col == #original_line - 1,
+  "A did not place the insert point before the concealed closing quote")
+vim.api.nvim_buf_set_text(M.buf, 0, insert_col, 0, insert_col, { "renamed" })
+local parsed_edit = pcall(function()
+  return M.parse_manifest(vim.api.nvim_get_current_line(), M.baseline)
+end)
+check(parsed_edit, "A-style editing produced an invalid JSON string")
+vim.api.nvim_buf_set_lines(M.buf, 0, 1, false, { original_line })
+vim.bo[M.buf].modified = false
+vim.cmd("stopinsert")
 local before_tick = vim.b.changedtick
 local before_modified = vim.bo[M.buf].modified
 local before_undo = vim.fn.undotree().seq_cur
@@ -655,16 +1201,21 @@ check(create_ok, create_error or "plain-line create failed")
 check(vim.tbl_contains(vim.tbl_values(M.baseline.by_id), "created-by-plain-line"),
   "plain new line did not create a session")
 vim.api.nvim_buf_set_lines(M.buf, -1, -1, false, { "bad:name" })
-local write_ok, write_error = pcall(vim.cmd, "wq")
-local helpful_error = tostring(write_error)
-check(not write_ok and helpful_error:find("tmux%-oil"),
-  "failed :wq did not return a useful error")
-check(helpful_error:find("plain line like: work", 1, true)
-    and helpful_error:find('+<TAB>"work"', 1, true)
-    and helpful_error:find('$N<TAB>"name"', 1, true),
-  "validation error did not explain plain and encoded row forms")
-check(vim.api.nvim_buf_is_valid(M.buf) and vim.api.nvim_get_current_buf() == M.buf,
-  "failed save closed the editor buffer")
+local write_ok, write_error = pcall(vim.cmd, "write")
+local helpful_error = tostring(M.last_error)
+check(write_ok, "failed save rethrew a BufWriteCmd error: " .. tostring(write_error))
+check(helpful_error:find("tmux%-oil") and helpful_error:find("Diagnostic saved to:", 1, true)
+    and helpful_error:find("completed", 1, true) and helpful_error:find("pending", 1, true),
+  "failed save did not return one concise diagnostic summary")
+check(vim.api.nvim_buf_is_valid(M.buf) and vim.api.nvim_get_current_buf() == M.buf
+    and vim.bo[M.buf].modified,
+  "failed save did not retain the dirty editor buffer")
+local error_files = vim.fn.glob(vim.env.TMUX_OIL_ERROR_DIR .. "/*.log", false, true)
+check(#error_files == 1, "failed save did not write exactly one diagnostic file")
+local saved_error = table.concat(vim.fn.readfile(error_files[1]), "\n")
+check(saved_error:find("tmux%-oil save failure")
+    and saved_error:find("plain line like: work", 1, true),
+  "diagnostic file did not preserve the full save error")
 
 io.stdout:write("BUFFER_BEFORE_METADATA_TICK=" .. vim.json.encode(before_lines) .. "\n")
 io.stdout:write("BUFFER_AFTER_METADATA_TICK=" .. vim.json.encode(after_lines) .. "\n")
@@ -695,6 +1246,7 @@ LUA
   TMUX="$socket_path,$server_pid,0" \
   TMPDIR="$runtime" \
   XDG_CONFIG_HOME="$tmp/xdg" \
+  TMUX_OIL_ERROR_DIR="$tmp/errors" \
   TMUX_OIL_TEST_LUA="$tmp/ui.lua" \
   TMUX_OIL_TEST_SOCKET="$socket" \
   ./scripts/tmux-oil
@@ -1019,6 +1571,21 @@ if [ "${1-}" = all ] && [ "$#" -eq 1 ]; then
   "$0" tree
   "$0" popup-open
   "$0" current-cursor
+  for scenario in \
+    adjacent-new refresh-adjacent-new trace-a trace-b compatible-rename equal-rename \
+    trace-c external-delete-edited local-delete-live-renamed already-deleted-local \
+    repeated-failure conflict-recovery compatible-parent parent-tree-raw-reorder \
+    parent-tree-refresh dirty-name-parent-tree-refresh parent-change-local-reorder \
+    pending-reorder-refresh pristine-refresh live-order local-order-addition equal-order \
+    local-order-deleted divergent-order partial-create-recovery partial-recovery
+  do
+    "$0" reconcile "$scenario"
+  done
+  exit
+fi
+
+if [ "${1-}" = reconcile ] && [ "$#" -eq 2 ]; then
+  run_reconcile_case "$2"
   exit
 fi
 
@@ -1089,7 +1656,7 @@ if [ "${1-}" = apply ] && [ "$#" -eq 1 ]; then
 fi
 
 if [ "${1-}" != state ] || [ "$#" -ne 1 ]; then
-  printf 'usage: %s state|apply|order|ui|popup-open|current-cursor|all\n' "$0" >&2
+  printf 'usage: %s state|apply|reconcile CASE|order|ui|popup-open|current-cursor|all\n' "$0" >&2
   exit 2
 fi
 

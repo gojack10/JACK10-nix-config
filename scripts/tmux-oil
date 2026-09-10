@@ -262,6 +262,244 @@ function M.jump_argv(id, baseline)
   return M.argv({ "switch-client", "-t", id })
 end
 
+local function copy_state(state)
+  return {
+    order = vim.deepcopy(state.order),
+    server_order = vim.deepcopy(state.server_order or state.order),
+    by_id = vim.deepcopy(state.by_id),
+    parent_by_id = vim.deepcopy(state.parent_by_id or {}),
+    parent_option_by_id = vim.deepcopy(state.parent_option_by_id or {}),
+    tree_prefix_by_id = vim.deepcopy(state.tree_prefix_by_id or {}),
+  }
+end
+
+local function relative_order(order, keep)
+  local result = {}
+  for _, id in ipairs(order or {}) do
+    if keep[id] then result[#result + 1] = id end
+  end
+  return result
+end
+
+local function order_position(order, id)
+  for index, value in ipairs(order or {}) do
+    if value == id then return index end
+  end
+end
+
+local function insert_extras(result, source, extras)
+  local present = {}
+  for _, token in ipairs(result) do present[token] = true end
+  for index, token in ipairs(source or {}) do
+    if extras[token] then
+      local before
+      for next_index = index + 1, #(source or {}) do
+        local candidate = source[next_index]
+        if present[candidate] then before = candidate; break end
+      end
+      if before then
+        table.insert(result, order_position(result, before), token)
+      else
+        local after
+        for previous = index - 1, 1, -1 do
+          local candidate = source[previous]
+          if present[candidate] then after = candidate; break end
+        end
+        if after then
+          table.insert(result, order_position(result, after) + 1, token)
+        else
+          result[#result + 1] = token
+        end
+      end
+      present[token] = true
+    end
+  end
+end
+
+local function format_conflicts(conflicts)
+  return table.concat(conflicts, "\n")
+end
+
+function M.describe_difference(baseline, current)
+  local differences = {}
+  for _, id in ipairs(sorted_ids(baseline)) do
+    if current.by_id[id] == nil then
+      differences[#differences + 1] = id .. " missing (name)"
+    elseif baseline.by_id[id] ~= current.by_id[id] then
+      differences[#differences + 1] = id .. " name "
+        .. vim.json.encode(baseline.by_id[id]) .. " -> " .. vim.json.encode(current.by_id[id])
+    end
+    local before_parent = (baseline.parent_option_by_id or {})[id]
+    local after_parent = (current.parent_option_by_id or {})[id]
+    if before_parent ~= after_parent then
+      differences[#differences + 1] = id .. " parent "
+        .. vim.json.encode(before_parent) .. " -> " .. vim.json.encode(after_parent)
+    end
+  end
+  for _, id in ipairs(sorted_ids(current)) do
+    if baseline.by_id[id] == nil then
+      differences[#differences + 1] = id .. " added name " .. vim.json.encode(current.by_id[id])
+    end
+  end
+  local common = {}
+  for id in pairs(baseline.by_id) do
+    if current.by_id[id] then common[id] = true end
+  end
+  local before_order = relative_order(baseline.server_order or baseline.order, common)
+  local after_order = relative_order(current.server_order or current.order, common)
+  if not vim.deep_equal(before_order, after_order) then
+    differences[#differences + 1] = "order " .. table.concat(before_order, ",")
+      .. " -> " .. table.concat(after_order, ",")
+  end
+  if #differences == 0 then return "metadata unchanged" end
+  return table.concat(differences, "; ")
+end
+
+function M.reconcile(baseline, intent, current)
+  local conflicts, existing, names = {}, {}, {}
+  local survivor = {}
+  for id, desired in pairs(intent.existing) do
+    local baseline_name = baseline.by_id[id]
+    local live_name = current.by_id[id]
+    if live_name == nil then
+      if desired ~= baseline_name then
+        conflicts[#conflicts + 1] = string.format(
+          "conflict %s name: edited target was deleted live", id)
+      end
+    else
+      survivor[id] = true
+      if desired == baseline_name then
+        existing[id] = live_name
+      elseif live_name == baseline_name or live_name == desired then
+        existing[id] = desired
+      else
+        conflicts[#conflicts + 1] = string.format(
+          "conflict %s name: local %s vs live %s",
+          id, vim.json.encode(desired), vim.json.encode(live_name))
+        existing[id] = desired
+      end
+    end
+  end
+  for id, baseline_name in pairs(baseline.by_id) do
+    if intent.existing[id] == nil and current.by_id[id] ~= nil then
+      local live_parent = (current.parent_option_by_id or {})[id]
+      local baseline_parent = (baseline.parent_option_by_id or {})[id]
+      if current.by_id[id] ~= baseline_name then
+        conflicts[#conflicts + 1] = string.format(
+          "conflict %s name: local deletion vs live rename to %s",
+          id, vim.json.encode(current.by_id[id]))
+      elseif live_parent ~= baseline_parent then
+        conflicts[#conflicts + 1] = string.format(
+          "conflict %s parent: local deletion vs live reparent",
+          id)
+      else
+        -- The deletion is still local and is planned below.
+      end
+      if current.by_id[id] == baseline_name and live_parent == baseline_parent then
+        survivor[id] = true
+      end
+    end
+  end
+  if #conflicts > 0 then
+    return nil, format_conflicts(conflicts)
+  end
+
+  for id, name in pairs(existing) do names[name] = id end
+  for id, name in pairs(current.by_id) do
+    if baseline.by_id[id] == nil then
+      if names[name] then
+        return nil, string.format("conflict %s name: live addition duplicates %s", id,
+          names[name])
+      end
+      names[name] = id
+      existing[id] = name
+      survivor[id] = true
+    end
+  end
+  for _, name in ipairs(intent.new) do
+    if names[name] then
+      return nil, string.format("conflict new session name: %s is already live as %s",
+        vim.json.encode(name), names[name])
+    end
+    names[name] = true
+  end
+
+  local common = {}
+  for id in pairs(baseline.by_id) do
+    if survivor[id] and intent.existing[id] ~= nil and current.by_id[id] ~= nil then
+      common[id] = true
+    end
+  end
+  local baseline_display = relative_order(baseline.order, common)
+  local local_rows = intent.display_order or intent.order
+  local local_all = {}
+  for _, row in ipairs(local_rows) do
+    if row.marker ~= "+" then local_all[#local_all + 1] = row.marker end
+  end
+  local local_display = relative_order(local_all, common)
+  -- This is the raw execution target induced by the user's display reorder.
+  local local_raw_target = vim.deepcopy(local_display)
+  local baseline_raw = relative_order(baseline.server_order or baseline.order, common)
+  local live_raw = relative_order(current.server_order or current.order, common)
+  local local_changed = not vim.deep_equal(baseline_display, local_display)
+  local live_changed = not vim.deep_equal(baseline_raw, live_raw)
+  local missing_local, local_set = {}, {}
+  for _, id in ipairs(local_all) do
+    local_set[id] = true
+    if current.by_id[id] == nil then missing_local[id] = true end
+  end
+  if next(missing_local) and not vim.deep_equal(
+      relative_order(baseline.order, local_set), local_all) then
+    return nil, "conflict order: locally reordered deleted session "
+      .. table.concat(relative_order(local_all, missing_local), ",")
+  end
+  -- A local display reorder is the raw target we intend to execute. External
+  -- ordering is detected only from raw server order, never from tree display.
+  if local_changed and live_changed and not vim.deep_equal(local_raw_target, live_raw) then
+    return nil, "conflict order: concurrent reorder of " .. table.concat(local_raw_target, ",")
+  end
+
+  local core = local_changed and local_raw_target or live_raw
+  local result_order = vim.deepcopy(core)
+  local live_extras, local_extras = {}, {}
+  for id in pairs(existing) do
+    if baseline.by_id[id] == nil then live_extras[id] = true end
+  end
+  for _, row in ipairs(local_rows) do
+    if row.marker == "+" then local_extras[row.name] = true end
+  end
+  local source_live = current.server_order or current.order
+  insert_extras(result_order, source_live, live_extras)
+  local source_local = {}
+  for _, row in ipairs(local_rows) do
+    source_local[#source_local + 1] = row.marker == "+" and row.name or row.marker
+  end
+  insert_extras(result_order, source_local, local_extras)
+
+  -- Keep the execution target raw, but refresh the buffer in tree display order.
+  local display_core = local_changed and local_display
+    or relative_order(current.order, common)
+  local display_order = vim.deepcopy(display_core)
+  insert_extras(display_order, current.order, live_extras)
+  insert_extras(display_order, source_local, local_extras)
+
+  local function rows_for(order)
+    local rows = {}
+    for _, token in ipairs(order) do
+      if existing[token] then
+        rows[#rows + 1] = { marker = token, name = existing[token] }
+      else
+        rows[#rows + 1] = { marker = "+", name = token }
+      end
+    end
+    return rows
+  end
+  return {
+    order = rows_for(result_order), display_order = rows_for(display_order),
+    existing = vim.deepcopy(existing), new = vim.deepcopy(intent.new),
+  }
+end
+
 function M.plan(baseline, intent, current)
   if M.structural_drift(baseline, current) then
     fail("structural drift detected")
@@ -293,17 +531,6 @@ function M.plan(baseline, intent, current)
   vim.list_extend(plan.operations, plan.creates)
   vim.list_extend(plan.operations, plan.kills)
   return plan
-end
-
-local function copy_state(state)
-  return {
-    order = vim.deepcopy(state.order),
-    server_order = vim.deepcopy(state.server_order or state.order),
-    by_id = vim.deepcopy(state.by_id),
-    parent_by_id = vim.deepcopy(state.parent_by_id or {}),
-    parent_option_by_id = vim.deepcopy(state.parent_option_by_id or {}),
-    tree_prefix_by_id = vim.deepcopy(state.tree_prefix_by_id or {}),
-  }
 end
 
 local function remove_id(state, id)
@@ -354,8 +581,15 @@ local function desired_order(intent, state)
   return ids
 end
 
-local function move_before(state, id, target)
+local function adjacent(state, id, target)
   local order = state.server_order or state.order
+  for index, value in ipairs(order) do
+    if value == id then return order[index + 1] == target end
+  end
+  return false
+end
+
+local function move_in(order, id, target)
   local source_index, target_index
   for index, value in ipairs(order) do
     if value == id then source_index = index end
@@ -365,6 +599,11 @@ local function move_before(state, id, target)
   table.remove(order, source_index)
   if source_index < target_index then target_index = target_index - 1 end
   table.insert(order, target_index, id)
+end
+
+local function move_before(state, id, target)
+  move_in(state.server_order or state.order, id, target)
+  if state.server_order and state.order then move_in(state.order, id, target) end
 end
 
 local function execution_plan(plan, current)
@@ -438,9 +677,12 @@ M.current_session_id = current_session_id
 
 local function report_error(message, report, failed_index)
   report.error = message
+  report.acknowledged = report.acknowledged or copy_state(report.before)
   for index = failed_index + 1, #report.operations do
     report.not_run[#report.not_run + 1] = report.operations[index].argv
   end
+  report.completed = #report.succeeded
+  report.pending = #report.not_run
   M.last_apply_report = report
   local lines = { message, "succeeded argv:" }
   if #report.succeeded == 0 then
@@ -472,11 +714,17 @@ function M.apply(baseline, intent)
   local ok, planned = pcall(M.plan, baseline, intent, fresh)
   if not ok then
     M.last_apply_report = {
-      before = fresh, operations = {}, succeeded = {}, not_run = {}, error = tostring(planned),
+      before = fresh, current = fresh, acknowledged = copy_state(fresh),
+      operations = {}, succeeded = {}, not_run = {}, attempted = {}, error = tostring(planned),
+      completed = 0, pending = 0,
     }
     fail(tostring(planned))
   end
   if #planned.kills == #fresh.order and #planned.kills > 0 then
+    M.last_apply_report = {
+      before = fresh, current = fresh, acknowledged = copy_state(fresh),
+      operations = {}, succeeded = {}, not_run = {}, attempted = {}, completed = 0, pending = 0,
+    }
     fail("refusing to kill the last session/server because completion cannot be reported safely")
   end
   if #planned.kills > 0 then
@@ -492,6 +740,10 @@ function M.apply(baseline, intent)
           if killing[id] == nil then survivor = id; break end
         end
         if survivor == nil then
+          M.last_apply_report = {
+            before = fresh, current = fresh, acknowledged = copy_state(fresh),
+            operations = {}, succeeded = {}, not_run = {}, attempted = {}, completed = 0, pending = 0,
+          }
           fail("refusing to kill the last session/server because completion cannot be reported safely")
         end
         -- Deleting the session the user is in must not tear down the popup:
@@ -506,9 +758,12 @@ function M.apply(baseline, intent)
   local expected = copy_state(fresh)
   local report = {
     before = fresh, operations = operations, succeeded = {}, not_run = {}, attempted = {},
+    created_ids = {}, acknowledged = copy_state(fresh), completed = 0, pending = 0,
   }
   local function execute(operation, index)
     local live = M.snapshot()
+    report.current = live
+    report.acknowledged = copy_state(expected)
     if M.structural_drift(expected, live) then
       report_error("structural drift detected before operation " .. index, report, index - 1)
     end
@@ -557,10 +812,14 @@ function M.apply(baseline, intent)
       expected.order[#expected.order + 1] = created_id
       expected.server_order[#expected.server_order + 1] = created_id
       expected.by_id[created_id] = operation.name
+      report.created_ids[operation.name] = created_id
+      report.current = after_create
       if M.structural_drift(expected, after_create) then
         report_error("structural drift detected after create operation " .. index, report, index)
       end
     end
+    report.acknowledged = copy_state(expected)
+    report.completed = #report.succeeded
   end
 
   for index, operation in ipairs(operations) do execute(operation, index) end
@@ -568,11 +827,16 @@ function M.apply(baseline, intent)
   if persistent_order then
     local wanted = desired_order(intent, expected)
     local first_move = #operations + 1
+    local simulated = copy_state(expected)
     for index = #wanted - 1, 1, -1 do
-      operations[#operations + 1] = {
-        kind = "move", id = wanted[index], target = wanted[index + 1],
-        argv = M.argv({ "move-session", "-b", "-s", wanted[index], "-t", wanted[index + 1] }),
-      }
+      local id, target = wanted[index], wanted[index + 1]
+      if not adjacent(simulated, id, target) then
+        operations[#operations + 1] = {
+          kind = "move", id = id, target = target,
+          argv = M.argv({ "move-session", "-b", "-s", id, "-t", target }),
+        }
+        move_before(simulated, id, target)
+      end
     end
     for index = first_move, #operations do execute(operations[index], index) end
   elseif intended_order_changed(baseline, intent) then
@@ -581,10 +845,15 @@ function M.apply(baseline, intent)
   end
 
   local after = M.snapshot()
+  report.current = after
   if M.structural_drift(expected, after) then
+    report.acknowledged = copy_state(expected)
     report_error("structural drift detected after apply", report, #operations)
   end
   report.after = after
+  report.acknowledged = copy_state(expected)
+  report.completed = #report.succeeded
+  report.pending = #report.not_run
   M.last_apply_report = report
   return report
 end
@@ -800,6 +1069,15 @@ function M.stop_polling()
   end
 end
 
+function M.resume_polling()
+  if not M.buf or not vim.api.nvim_buf_is_valid(M.buf) then return end
+  M.ui_active = true
+  M.poll_generation = (M.poll_generation or 0) + 1
+  M.started_polls, M.completed_polls, M.overlapping_polls = 0, 0, 0
+  M.timer = assert(vim.uv.new_timer())
+  M.timer:start(0, 250, vim.schedule_wrap(M.poll))
+end
+
 function M.cleanup()
   M.stop_polling()
   if M.buf and vim.api.nvim_buf_is_valid(M.buf) and M.ns then
@@ -823,30 +1101,292 @@ local function editor_manifest(lines)
   return table.concat(encoded, "\n")
 end
 
+function M.append_name()
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  local line = vim.api.nvim_get_current_line()
+  if line:match("^%$%d+\t\"") and line:sub(-1) == '"' then
+    -- The closing quote is concealed, so normal A would append outside the
+    -- JSON string. Start inserting immediately before that quote instead.
+    vim.api.nvim_win_set_cursor(0, { row, #line - 1 })
+    vim.cmd("startinsert")
+  else
+    vim.cmd("normal! A")
+  end
+end
+
+local function save_error(message)
+  local state_home = vim.env.XDG_STATE_HOME
+  if not state_home or state_home == "" then state_home = vim.fn.expand("~/.local/state") end
+  local dir = vim.env.TMUX_OIL_ERROR_DIR
+    or (state_home .. "/tmux-oil/errors")
+  local path = string.format("%s/error-%s-%d.log", dir,
+    os.date("%Y%m%d-%H%M%S"), vim.uv.hrtime() % 1000000)
+  local payload = table.concat({
+    "tmux-oil save failure",
+    "time: " .. os.date("%Y-%m-%dT%H:%M:%S%z"),
+    "socket: " .. socket,
+    "",
+    message,
+    "",
+  }, "\n")
+  local ok, err = pcall(function()
+    vim.fn.mkdir(dir, "p")
+    assert(vim.fn.isdirectory(dir) == 1, "could not create " .. dir)
+    assert(vim.fn.writefile(vim.split(payload, "\n", { plain = true }), path) == 0,
+      "could not write " .. path)
+  end)
+  if ok then return path end
+  return nil, tostring(err)
+end
+
+local function render_intent(intent, display)
+  local lines = {}
+  local rows = display and intent.display_order or intent.order
+  for _, row in ipairs(rows) do
+    lines[#lines + 1] = row.marker .. "\t" .. vim.json.encode(row.name)
+  end
+  return lines
+end
+M.render_intent = render_intent
+
+local function intent_with_created_ids(intent, created_ids)
+  local result = vim.deepcopy(intent)
+  result.existing = vim.deepcopy(intent.existing)
+  result.order, result.new = {}, {}
+  for _, row in ipairs(intent.order) do
+    local id = row.marker == "+" and created_ids[row.name]
+    if id then
+      result.existing[id] = row.name
+      result.order[#result.order + 1] = { marker = id, name = row.name }
+    else
+      result.order[#result.order + 1] = vim.deepcopy(row)
+    end
+  end
+  for _, name in ipairs(intent.new) do
+    if not created_ids[name] then result.new[#result.new + 1] = name end
+  end
+  return result
+end
+
+local function recovery_intent(current, recovery)
+  if vim.deep_equal(current, recovery.buffer_intent) then
+    local result = vim.deepcopy(recovery.intent)
+    result.display_order = vim.deepcopy(current.order)
+    return result
+  end
+  local result = vim.deepcopy(recovery.intent)
+  local original = recovery.original_baseline
+  local created_ids = recovery.created_ids or {}
+  local created_by_name = {}
+  for name, id in pairs(created_ids) do created_by_name[name] = id end
+  for id in pairs(original.by_id) do
+    if current.existing[id] ~= nil then
+      if result.existing[id] == nil then
+        return nil, "recovery conflict " .. id .. ": already-completed operation was edited back"
+      end
+      result.existing[id] = current.existing[id]
+    else
+      result.existing[id] = nil
+    end
+  end
+  local current_new = {}
+  for _, name in ipairs(current.new) do current_new[name] = true end
+  for name, id in pairs(created_by_name) do
+    if not current_new[name] then result.existing[id] = nil end
+  end
+  local new = {}
+  for _, name in ipairs(current.new) do
+    if not created_by_name[name] then new[#new + 1] = name end
+  end
+  result.new = new
+
+  local tokens, represented = {}, {}
+  for _, row in ipairs(current.order) do
+    local token = row.marker
+    if token == "+" then
+      local id = created_by_name[row.name]
+      token = id or "+" .. row.name
+      if id then represented[id] = true end
+    elseif result.existing[token] == nil then
+      return nil, "recovery conflict " .. token .. ": pending target is no longer acknowledged"
+    else
+      represented[token] = true
+    end
+    tokens[#tokens + 1] = token
+  end
+  local extras, source = {}, {}
+  for _, row in ipairs(result.order) do
+    local token = row.marker == "+" and (created_by_name[row.name] or "+" .. row.name)
+      or row.marker
+    source[#source + 1] = token
+    if result.existing[row.marker] and not represented[row.marker] then extras[row.marker] = true end
+  end
+  insert_extras(tokens, source, extras)
+  result.order = {}
+  for _, token in ipairs(tokens) do
+    local id, name = token:match("^(%$%d+)$")
+    if id then
+      name = result.existing[id]
+      result.order[#result.order + 1] = { marker = id, name = name }
+    else
+      name = token:sub(1, 1) == "+" and token:sub(2) or token
+      result.order[#result.order + 1] = { marker = "+", name = name }
+    end
+  end
+  result.display_order = vim.deepcopy(current.order)
+  return result
+end
+
+local function failure_counts(report)
+  if not report then return 0, 0 end
+  return report.completed or #(report.succeeded or {}),
+    report.pending or #(report.not_run or {})
+end
+
+local function save_failure(message)
+  local report = M.last_apply_report
+  local detail = tostring(message)
+  if report and report.before and report.current then
+    report.differences = report.differences
+      or M.describe_difference(report.acknowledged or report.before, report.current)
+    detail = detail .. "\nacknowledged/live metadata differences: " .. report.differences
+    if report.acknowledged and not vim.deep_equal(report.before, report.acknowledged) then
+      detail = detail .. "\noriginal/acknowledged metadata differences: "
+        .. M.describe_difference(report.before, report.acknowledged)
+    end
+  end
+  local path, save_failure_error = save_error(detail)
+  local completed, pending = failure_counts(report)
+  local first = detail:match("^[^\n]+") or detail
+  if report and report.differences then
+    first = first .. "; " .. (report.differences:match("^[^;]+") or report.differences)
+  end
+  local summary = string.format("%s (completed %d, pending %d)", first, completed, pending)
+  if path then
+    M.last_error_path = path
+    summary = summary .. ". Diagnostic saved to: " .. path
+  else
+    summary = summary .. ". Diagnostic could not be saved: " .. tostring(save_failure_error)
+  end
+  M.last_error = summary
+  pcall(M.resume_polling)
+  vim.notify(summary, vim.log.levels.WARN, { title = "tmux-oil save failed" })
+  return false, summary
+end
+
 function M.save()
-  M.cleanup()
-  if M.test_before_final_reread then M.test_before_final_reread() end
-  local lines = vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)
+  M.last_apply_report = nil
+  local parsed_intent, apply_baseline, apply_intent, attempt, lines
   local ok, result = pcall(function()
+    M.cleanup()
+    if M.test_before_final_reread then M.test_before_final_reread() end
+    lines = vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)
     local parsed, intent = pcall(function()
       return M.parse_manifest(editor_manifest(lines), M.baseline)
     end)
     if not parsed then
       fail(tostring(intent):gsub("^tmux%-oil: ", "") .. "\n" .. manifest_help)
     end
-    return M.apply(M.baseline, intent)
+    parsed_intent = intent
+    apply_baseline, apply_intent = M.baseline, intent
+    if M.pending_recovery then
+      local recovered, recovery_error = recovery_intent(intent, M.pending_recovery)
+      if not recovered then fail(recovery_error) end
+      apply_baseline, apply_intent = M.pending_recovery.baseline, recovered
+    end
+    local live = M.snapshot()
+    local reconciled, conflict = M.reconcile(apply_baseline, apply_intent, live)
+    if not reconciled then
+      M.last_apply_report = {
+        before = apply_baseline, current = live, acknowledged = copy_state(live),
+        operations = {}, succeeded = {}, not_run = {}, attempted = {},
+        completed = 0, pending = 0, error = conflict,
+      }
+      fail(conflict)
+    end
+    apply_intent = reconciled
+    attempt = { baseline = live, intent = reconciled, buffer_intent = intent }
+    return M.apply(live, reconciled)
   end)
   if not ok then
-    M.last_error = tostring(result)
-    vim.notify(M.last_error, vim.log.levels.ERROR, { title = "tmux-oil save failed" })
-    return false, M.last_error
+    local report = M.last_apply_report
+    if report and #(report.succeeded or {}) > 0 and attempt then
+      M.pending_recovery = {
+        baseline = report.acknowledged,
+        intent = intent_with_created_ids(attempt.intent, report.created_ids or {}),
+        buffer_intent = parsed_intent,
+        original_baseline = M.baseline,
+        created_ids = vim.deepcopy(report.created_ids or {}),
+      }
+    end
+    return save_failure(result)
   end
+  M.pending_recovery = nil
   if result.warning then
     vim.notify(result.warning, vim.log.levels.WARN, { title = "tmux-oil ordering skipped" })
   end
   vim.bo[M.buf].modified = false
   M.start()
   return true, result
+end
+
+local function intent_matches_state(intent, state)
+  local rows = intent.display_order or intent.order
+  if #intent.new > 0 or #rows ~= #state.order then return false end
+  for index, row in ipairs(rows) do
+    if row.marker ~= state.order[index] or row.name ~= state.by_id[row.marker] then
+      return false
+    end
+  end
+  return true
+end
+
+function M.refresh()
+  M.cleanup()
+  local ok, result = pcall(function()
+    local lines = vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)
+    local parsed, intent = pcall(function()
+      return M.parse_manifest(editor_manifest(lines), M.baseline)
+    end)
+    if not parsed then fail(tostring(intent):gsub("^tmux%-oil: ", "")) end
+    local base, refresh_intent = M.baseline, intent
+    if M.pending_recovery then
+      local recovered, recovery_error = recovery_intent(intent, M.pending_recovery)
+      if not recovered then fail(recovery_error) end
+      base, refresh_intent = M.pending_recovery.baseline, recovered
+    end
+    local live = M.snapshot()
+    local reconciled, conflict = M.reconcile(base, refresh_intent, live)
+    if not reconciled then fail(conflict .. "\nedit the conflicting row or use :TmuxOilAcceptLive") end
+    vim.api.nvim_buf_set_lines(M.buf, 0, -1, false, render_intent(reconciled, true))
+    M.baseline = live
+    vim.bo[M.buf].modified = not intent_matches_state(reconciled, live)
+    M.pending_recovery = nil
+  end)
+  if not ok then
+    pcall(M.resume_polling)
+    vim.notify(tostring(result), vim.log.levels.WARN, { title = "tmux-oil refresh failed" })
+    return false, tostring(result)
+  end
+  M.resume_polling()
+  vim.notify("tmux-oil buffer refreshed; local edits remain pending", vim.log.levels.INFO,
+    { title = "tmux-oil" })
+  return true
+end
+
+function M.accept_live()
+  local ok, result = pcall(function()
+    M.pending_recovery = nil
+    M.start()
+    vim.notify("tmux-oil discarded local edits and accepted live sessions",
+      vim.log.levels.INFO, { title = "tmux-oil" })
+  end)
+  if not ok then
+    pcall(M.resume_polling)
+    vim.notify(tostring(result), vim.log.levels.ERROR, { title = "tmux-oil accept live failed" })
+    return false, tostring(result)
+  end
+  return true
 end
 
 -- Session rows are whole lines. Route mouse drags and plain v through
@@ -959,22 +1499,23 @@ function M.start()
   vim.api.nvim_create_autocmd("BufWriteCmd", {
     group = group, buffer = M.buf,
     callback = function()
-      local ok, err = M.save()
-      if not ok then error(err, 0) end
+      local ok, err = pcall(M.save)
+      if not ok then save_failure(err) end
     end,
   })
   vim.api.nvim_create_autocmd({ "BufWipeout", "VimLeavePre" }, {
     group = group, callback = M.cleanup,
   })
   vim.keymap.set("n", "<CR>", M.jump, { buffer = M.buf, silent = true })
+  vim.api.nvim_buf_create_user_command(M.buf, "TmuxOilRefresh", M.refresh, { force = true })
+  vim.api.nvim_buf_create_user_command(M.buf, "TmuxOilAcceptLive", M.accept_live, { force = true })
+  vim.keymap.set("n", "A", M.append_name, { buffer = M.buf, silent = true })
   -- Highlights must cover the whole row: mouse drags select line-wise, and v
   -- opens the same line-wise selection (char-wise stays reachable by pressing
   -- v again inside the selection, or double-click for a word).
   vim.keymap.set({ "n", "v" }, "<LeftDrag>", M.drag_linewise, { buffer = M.buf })
   vim.keymap.set("n", "v", "V", { buffer = M.buf })
-  M.ui_active = true
-  M.timer = assert(vim.uv.new_timer())
-  M.timer:start(0, 250, vim.schedule_wrap(M.poll))
+  M.resume_polling()
 end
 
 if vim.env.TMUX_OIL_TEST_LUA then

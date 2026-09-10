@@ -1200,6 +1200,9 @@ local create_ok, create_error = pcall(vim.cmd, "write")
 check(create_ok, create_error or "plain-line create failed")
 check(vim.tbl_contains(vim.tbl_values(M.baseline.by_id), "created-by-plain-line"),
   "plain new line did not create a session")
+vim.api.nvim_buf_set_lines(M.buf, -1, -1, false, { "" })
+local blank_ok, blank_error = pcall(vim.cmd, "write")
+check(blank_ok, blank_error or "blank line was not ignored")
 vim.api.nvim_buf_set_lines(M.buf, -1, -1, false, { "bad:name" })
 local write_ok, write_error = pcall(vim.cmd, "write")
 local helpful_error = tostring(M.last_error)
@@ -1236,6 +1239,7 @@ for _, result in ipairs({
   "PASS overlapping polls are suppressed or coalesced",
   "PASS :wq stops timer and in-flight poll before final reread",
   "PASS plain new line creates a session on save",
+  "PASS blank lines are ignored on save",
   "PASS validation error explains plain and encoded row forms",
   "PASS failed save remains open",
   "PASS drag and v highlights cover the whole row",

@@ -989,11 +989,31 @@ local function new_identity(buf, rows)
     end
     s.move = nil
   end
+  local root_first
+  local function known_snapshot(tree)
+    local seq = tree.seq_cur
+    while seq do
+      if I.history[seq] then return I.history[seq] end
+      local parent = undo_parent(seq, tree.entries, -1)
+      if parent == -1 then
+        if not root_first and seq == I.root + 1 then root_first = seq end
+        if root_first and undo_parent(root_first, tree.entries, -1) == -1 then parent = I.root end
+      end
+      seq = parent
+    end
+  end
   function I.current()
     if I.fault then fail(I.fault) end
-    local s = I.history[f.undotree().seq_cur]
+    local tree = f.undotree()
+    local s = known_snapshot(tree)
     if not s or not vim.deep_equal(s.lines, text()) then
       fail("identity history unavailable; undo to a known state or :TmuxOilAcceptLive")
+    end
+    if not I.history[tree.seq_cur] then
+      -- Native no-ops can add undo headers without a text-change notification.
+      -- Inherit only an actual ancestor with unchanged text, never a sibling.
+      s = vim.deepcopy(s)
+      I.history[tree.seq_cur] = s
     end
     settle_move(s)
     anchors(s)
@@ -1022,7 +1042,6 @@ local function new_identity(buf, rows)
       if not ok then I.fault = "identity observer failed: " .. tostring(err) end
     end
   end
-  local root_first
   function I.replace(new_rows, initial)
     local s = { lines = {}, tokens = {} }
     local by_id = {}
@@ -1063,12 +1082,8 @@ local function new_identity(buf, rows)
       -- 0.12 undo notifications carry the OLD seq_cur, including changedtick.
       -- Forward edits are unsynced; restore traversal state only after it settles.
       if tree.synced == 1 then I.bytes = nil; return end
-      local parent = undo_parent(tree.seq_cur, tree.entries, -1)
-      if parent == -1 then
-        if not root_first and tree.seq_cur == I.root + 1 then root_first = tree.seq_cur end
-        if root_first and undo_parent(root_first, tree.entries, -1) == -1 then parent = I.root end
-      end
-      local base = I.history[tree.seq_cur] or I.history[parent]
+      -- A real edit may follow several unobserved text-no-op undo headers.
+      local base = known_snapshot(tree)
       if not base then error("missing undo ancestry (history was replaced/pruned)") end
       local s, now = vim.deepcopy(base), text()
       local oldcount, newcount = last - first, newlast - first
@@ -1708,7 +1723,10 @@ function M.start()
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "TextChangedP" }, {
     group = group, buffer = M.buf,
     callback = function()
-      if M.last_live then annotate(M.last_live, M.last_metadata) end
+      if M.last_live then
+        local ok, err = pcall(annotate, M.last_live, M.last_metadata)
+        if not ok then M.last_poll_error = tostring(err) end
+      end
     end,
   })
   vim.api.nvim_create_autocmd({ "BufWipeout", "VimLeavePre" }, {

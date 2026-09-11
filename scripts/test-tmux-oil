@@ -166,6 +166,252 @@ LUA
     nvim --clean -u NONE -i NONE --headless --cmd "lua dofile('$tmp/init.lua')"
 }
 
+run_noop_x_case() {
+  TMUX_BIN=$(command -v tmux)
+  socket="tmux-oil-noop-x-$$-$(date +%s)"
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/tmux-oil-noop-x.XXXXXX")
+  socket_path=
+  cleanup_noop_x() {
+    status=$?
+    trap - EXIT HUP INT TERM
+    "$TMUX_BIN" -L "$socket" -f /dev/null kill-server >/dev/null 2>&1 || status=1
+    [ -n "$socket_path" ] && rm -f "$socket_path"
+    rm -rf "$tmp"
+    if [ -n "$socket_path" ] && [ ! -e "$socket_path" ]; then
+      printf 'cleanup_socket_removed=yes path=%s\n' "$socket_path"
+    else
+      printf 'cleanup_socket_removed=no path=%s\n' "${socket_path:-unknown}" >&2
+      status=1
+    fi
+    exit "$status"
+  }
+  trap cleanup_noop_x EXIT
+  trap 'exit 1' HUP INT TERM
+
+  printf 'throwaway_socket=%s mode=noop-x\n' "$socket"
+  "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s alpha 'sleep 120'
+  "$TMUX_BIN" -L "$socket" -f /dev/null new-session -d -s beta 'sleep 120'
+  "$TMUX_BIN" -L "$socket" -f /dev/null set-option -t alpha \
+    @pi_cache_session '#[fg=yellow]BUSY#[default] countdown=9s ctx=10% cost=$1.00'
+  "$TMUX_BIN" -L "$socket" -f /dev/null set-option -t beta \
+    @pi_cache_session '#[fg=green]AGENT DONE#[default] countdown=8s ctx=11% cost=$1.25'
+  socket_path=$("$TMUX_BIN" -L "$socket" -f /dev/null display-message -p '#{socket_path}')
+  server_pid=$("$TMUX_BIN" -L "$socket" -f /dev/null display-message -p '#{pid}')
+
+  cat >"$tmp/noop-x.lua" <<'LUA'
+local M = assert(_G.tmux_oil)
+local control_socket = assert(vim.env.TMUX_OIL_TEST_SOCKET)
+local tmux_bin = assert(vim.env.TMUX_OIL_TMUX_BIN)
+
+local function check(value, message)
+  if not value then error(message, 0) end
+end
+local function wait_for(predicate, message)
+  check(vim.wait(3000, predicate, 10), message)
+end
+local function lines()
+  return vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)
+end
+local function control(args)
+  local argv = { tmux_bin, "-L", control_socket, "-f", "/dev/null" }
+  vim.list_extend(argv, args)
+  local result = vim.system(argv, { text = true }):wait()
+  check(result.code == 0, (result.stderr or "throwaway tmux command failed"):gsub("%s+$", ""))
+  return result.stdout or ""
+end
+local function wait_for_poll(label)
+  local completed = M.completed_polls
+  M.poll()
+  wait_for(function() return M.completed_polls > completed and M.poll_process == nil end,
+    label .. " poll did not complete")
+end
+local function id_named(name)
+  for id, value in pairs(M.baseline.by_id) do
+    if value == name then return id end
+  end
+  error("missing session " .. name, 0)
+end
+local function annotation_rows()
+  local result = {}
+  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(M.buf, M.ns, 0, -1,
+    { details = true })) do
+    local text = M.annotation_text(mark[4])
+    if text ~= "" then
+      local row = mark[2] + 1
+      result[row] = (result[row] or "") .. text
+    end
+  end
+  return result
+end
+local function check_editor(expected, label)
+  local ok, got = pcall(M.editor_ids)
+  check(ok, label .. " identity callback escaped: " .. tostring(got))
+  check(vim.deep_equal(got, expected), label .. " IDs: " .. vim.inspect(got))
+  check(vim.api.nvim_get_current_buf() == M.buf and vim.api.nvim_buf_is_valid(M.buf),
+    label .. " lost the live buffer")
+  check(vim.api.nvim_buf_get_name(M.buf) == "tmux-oil://sessions",
+    label .. " changed the editor URI")
+  check(vim.bo[M.buf].buftype == "acwrite" and M.ui_active,
+    label .. " left tmux-oil editor mode")
+end
+local function check_annotations(label, expected_rows)
+  local rows = annotation_rows()
+  for row, expected in ipairs(expected_rows) do
+    check((rows[row] or ""):find(expected, 1, true) ~= nil,
+      label .. " missing annotation " .. row .. ": " .. vim.inspect(rows))
+  end
+end
+local function redraw(event, label)
+  local ok, err = pcall(vim.api.nvim_exec_autocmds, event, { buffer = M.buf })
+  check(ok, label .. " callback escaped: " .. tostring(err))
+end
+local function feed(keys)
+  -- Feed real normal-mode keys one command at a time, like a held key arriving
+  -- through Nvim's input loop; do not replace this with a buffer API edit.
+  local ok, err = pcall(vim.api.nvim_feedkeys,
+    vim.api.nvim_replace_termcodes(keys, true, false, true), "xt", false)
+  check(ok, "native input escaped: " .. tostring(err))
+  vim.cmd("let &ul=&ul")
+end
+local function x_times(count)
+  for _ = 1, count do feed("x") end
+end
+
+M.start()
+wait_for_poll("initial")
+local alpha, beta = id_named("alpha"), id_named("beta")
+check(vim.deep_equal(lines(), { "alpha", "beta" }), "initial raw names changed")
+check_editor({ alpha, beta }, "initial")
+check_annotations("initial", { "[~] BUSY", "[✓] AGENT DONE" })
+
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+x_times(5)
+check(vim.deep_equal(lines(), { "", "beta" }), "native x did not empty the tracked row")
+check_editor({ alpha, beta }, "multi-row empty tracked name")
+local empty_tick = vim.b[M.buf].changedtick
+local empty_seq = vim.fn.undotree().seq_cur
+for _ = 1, 3 do
+  feed("x")
+  check(vim.deep_equal(lines(), { "", "beta" }), "x past empty changed raw text")
+  check(vim.b[M.buf].changedtick == empty_tick, "no-op x changed changedtick")
+end
+check(vim.fn.undotree().seq_cur > empty_seq, "repeated empty x did not create native undo entries")
+local held_seq = vim.fn.undotree().seq_cur
+feed("xxx")
+check(vim.deep_equal(lines(), { "", "beta" })
+    and vim.b[M.buf].changedtick == empty_tick
+    and vim.fn.undotree().seq_cur > held_seq,
+  "held x burst changed the empty row or did not create an undo entry")
+check_editor({ alpha, beta }, "repeated x past empty")
+redraw("TextChanged", "repeated x TextChanged")
+check_annotations("repeated x renderer", { "[~] BUSY", "[✓] AGENT DONE" })
+feed("dd")
+check(vim.deep_equal(lines(), { "beta" }), "whole-row deletion did not remove the empty row")
+check_editor({ beta }, "multi-row whole-row deletion")
+redraw("TextChangedI", "multi-row deletion TextChangedI")
+check_annotations("multi-row deletion renderer", { "[✓] AGENT DONE" })
+io.stdout:write("PASS native repeated x past empty keeps multi-row IDs and annotations\n")
+
+-- Re-anchor to the live two-row state before testing the no-accessor ancestry path.
+check(M.accept_live(), "accept live before direct-edit case failed")
+wait_for_poll("re-anchored multi-row")
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+x_times(5)
+local direct_tick = vim.b[M.buf].changedtick
+local direct_seq = vim.fn.undotree().seq_cur
+for _ = 1, 3 do feed("x") end
+check(vim.deep_equal(lines(), { "", "beta" }), "no-op setup changed raw text")
+check(vim.b[M.buf].changedtick == direct_tick, "no-op setup changed changedtick")
+-- There is deliberately no M.editor_ids(), redraw, or poll between the no-op
+-- headers and this real API edit. on_lines must resolve their undo ancestry.
+local edit_ok, edit_error = pcall(vim.api.nvim_buf_set_text, M.buf, 0, 0, 0, 0, { "z" })
+check(edit_ok, "direct edit threw: " .. tostring(edit_error))
+check(vim.deep_equal(lines(), { "z", "beta" }), "direct edit changed the wrong row")
+check_editor({ alpha, beta }, "real edit after no-op x without accessor")
+redraw("TextChangedP", "direct edit TextChangedP")
+check_annotations("direct edit renderer", { "[~] BUSY", "[✓] AGENT DONE" })
+io.stdout:write("PASS no-op x followed by direct edit preserves the stable ID without an accessor\n")
+
+local edit_seq = vim.fn.undotree().seq_cur
+check(edit_seq > direct_seq, "direct edit did not follow the no-op undo entries")
+local undo_seq = edit_seq
+for step = 1, 4 do
+  feed("u")
+  local current_seq = vim.fn.undotree().seq_cur
+  check(current_seq < undo_seq, "undo did not cross a distinct no-op entry at step " .. step)
+  undo_seq = current_seq
+  check(lines()[1] == "", "undo changed the empty tracked row at step " .. step)
+  check_editor({ alpha, beta }, "undo across no-op x step " .. step)
+  redraw("TextChanged", "undo TextChanged step " .. step)
+  check_annotations("undo annotation step " .. step, { "[~] BUSY", "[✓] AGENT DONE" })
+end
+check(vim.deep_equal(lines(), { "", "beta" }), "undo did not restore the empty tracked row")
+local redo_seq = undo_seq
+for step = 1, 4 do
+  feed("<C-r>")
+  local current_seq = vim.fn.undotree().seq_cur
+  check(current_seq > redo_seq, "redo did not cross a distinct no-op entry at step " .. step)
+  redo_seq = current_seq
+  local expected_line = step == 4 and "z" or ""
+  check(vim.deep_equal(lines(), { expected_line, "beta" }),
+    "redo changed raw text at step " .. step)
+  check_editor({ alpha, beta }, "redo across no-op x step " .. step)
+  redraw("TextChangedI", "redo TextChangedI step " .. step)
+  check_annotations("redo annotation step " .. step, { "[~] BUSY", "[✓] AGENT DONE" })
+end
+io.stdout:write("PASS undo and redo across no-op x entries preserve IDs and annotations\n")
+
+for _, event in ipairs({ "TextChanged", "TextChangedI", "TextChangedP" }) do
+  local clear_namespace = vim.api.nvim_buf_clear_namespace
+  local sentinel = "noop-x renderer sentinel " .. event
+  vim.api.nvim_buf_clear_namespace = function()
+    error(sentinel, 0)
+  end
+  local ok, err = pcall(vim.api.nvim_exec_autocmds, event, { buffer = M.buf })
+  vim.api.nvim_buf_clear_namespace = clear_namespace
+  check(ok, event .. " renderer exception escaped: " .. tostring(err))
+  check(M.last_poll_error and M.last_poll_error:find(sentinel, 1, true),
+    event .. " renderer failure was not diagnosed")
+  redraw(event, event .. " healthy rerender")
+  check_annotations(event .. " healthy rerender", { "[~] BUSY", "[✓] AGENT DONE" })
+end
+io.stdout:write("PASS TextChanged/TextChangedI/TextChangedP renderer errors stay contained\n")
+
+-- Kill beta only in the throwaway server, then re-anchor to exercise the sole
+-- tracked row separately from an empty row that is deleted with dd.
+control({ "kill-session", "-t", "beta" })
+check(M.accept_live(), "accept live before sole-row case failed")
+wait_for_poll("sole-row")
+alpha = id_named("alpha")
+check(vim.deep_equal(lines(), { "alpha" }), "sole-row baseline was not restored")
+check_editor({ alpha }, "sole-row baseline")
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+x_times(5)
+local sole_tick = vim.b[M.buf].changedtick
+for _ = 1, 2 do feed("x") end
+check(vim.deep_equal(lines(), { "" }) and vim.b[M.buf].changedtick == sole_tick,
+  "sole-row no-op x changed text")
+check_editor({ alpha }, "sole-row empty tracked name")
+redraw("TextChangedP", "sole-row TextChangedP")
+check_annotations("sole-row empty tracked name", { "[~] BUSY" })
+local before_dd_tick = vim.b[M.buf].changedtick
+feed("dd")
+check(vim.deep_equal(lines(), { "" }), "sole-row dd did not leave the editor placeholder")
+check_editor({ "+" }, "sole-row whole-row deletion")
+check(vim.b[M.buf].changedtick > before_dd_tick and vim.bo[M.buf].modified,
+  "sole-row whole-row deletion did not remain a dirty editor edit")
+local intent_ok, intent = pcall(M.editor_intent)
+check(intent_ok and #intent.order == 0, "sole-row placeholder became an ordinary session")
+io.stdout:write("PASS sole-row empty tracked name and whole-row deletion stay in editor mode\n")
+LUA
+
+  TMUX="$socket_path,$server_pid,0" \
+  TMUX_OIL_ERROR_DIR="$tmp/errors" \
+  TMUX_OIL_TEST_LUA="$tmp/noop-x.lua" \
+  TMUX_OIL_TEST_SOCKET="$socket" \
+  ./scripts/tmux-oil
+}
+
 run_apply_case() {
   scenario=$1
   TMUX_BIN=$(command -v tmux)
@@ -1947,6 +2193,7 @@ fi
 
 if [ "${1-}" = all ] && [ "$#" -eq 1 ]; then
   "$0" native
+  "$0" noop-x
   "$0" state
   "$0" apply
   "$0" order
@@ -1964,6 +2211,11 @@ if [ "${1-}" = all ] && [ "$#" -eq 1 ]; then
   do
     "$0" reconcile "$scenario"
   done
+  exit
+fi
+
+if [ "${1-}" = noop-x ] && [ "$#" -eq 1 ]; then
+  run_noop_x_case
   exit
 fi
 
@@ -2039,7 +2291,7 @@ if [ "${1-}" = apply ] && [ "$#" -eq 1 ]; then
 fi
 
 if [ "${1-}" != state ] || [ "$#" -ne 1 ]; then
-  printf 'usage: %s state|native|apply|reconcile CASE|order|ui|popup-open|current-cursor|all\n' "$0" >&2
+  printf 'usage: %s state|native|noop-x|apply|reconcile CASE|order|ui|popup-open|current-cursor|all\n' "$0" >&2
   exit 2
 fi
 

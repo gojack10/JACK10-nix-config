@@ -1508,7 +1508,7 @@ local function save_failure(message)
     summary = summary .. ". Diagnostic could not be saved: " .. tostring(save_failure_error)
   end
   M.last_error = summary
-  pcall(M.resume_polling)
+  if not M.ui_active then pcall(M.resume_polling) end
   vim.notify(summary, vim.log.levels.WARN, { title = "tmux-oil save failed" })
   return false, summary
 end
@@ -1517,6 +1517,11 @@ function M.save()
   M.last_apply_report = nil
   local parsed_intent, apply_baseline, apply_intent, attempt, lines
   local ok, result = pcall(function()
+    -- Reject invalid edits without blanking annotations or interrupting polling.
+    local valid, validation_error = pcall(M.editor_intent)
+    if not valid then
+      fail(tostring(validation_error):gsub("^tmux%-oil: ", "") .. "\n" .. manifest_help)
+    end
     M.cleanup()
     if M.test_before_final_reread then M.test_before_final_reread() end
     lines = vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)

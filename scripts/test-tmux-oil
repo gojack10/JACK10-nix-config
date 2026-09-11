@@ -1229,6 +1229,46 @@ for _, key in ipairs({'h','l','x','A','v','<LeftDrag>'}) do
   check(vim.fn.maparg(key, 'n') == '', 'native key was remapped: ' .. key)
 end
 check(vim.deep_equal(before_lines, {'alpha', 'beta'}), 'buffer contains encoded bookkeeping')
+do
+  local buf, ids, live = M.buf, M.editor_ids(), M.snapshot()
+  native('normal! gg0D')
+  check(vim.deep_equal(lines(), {'', 'beta'}) and vim.deep_equal(M.editor_ids(), ids),
+    'native character deletion lost the tracked empty row identity')
+  M.poll()
+  wait_for(function() return M.poll_process == nil end, 'empty-name poll did not complete')
+  local marks, mark_ids = annotations(), annotation_ids()
+  check(contains(marks, '0:[~] ') and contains(marks, 'BUSY countdown=9s'),
+    'empty tracked row lost its live annotation before writing')
+  local timer, generation = M.timer, M.poll_generation
+  local tick, undo = vim.b[buf].changedtick, vim.fn.undotree()
+  local apply, tmux, calls = M.apply, M.tmux, 0
+  M.apply = function() calls = calls + 1; error('empty name reached apply') end
+  M.tmux = function() calls = calls + 1; error('empty name reached tmux') end
+  local write_ok, write_error = pcall(vim.cmd, 'write')
+  M.apply, M.tmux = apply, tmux
+  check(write_ok, 'empty-name write threw: ' .. tostring(write_error))
+  check(calls == 0 and M.last_apply_report == nil, 'empty-name write crossed apply boundary')
+  check(vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_get_current_buf() == buf and M.buf == buf
+      and vim.api.nvim_buf_get_name(buf) == 'tmux-oil://sessions'
+      and vim.bo[buf].buftype == 'acwrite' and vim.bo[buf].modified,
+    'empty-name write quit or changed the dirty editor buffer/URI/buftype')
+  check(vim.deep_equal(lines(), {'', 'beta'}) and vim.deep_equal(M.editor_ids(), ids)
+      and vim.b[buf].changedtick == tick and vim.deep_equal(vim.fn.undotree(), undo),
+    'empty-name write changed raw text, identity or undo state')
+  -- No wait/poll here: a rejected write must not blank the live display at all.
+  check(vim.deep_equal(marks, annotations()) and vim.deep_equal(mark_ids, annotation_ids()),
+    'empty-name write cleared live annotations before the next poll')
+  check(M.ui_active and M.timer == timer and M.poll_generation == generation
+      and not timer:is_closing(), 'empty-name write stopped or replaced active polling')
+  check(tostring(M.last_error):find('session names must be nonempty strings', 1, true)
+      and M.last_error:find('Diagnostic saved to:', 1, true)
+      and vim.fn.filereadable(M.last_error_path) == 1,
+    'empty-name write did not report a readable validation diagnostic')
+  check(vim.deep_equal(live, M.snapshot()), 'empty-name write mutated live sessions')
+  native('undo')
+  check(vim.deep_equal(lines(), before_lines) and vim.deep_equal(M.editor_ids(), ids),
+    'undo after empty-name write lost the original name/identity')
+end
 native('normal! ggA' .. string.rep('growing', 15) .. '\27')
 local growing = lines()[1]
 M.poll()
@@ -1379,6 +1419,7 @@ check(M.editor_intent().existing[deleted] == nil, 'redo delete lost identity his
 native('normal! Go\27')
 local blank_ok, blank_error = pcall(vim.cmd, "write")
 check(blank_ok, blank_error or "blank line was not ignored")
+local error_count = #vim.fn.glob(vim.env.TMUX_OIL_ERROR_DIR .. "/*.log", false, true)
 native('normal! Gobad:name\27')
 local write_ok, write_error = pcall(vim.cmd, "write")
 local helpful_error = tostring(M.last_error)
@@ -1390,8 +1431,8 @@ check(vim.api.nvim_buf_is_valid(M.buf) and vim.api.nvim_get_current_buf() == M.b
     and vim.bo[M.buf].modified,
   "failed save did not retain the dirty editor buffer")
 local error_files = vim.fn.glob(vim.env.TMUX_OIL_ERROR_DIR .. "/*.log", false, true)
-check(#error_files == 1, "failed save did not write exactly one diagnostic file")
-local saved_error = table.concat(vim.fn.readfile(error_files[1]), "\n")
+check(#error_files == error_count + 1, "failed save did not write exactly one diagnostic file")
+local saved_error = table.concat(vim.fn.readfile(M.last_error_path), "\n")
 check(saved_error:find("tmux%-oil save failure")
     and saved_error:find("plain line like: work", 1, true),
   "diagnostic file did not preserve the full save error")
@@ -1412,6 +1453,7 @@ for _, result in ipairs({
   "PASS unchanged poll preserves annotation extmark IDs",
   "PASS ticking metadata changes extmark without changing lines",
   "PASS ticking metadata leaves modified flag and undo history unchanged",
+  "PASS native empty tracked-name write preserves identity, dirty editor, annotations and polling",
   "PASS buffer reorder remaps stable-ID annotations",
   "PASS cleanup and resume repaint unchanged metadata",
   "PASS external topology change is visibly flagged but not merged",
@@ -1965,7 +2007,7 @@ if [ "${1-}" = apply ] && [ "$#" -eq 1 ]; then
 fi
 
 if [ "${1-}" != state ] || [ "$#" -ne 1 ]; then
-  printf 'usage: %s state|apply|reconcile CASE|order|ui|popup-open|current-cursor|all\n' "$0" >&2
+  printf 'usage: %s state|native|apply|reconcile CASE|order|ui|popup-open|current-cursor|all\n' "$0" >&2
   exit 2
 fi
 

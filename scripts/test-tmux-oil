@@ -1044,6 +1044,14 @@ local function annotations()
   table.sort(result)
   return result
 end
+local function annotation_ids()
+  local result = {}
+  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(M.buf, M.ns, 0, -1, {})) do
+    result[#result + 1] = mark[1]
+  end
+  table.sort(result)
+  return result
+end
 local function contains(values, needle)
   return table.concat(values, "\n"):find(needle, 1, true) ~= nil
 end
@@ -1105,10 +1113,21 @@ end)
 check(safe_rename, "x then rename produced an invalid JSON string")
 vim.api.nvim_buf_set_lines(M.buf, 0, 1, false, { original_line })
 vim.bo[M.buf].modified = false
+local restored_completed = M.completed_polls
+M.poll()
+wait_for(function() return M.completed_polls > restored_completed and M.poll_process == nil end,
+  "poll after name-edit test did not complete")
 local before_tick = vim.b.changedtick
 local before_modified = vim.bo[M.buf].modified
 local before_undo = vim.fn.undotree().seq_cur
 local before_marks = annotations()
+local before_mark_ids = annotation_ids()
+local unchanged_completed = M.completed_polls
+M.poll()
+wait_for(function() return M.completed_polls > unchanged_completed and M.poll_process == nil end,
+  "unchanged metadata poll did not complete")
+check(vim.deep_equal(before_mark_ids, annotation_ids()),
+  "unchanged poll recreated annotation extmarks")
 check(M.last_metadata[alpha]
     == '#[fg=yellow]BUSY#[default] countdown=9s ctx=10% cost=$1.00',
   "metadata was not matched by stable session ID")
@@ -1178,6 +1197,37 @@ check(contains(after_marks, "AGENT DONE countdown=8s ctx=11% cost=$1.25"),
 check(not contains(after_marks, "BUSY countdown=9s"), "old metadata extmark remained")
 check(before_tick == after_tick and before_modified == after_modified
   and before_undo == after_undo, "metadata tick changed edit or undo state")
+
+local reordered_lines = { before_lines[2], before_lines[1] }
+vim.api.nvim_buf_set_lines(M.buf, 0, -1, false, reordered_lines)
+completed = M.completed_polls
+M.poll()
+wait_for(function() return M.completed_polls > completed and M.poll_process == nil end,
+  "reordered unchanged metadata poll did not complete")
+local agent_done_row
+for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(M.buf, M.ns, 0, -1,
+  { details = true })) do
+  if M.annotation_text(mark[4]):find("AGENT DONE", 1, true) then
+    agent_done_row = mark[2] + 1
+  end
+end
+check(agent_done_row == 2 and lines()[agent_done_row]:find('\t"alpha"', 1, true),
+  "buffer reorder did not move stable-ID annotation with alpha")
+vim.api.nvim_buf_set_lines(M.buf, 0, -1, false, before_lines)
+vim.bo[M.buf].modified = false
+completed = M.completed_polls
+M.poll()
+wait_for(function() return M.completed_polls > completed and M.poll_process == nil end,
+  "restored buffer poll did not complete")
+local expected_after_resume = annotations()
+M.cleanup()
+check(#vim.api.nvim_buf_get_extmarks(M.buf, M.ns, 0, -1, {}) == 0,
+  "cleanup did not clear live annotations")
+M.resume_polling()
+wait_for(function() return M.completed_polls >= 1 and M.poll_process == nil end,
+  "poll after cleanup/resume did not complete")
+check(vim.deep_equal(expected_after_resume, annotations()),
+  "resume did not repaint unchanged metadata")
 
 control({ "new-session", "-d", "-s", "external-created", "sleep 120" })
 local topology_lines = lines()
@@ -1252,8 +1302,11 @@ for _, result in ipairs({
   "PASS daily Nvim config sentinel did not load",
   "PASS statusline is removed",
   "PASS first poll creates stable-ID-matched virtual text",
+  "PASS unchanged poll preserves annotation extmark IDs",
   "PASS ticking metadata changes extmark without changing lines",
   "PASS ticking metadata leaves modified flag and undo history unchanged",
+  "PASS buffer reorder remaps stable-ID annotations",
+  "PASS cleanup and resume repaint unchanged metadata",
   "PASS external topology change is visibly flagged but not merged",
   "PASS overlapping polls are suppressed or coalesced",
   "PASS :wq stops timer and in-flight poll before final reread",

@@ -1045,6 +1045,9 @@ local function annotate(live, metadata)
   M.last_live, M.last_metadata = live, metadata
 end
 
+local last_successful_raw
+local last_successful_changedtick
+
 function M.poll()
   if not M.ui_active then return end
   if M.poll_process then
@@ -1066,8 +1069,19 @@ function M.poll()
     M.poll_process = nil
     M.completed_polls = (M.completed_polls or 0) + 1
     if result.code == 0 then
-      local ok, live, metadata = pcall(parse_live, result.stdout or "")
-      if ok then annotate(live, metadata) else M.last_poll_error = tostring(live) end
+      local output = result.stdout or ""
+      local changedtick = vim.b[M.buf].changedtick
+      if output ~= last_successful_raw or changedtick ~= last_successful_changedtick then
+        local ok, err = pcall(function()
+          local live, metadata = parse_live(output)
+          annotate(live, metadata)
+        end)
+        if ok then
+          last_successful_raw, last_successful_changedtick = output, changedtick
+        else
+          M.last_poll_error = tostring(err)
+        end
+      end
     else
       M.last_poll_error = (result.stderr or "tmux metadata query failed"):gsub("%s+$", "")
     end
@@ -1095,6 +1109,7 @@ function M.stop_polling()
 end
 
 function M.resume_polling()
+  last_successful_raw, last_successful_changedtick = nil, nil
   if not M.buf or not vim.api.nvim_buf_is_valid(M.buf) then return end
   M.ui_active = true
   M.poll_generation = (M.poll_generation or 0) + 1

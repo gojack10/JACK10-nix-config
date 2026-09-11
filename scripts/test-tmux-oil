@@ -9,6 +9,163 @@ export PATCHED_TMUX_BIN
 PATH=$(dirname "$PATCHED_TMUX_BIN"):$PATH
 export PATH
 
+run_native_case() {
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/tmux-oil-native.XXXXXX")
+  trap 'rm -rf "$tmp"' EXIT
+  awk '/^# __TMUX_OIL_LUA_BEGIN__$/ { emit=1; next } /^# __TMUX_OIL_LUA_END__$/ { exit } emit' scripts/tmux-oil >"$tmp/init.lua"
+  cat >"$tmp/native.lua" <<'LUA'
+local M = assert(_G.tmux_oil)
+local initial = M.parse_snapshot('$1\talpha\n$2\tbeta\n$3\tgamma')
+M.snapshot = function() return vim.deepcopy(initial) end
+M.tmux = function(args)
+  assert(args[1] == 'display-message', 'native test must not call tmux')
+  return '$1'
+end
+M.resume_polling = function() end
+M.start()
+local function lines() return vim.api.nvim_buf_get_lines(M.buf, 0, -1, false) end
+local function command(cmd)
+  vim.cmd(cmd)
+  -- End the native undo block without clearing history (like returning to the
+  -- input loop); otherwise separate Lua-driven commands can be undo-joined.
+  vim.cmd('let &ul=&ul')
+end
+local function ids(expected, label)
+  local ok, got = pcall(M.editor_ids)
+  assert(ok, (label or '') .. ': ' .. tostring(got))
+  assert(vim.deep_equal(got, expected), (label or '') .. ': ' .. vim.inspect(got))
+end
+local function root() command('undo 0'); ids({'$1','$2','$3'}, 'root') end
+local function rejects(label)
+  local ok, err = pcall(M.editor_intent)
+  assert(not ok, label .. ' was accepted')
+  io.stdout:write('REJECT ' .. label .. ': ' .. tostring(err) .. '\n')
+end
+assert(vim.deep_equal(lines(), {'alpha','beta','gamma'}), 'raw initial lines')
+for _, key in ipairs({'h','l','x','A','I','v','p','u','<C-r>','<LeftDrag>'}) do
+  assert(vim.fn.maparg(key, 'n') == '', 'native key remapped: ' .. key)
+end
+command('normal! gg0lxA-tail\27')
+ids({'$1','$2','$3'}, 'x/A rename')
+assert(lines()[1] == 'apha-tail')
+command('normal! Ipre-\27')
+ids({'$1','$2','$3'}, 'I rename')
+command('normal! 0D')
+ids({'$1','$2','$3'}, 'empty tracked row')
+rejects('empty tracked row')
+command('normal! irestored\27')
+assert(M.editor_intent().existing['$1'] == 'restored')
+root()
+command('normal! ggddp')
+ids({'$2','$1','$3'}, 'ddp')
+command('undo'); ids({'$1','$2','$3'}, 'undo ddp')
+command('redo'); ids({'$2','$1','$3'}, 'redo ddp')
+root()
+command('normal! ggdd'); ids({'$2','$3'}, 'dd')
+command('normal! p'); ids({'$2','$1','$3'}, 'p')
+command('undo'); ids({'$2','$3'}, 'undo put')
+command('undo'); ids({'$1','$2','$3'}, 'undo cut')
+command('redo'); command('redo'); ids({'$2','$1','$3'}, 'redo cut/put')
+root()
+command('normal! ggccbeta\27')
+ids({'$1','$2','$3'}, 'temporary duplicate names')
+rejects('duplicate final names')
+command('normal! jccalpha\27')
+ids({'$1','$2','$3'}, 'cc swap')
+local rename_seq = vim.fn.undotree().seq_cur
+local same_text = lines()
+root()
+command('1move 2'); ids({'$2','$1','$3'}, ':move')
+local move_seq = vim.fn.undotree().seq_cur
+assert(vim.deep_equal(lines(), same_text), 'branch witness text differs')
+command('undo ' .. rename_seq); ids({'$1','$2','$3'}, 'rename branch')
+command('undo ' .. move_seq); ids({'$2','$1','$3'}, 'move branch')
+command('normal! uAx\27'); ids({'$1','$2','$3'}, 'undo/new edit without scheduling')
+root()
+vim.fn.setreg('q', 'ddp', 'v')
+command('normal! gg@q'); ids({'$2','$1','$3'}, 'macro ddp')
+root()
+command('normal! gg0rZ'); command('normal! j.'); ids({'$1','$2','$3'}, 'dot rename')
+root()
+command('normal! gg0li\8\27'); ids({'$1','$2','$3'}, 'insert backspace')
+root()
+command('normal! gg"add'); command('normal! "ap'); ids({'$2','$1','$3'}, 'named cut/put')
+root()
+command('normal! gg"add')
+vim.api.nvim_feedkeys(':put a\r', 'xt', false)
+command('let &ul=&ul'); ids({'$2','$1','$3'}, 'interactive :put a')
+root()
+command('normal! gg3dd'); ids({'+'}, 'cut all rows')
+command('normal! p'); ids({'+','$1','$2','$3'}, 'put into synthetic empty buffer')
+assert(#M.editor_intent().order == 3, 'synthetic blank became a session')
+root()
+command('normal! gg2ddp'); ids({'$3','$1','$2'}, 'counted cut/put')
+root()
+command('normal! ggdd'); command('normal! .'); ids({'$3'}, 'dot delete')
+command('normal! "2p'); ids({'$3','$1'}, 'numbered cut provenance')
+root()
+command('normal! gg"add'); command('normal! ccalpha\27'); command('normal! "bdd')
+command('normal! "ap'); command('normal! "bp')
+ids({'$3','$1','$2'}, 'two detached IDs with identical names use register provenance')
+rejects('duplicate names after attributable puts')
+command('normal! ccbeta\27'); assert(M.editor_intent().existing['$2'] == 'beta')
+root()
+command('normal! ggyyp'); ids({'$1','+','$2','$3'}, 'copy of live row is new')
+command('normal! cccopy\27'); assert(M.editor_intent().new[1] == 'copy')
+root()
+command('normal! ggdd'); command('normal! oalpha\27')
+ids({'$2','+','$3'}, 'typed row is new, not matched to tombstone')
+root()
+command('%s/alpha\\|beta/\\={"alpha":"beta","beta":"alpha"}[submatch(0)]/')
+ids({'$1','$2','$3'}, 'substitution swap')
+root()
+command('1,2sort!'); rejects('sort without identity provenance')
+root()
+vim.fn.setreg('z', {'alpha'}, 'V')
+command('normal! "zp'); rejects('unobserved linewise register')
+root()
+command('normal! ggJ'); rejects('join')
+local calls = 0
+M.apply = function() calls = calls + 1; error('must not apply ambiguous identity') end
+local notify = vim.notify
+vim.notify = function() end
+local saved = M.save()
+vim.notify = notify
+assert(not saved and calls == 0, 'ambiguous save crossed apply boundary')
+root()
+command('normal! gg0li\r\27'); rejects('split')
+root()
+command('%!tail -r'); rejects('opaque filter')
+root()
+vim.api.nvim_buf_set_lines(M.buf, 0, -1, false, {'beta','alpha','gamma'})
+rejects('opaque API replacement')
+root()
+command('normal! ggV'); assert(vim.fn.mode() == 'V'); command('normal! \27')
+command('normal! v'); assert(vim.fn.mode() == 'v', 'v is not characterwise'); command('normal! \27')
+command('normal! Gdd'); ids({'$1','$2'}, 'delete last row')
+command('normal! ggdd'); ids({'$2'}, 'delete penultimate row')
+command('normal! dd'); ids({'+'}, 'delete sole row synthetic empty')
+assert(#M.editor_intent().order == 0, 'synthetic empty is not deletion')
+root()
+command('normal! ggddp')
+vim.bo.undolevels = 0
+command('normal! ggccchanged\27'); rejects('pruned undo history')
+vim.bo.undolevels = 1000
+assert(M.accept_live()); ids({'$1','$2','$3'}, 'accept live after lost history')
+command('normal! ggA-changed\27')
+local undofile = vim.env.TMUX_OIL_ERROR_DIR .. '/history.undo'
+command('wundo! ' .. vim.fn.fnameescape(undofile))
+vim.api.nvim_feedkeys(':rundo ' .. vim.fn.fnameescape(undofile) .. '\r', 'xt', false)
+rejects('interactive imported undo history')
+assert(M.accept_live()); ids({'$1','$2','$3'}, 'accept live after imported history')
+command('normal! ggx'); ids({'$1','$2','$3'}, 'edit after accepting live')
+io.stdout:write('PASS native raw-name editing, provenance, branches, ambiguity and undo\n')
+LUA
+  TMUX_OIL_TMUX_BIN=tmux TMUX_OIL_SOCKET="$tmp/no-server" TMUX_OIL_PERSISTENT_ORDER=1 \
+    TMUX_OIL_TEST_LUA="$tmp/native.lua" TMUX_OIL_ERROR_DIR="$tmp/errors" \
+    nvim --clean -u NONE -i NONE --headless --cmd "lua dofile('$tmp/init.lua')"
+}
+
 run_apply_case() {
   scenario=$1
   TMUX_BIN=$(command -v tmux)
@@ -408,49 +565,40 @@ end
 local function lines()
   return vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)
 end
-local function row_for(id, values)
-  for row, line in ipairs(values or lines()) do
-    if line:sub(1, #id + 1) == id .. "\t" then return row end
-  end
+local function native(cmd)
+  vim.cmd(cmd)
+  vim.cmd('let &ul=&ul')
+end
+local function row_for(id)
+  for row, token in ipairs(M.editor_ids()) do if token == id then return row end end
 end
 local function replace_name(id, name)
-  local values = lines()
-  local row = row_for(id, values)
-  expect(row ~= nil, "buffer lost row for " .. id)
-  if row then
-    values[row] = id .. "\t" .. vim.json.encode(name)
-    vim.api.nvim_buf_set_lines(M.buf, 0, -1, false, values)
-  end
+  local row = assert(row_for(id), 'buffer lost ' .. id)
+  vim.api.nvim_win_set_cursor(0, { row, 0 })
+  native('normal! cc' .. name .. '\27')
 end
 local function delete_row(id)
-  local values = lines()
-  local row = row_for(id, values)
-  expect(row ~= nil, "buffer did not contain row for local deletion " .. id)
-  if row then
-    table.remove(values, row)
-    vim.api.nvim_buf_set_lines(M.buf, 0, -1, false, values)
-  end
+  local row = assert(row_for(id), 'buffer lost ' .. id)
+  vim.api.nvim_win_set_cursor(0, { row, 0 })
+  native('normal! dd')
 end
 local function reorder(ids)
-  local values, result = lines(), {}
-  for _, id in ipairs(ids) do
-    local row = row_for(id, values)
-    expect(row ~= nil, "buffer did not contain row for reorder " .. id)
-    if row then result[#result + 1] = values[row] end
+  local keep = {}
+  for _, id in ipairs(ids) do keep[id] = true end
+  for _, id in ipairs(M.editor_ids()) do if not keep[id] then delete_row(id) end end
+  for dest, id in ipairs(ids) do
+    local row = assert(row_for(id))
+    if row ~= dest then
+      native(row .. 'move ' .. (dest - 1))
+      M.editor_ids() -- settle native move-region before the next Ex command
+    end
   end
-  if #result == #ids then vim.api.nvim_buf_set_lines(M.buf, 0, -1, false, result) end
 end
 local function has_row(id, name)
   local row = row_for(id)
-  return row ~= nil and lines()[row] == id .. "\t" .. vim.json.encode(name)
+  return row ~= nil and lines()[row] == name
 end
-local function ids_in_buffer()
-  local result = {}
-  for _, line in ipairs(lines()) do
-    result[#result + 1] = line:match("^(%$%d+)\t") or line
-  end
-  return result
-end
+local function ids_in_buffer() return M.editor_ids() end
 local function names_in_order(state)
   local result = {}
   for _, id in ipairs(state.order) do result[#result + 1] = state.by_id[id] end
@@ -492,22 +640,18 @@ end
 local before_lines = lines()
 
 if scenario == "adjacent-new" then
-  vim.api.nvim_buf_set_lines(M.buf, -1, -1, false, {
-    '+\t"new-one"', '+\t"new-two"',
-  })
+  native('normal! Gonew-one\27onew-two\27')
   local ok, result = save()
   expect(ok, "adjacent local new rows were rejected: " .. first_line(result))
   if ok then expect_names(M.snapshot(), { "alpha", "beta", "new-one", "new-two" },
     "adjacent local new rows") end
 elseif scenario == "refresh-adjacent-new" then
-  vim.api.nvim_buf_set_lines(M.buf, -1, -1, false, {
-    '+\t"new-one"', '+\t"new-two"',
-  })
+  native('normal! Gonew-one\27onew-two\27')
   local ok, result = M.refresh()
   local refreshed = lines()
   expect(ok, "refresh rejected adjacent local new rows: " .. first_line(result))
-  expect(vim.bo[M.buf].modified and refreshed[#refreshed - 1] == '+\t"new-one"'
-    and refreshed[#refreshed] == '+\t"new-two"',
+  expect(vim.bo[M.buf].modified and refreshed[#refreshed - 1] == 'new-one'
+    and refreshed[#refreshed] == 'new-two',
     "refresh did not retain adjacent new rows")
 elseif scenario == "parent-tree-raw-reorder" then
   control({ "move-session", "-b", "-s", id_named(baseline, "delta"), "-t", beta })
@@ -571,12 +715,10 @@ elseif scenario == "parent-change-local-reorder" then
       "local reorder did not produce the intended raw order")
   end
 elseif scenario == "partial-create-recovery" then
-  local values = {}
-  for index = #baseline.order, 1, -1 do
-    values[#values + 1] = lines()[index]
-  end
-  values[#values + 1] = '+\t"created-once"'
-  vim.api.nvim_buf_set_lines(M.buf, 0, -1, false, values)
+  local reversed = {}
+  for index = #baseline.order, 1, -1 do reversed[#reversed + 1] = baseline.order[index] end
+  reorder(reversed)
+  native('normal! Gocreated-once\27')
   local injected = false
   M.test_before_command = function(index, operation)
     if index == 2 and not injected then
@@ -1079,39 +1221,26 @@ wait_for(function() return M.completed_polls >= 1 and M.poll_process == nil end,
   "first metadata poll did not complete")
 local alpha = id_named("alpha")
 local before_lines = lines()
-check(vim.fn.maparg("A", "n") ~= "", "A did not map to the JSON-safe name appender")
-local original_line = before_lines[1]
-vim.api.nvim_win_set_cursor(0, { 1, 0 })
-M.append_name()
-local insert_col = vim.api.nvim_win_get_cursor(0)[2]
-check(insert_col == #original_line - 1,
-  "A did not place the insert point before the concealed closing quote")
-vim.api.nvim_buf_set_text(M.buf, 0, insert_col, 0, insert_col, { "renamed" })
-local parsed_edit = pcall(function()
-  return M.parse_manifest(vim.api.nvim_get_current_line(), M.baseline)
-end)
-check(parsed_edit, "A-style editing produced an invalid JSON string")
-vim.api.nvim_buf_set_lines(M.buf, 0, 1, false, { original_line })
-vim.bo[M.buf].modified = false
-vim.cmd("stopinsert")
-
--- x must not eat the hidden JSON delimiters after the last name character.
-check(vim.fn.maparg("x", "n") ~= "", "x did not map to safe name deletion")
-local name_start = original_line:find("\t", 1, true) + 1
-vim.api.nvim_win_set_cursor(0, { 1, name_start })
-for _ = 1, #M.baseline.by_id[alpha] do vim.cmd("normal x") end
-local empty_name_line = vim.api.nvim_get_current_line()
-check(empty_name_line == alpha .. "\t\"\"", "x did not preserve empty JSON name delimiters")
-vim.cmd("normal x")
-check(vim.api.nvim_get_current_line() == empty_name_line,
-  "x deleted a JSON delimiter from an empty name")
-local empty_cursor = vim.api.nvim_win_get_cursor(0)
-vim.api.nvim_buf_set_text(M.buf, 0, empty_cursor[2], 0, empty_cursor[2], { "renamed" })
-local safe_rename = pcall(function()
-  return M.parse_manifest(vim.api.nvim_get_current_line(), M.baseline)
-end)
-check(safe_rename, "x then rename produced an invalid JSON string")
-vim.api.nvim_buf_set_lines(M.buf, 0, 1, false, { original_line })
+local function native(cmd)
+  vim.cmd(cmd)
+  vim.cmd('let &ul=&ul')
+end
+for _, key in ipairs({'h','l','x','A','v','<LeftDrag>'}) do
+  check(vim.fn.maparg(key, 'n') == '', 'native key was remapped: ' .. key)
+end
+check(vim.deep_equal(before_lines, {'alpha', 'beta'}), 'buffer contains encoded bookkeeping')
+native('normal! ggA' .. string.rep('growing', 15) .. '\27')
+local growing = lines()[1]
+M.poll()
+wait_for(function() return M.poll_process == nil end, 'growing name poll')
+for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(M.buf, M.ns, 0, -1, { details = true })) do
+  if mark[4].virt_text_win_col then
+    check(mark[4].virt_text_win_col >= vim.fn.strdisplaywidth('[~] ' .. growing) + 2,
+      'status overlay blocks growing names')
+  end
+end
+check(lines()[1] == growing and M.editor_ids()[1] == alpha, 'status changed growing name/identity')
+native('undo')
 vim.bo[M.buf].modified = false
 local restored_completed = M.completed_polls
 M.poll()
@@ -1135,50 +1264,12 @@ check(contains(before_marks, 'BUSY countdown=9s ctx=10% cost=$1.00')
     and not contains(before_marks, '#[fg='),
   "first poll did not render clean virtual text")
 
--- Issue: a highlight used to stop at the visible name instead of covering
--- the whole horizontal space. Drags (and v) must open line-wise selections.
-check(vim.fn.maparg("v", "n") == "V", "v did not map to a line-wise selection")
-check(vim.fn.maparg("<LeftDrag>", "n") ~= "", "left drag did not map to a line-wise handler")
-check(vim.fn.maparg("<LeftDrag>", "v") ~= "", "visual-mode drag did not map to a line-wise handler")
-vim.api.nvim_win_set_cursor(0, { 1, 0 })
-M.drag_linewise({ line = 1, column = 0 })
-check(vim.fn.mode() == "V", "drag did not open a line-wise selection")
-check(vim.api.nvim_win_get_cursor(0)[1] == 1, "drag did not anchor on the dragged row")
-M.drag_linewise({ line = 2, column = 0 })
-check(vim.api.nvim_win_get_cursor(0)[1] == 2, "drag did not extend onto the dragged row")
-local visual_marks = vim.api.nvim_buf_get_extmarks(M.buf, M.visual_ns, 0, -1, { details = true })
-check(#visual_marks == 2 and #vim.tbl_filter(function(mark)
-  return mark[4].line_hl_group == "Visual"
-end, visual_marks) == 2, "whole-line Visual paint did not cover exactly the selected rows")
-vim.cmd("normal! \27")
-M.refresh_visual_lines()
-check(#vim.api.nvim_buf_get_extmarks(M.buf, M.visual_ns, 0, -1, {}) == 0,
-  "whole-line paint did not clear when visual mode ended")
-vim.cmd("normal! \27")
-check(vim.fn.line("'<") == 1 and vim.fn.line("'>") == 2,
-  "line-wise selection did not span the dragged rows")
+check(vim.fn.maparg('<LeftDrag>', 'v') == '', 'visual mouse drag was remapped')
+native('normal! v')
+check(vim.fn.mode() == 'v', 'native characterwise Visual mode was changed')
+native('normal! \27')
 check(vim.b[M.buf].changedtick == before_tick and vim.bo[M.buf].modified == before_modified
-    and vim.fn.undotree().seq_cur == before_undo,
-  "selecting rows changed the buffer, modified flag, or undo history")
-vim.api.nvim_win_set_cursor(0, { 2, 0 })
-M.drag_linewise({ line = 9, column = 0 })
-check(vim.fn.mode() == "V" and vim.api.nvim_win_get_cursor(0)[1]
-    == vim.api.nvim_buf_line_count(M.buf), "drag past the last row did not clamp")
-vim.cmd("normal! \27")
-M.drag_linewise({ line = 0, column = 0 })
-check(vim.fn.mode() == "n", "drag outside the rows started a selection")
-M.drag_linewise(nil)
-check(vim.fn.mode() == "n", "drag without a mouse position started a selection")
-vim.api.nvim_win_set_cursor(0, { 2, 0 })
-vim.cmd("normal! v")
-vim.cmd("normal! j")
-M.drag_linewise({ line = 1, column = 0 })
-check(vim.fn.mode() == "V", "drag did not convert a running selection to line-wise")
-vim.cmd("normal! \27")
-check(vim.fn.line("'<") == 1 and vim.fn.line("'>") == 2,
-  "converted selection did not span the running rows")
-M.drag_linewise({ line = 2, column = 0 })
-vim.cmd("normal! \27")
+    and vim.fn.undotree().seq_cur == before_undo, 'visual mode changed edit history')
 
 control({ "set-option", "-t", alpha, "@pi_cache_session",
   "#[fg=green]AGENT DONE#[default] countdown=8s ctx=11% cost=$1.25" })
@@ -1198,8 +1289,7 @@ check(not contains(after_marks, "BUSY countdown=9s"), "old metadata extmark rema
 check(before_tick == after_tick and before_modified == after_modified
   and before_undo == after_undo, "metadata tick changed edit or undo state")
 
-local reordered_lines = { before_lines[2], before_lines[1] }
-vim.api.nvim_buf_set_lines(M.buf, 0, -1, false, reordered_lines)
+native('normal! ggddp')
 completed = M.completed_polls
 M.poll()
 wait_for(function() return M.completed_polls > completed and M.poll_process == nil end,
@@ -1211,9 +1301,9 @@ for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(M.buf, M.ns, 0, -1,
     agent_done_row = mark[2] + 1
   end
 end
-check(agent_done_row == 2 and lines()[agent_done_row]:find('\t"alpha"', 1, true),
+check(agent_done_row == 2 and lines()[agent_done_row] == 'alpha',
   "buffer reorder did not move stable-ID annotation with alpha")
-vim.api.nvim_buf_set_lines(M.buf, 0, -1, false, before_lines)
+native('undo')
 vim.bo[M.buf].modified = false
 completed = M.completed_polls
 M.poll()
@@ -1264,15 +1354,32 @@ check(vim.api.nvim_buf_is_valid(M.buf) and vim.api.nvim_get_current_buf() == M.b
   ":w did not keep the editor open and live")
 wait_for(function() return M.completed_polls >= 1 and M.poll_process == nil end,
   "poll after restart did not complete")
-vim.api.nvim_buf_set_lines(M.buf, -1, -1, false, { "created-by-plain-line" })
+native('normal! Gocreated-by-plain-line\27')
 local create_ok, create_error = pcall(vim.cmd, "write")
 check(create_ok, create_error or "plain-line create failed")
 check(vim.tbl_contains(vim.tbl_values(M.baseline.by_id), "created-by-plain-line"),
   "plain new line did not create a session")
-vim.api.nvim_buf_set_lines(M.buf, -1, -1, false, { "" })
+local created = id_named('created-by-plain-line')
+native('normal! GA-renamed\27')
+check(M.save(), 'native rename save failed')
+native('undo')
+check(M.editor_intent().existing[created] == 'created-by-plain-line',
+  'save cleared undo or lost acknowledged creation identity')
+check(M.save(), 'undo rename save failed')
+check(M.baseline.by_id[created] == 'created-by-plain-line', 'undo rename targeted wrong ID')
+local deleted = id_named('beta')
+native('normal! 2Gdd')
+check(M.save(), 'native deletion save failed')
+native('undo')
+local revived_ok, revived_error = pcall(M.editor_intent)
+check(not revived_ok and tostring(revived_error):find('no longer exists', 1, true),
+  'undo resurrected a killed session by name')
+native('redo')
+check(M.editor_intent().existing[deleted] == nil, 'redo delete lost identity history')
+native('normal! Go\27')
 local blank_ok, blank_error = pcall(vim.cmd, "write")
 check(blank_ok, blank_error or "blank line was not ignored")
-vim.api.nvim_buf_set_lines(M.buf, -1, -1, false, { "bad:name" })
+native('normal! Gobad:name\27')
 local write_ok, write_error = pcall(vim.cmd, "write")
 local helpful_error = tostring(M.last_error)
 check(write_ok, "failed save rethrew a BufWriteCmd error: " .. tostring(write_error))
@@ -1312,9 +1419,9 @@ for _, result in ipairs({
   "PASS :wq stops timer and in-flight poll before final reread",
   "PASS plain new line creates a session on save",
   "PASS blank lines are ignored on save",
-  "PASS validation error explains plain and encoded row forms",
+  "PASS validation error explains raw-name row editing",
   "PASS failed save remains open",
-  "PASS drag and v highlights cover the whole row",
+  "PASS v and mouse drag retain native behavior",
 }) do io.stdout:write(result .. "\n") end
 io.stdout:flush()
 LUA
@@ -1435,7 +1542,7 @@ check(marks:find("[orphan $999] ", 1, true) ~= nil,
   "missing parent did not render an orphan marker")
 check(not marks:find("#%[", 1), "style markup leaked into rendered text")
 for row, line in ipairs(vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)) do
-  check(line:match("^(%$%d+)\t\".*\"$") ~= nil,
+  check(line == baseline.by_id[baseline.order[row]],
     "tree rendering changed real buffer line " .. row)
 end
 
@@ -1533,13 +1640,12 @@ SH
     printf '%s\n' 'popup-open: alternate-screen entry was not captured' >&2
     return 1
   }
-  # A terminal expands the manifest TAB to spaces; require the complete visible row.
-  LC_ALL=C grep -Eq '\$[0-9]+[[:space:]]+"alpha"' "$capture" || {
-    printf '%s\n' 'popup-open: no rendered stable-ID manifest row was captured' >&2
+  LC_ALL=C grep -Fq 'alpha' "$capture" || {
+    printf '%s\n' 'popup-open: no rendered raw session name was captured' >&2
     return 1
   }
-  row_offset=$(LC_ALL=C grep -aboE '\$[0-9]+[[:space:]]+"alpha"' "$capture" \
-    | head -n 1 | cut -d: -f1)
+  # The attach statusline may mention alpha before the editor's first frame.
+  row_offset=$(LC_ALL=C grep -abo 'alpha' "$capture" | tail -n 1 | cut -d: -f1)
   dd if="$capture" of="$tmp/opening" bs=1 count="$row_offset" 2>/dev/null
   if LC_ALL=C grep -Fq "$(printf '\342\224')" "$tmp/opening"; then
     printf '%s\n' 'popup-open: popup border flash was captured' >&2
@@ -1589,7 +1695,7 @@ local cursor = vim.api.nvim_win_get_cursor(0)
 local line = vim.api.nvim_buf_get_lines(M.buf, cursor[1] - 1, cursor[1], false)[1]
 assert(current == M.baseline.order[2] and M.baseline.by_id[current] == "beta",
   "popup did not resolve the attached client's non-first session")
-assert(cursor[1] == 2 and line:sub(1, #current + 1) == current .. "\t",
+assert(cursor[1] == 2 and line == 'beta' and M.editor_ids()[2] == current,
   "cursor did not start on the current session row")
 local file = assert(io.open(assert(vim.env.TMUX_OIL_CURSOR_MARKER), "w"))
 file:write("context=" .. vim.env.TMUX_OIL_CURSOR_CONTEXT .. " current=" .. current
@@ -1629,7 +1735,7 @@ LUA
     set -e
     [ "$transport_status" -eq 0 ]
     test -s "$marker"
-    grep -q "^context=$context current=\\\$[0-9][0-9]* cursor_line=2 buffer_line=\\\$[0-9][0-9]*" "$marker"
+    grep -q "^context=$context current=\\\$[0-9][0-9]* cursor_line=2 buffer_line=beta$" "$marker"
     cat "$marker"
   }
 
@@ -1639,7 +1745,15 @@ LUA
     'PASS current-session cursor targets non-first row in outside attach and inside binding popups'
 }
 
+if [ "$#" -eq 0 ]; then set -- all; fi
+
+if [ "${1-}" = native ] && [ "$#" -eq 1 ]; then
+  run_native_case
+  exit
+fi
+
 if [ "${1-}" = all ] && [ "$#" -eq 1 ]; then
+  "$0" native
   "$0" state
   "$0" apply
   "$0" order

@@ -928,52 +928,253 @@ local function aligned_status(text, widths)
 end
 M.aligned_status = aligned_status
 
-local function refresh_presentation()
-  if not M.buf or not vim.api.nvim_buf_is_valid(M.buf) then return end
-  vim.api.nvim_buf_clear_namespace(M.buf, M.presentation_ns, 0, -1)
-  for row, line in ipairs(vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)) do
-    local existing_prefix = line:match("^%$%d+\t")
-    if existing_prefix and line:sub(#existing_prefix + 1, #existing_prefix + 1) == '"' then
-      existing_prefix = existing_prefix .. '"'
+-- Private row tokens, never buffer syntax. Text edits rename; linewise cuts/puts
+-- transport tokens; copies of a live token create a new session. History is keyed
+-- by undo branch sequence, NOT final text (rename swaps and moves can look alike).
+local identity
+local function undo_parent(seq, entries, parent)
+  for _, entry in ipairs(entries) do
+    if entry.seq == seq then return parent end
+    if entry.alt then
+      local found = undo_parent(seq, entry.alt, parent)
+      if found ~= nil then return found end
     end
-    if existing_prefix then
-      -- Keep manifest bookkeeping invisible even while a row is malformed.
-      vim.api.nvim_buf_set_extmark(M.buf, M.presentation_ns, row - 1, 0, {
-        end_col = #existing_prefix, conceal = "",
-      })
-    elseif line:sub(1, 3) == '+\t"' then
-      vim.api.nvim_buf_set_extmark(M.buf, M.presentation_ns, row - 1, 1, {
-        end_col = 3, conceal = " ",
-      })
-    end
-    if existing_prefix and line:sub(-1) == '"' then
-      vim.api.nvim_buf_set_extmark(M.buf, M.presentation_ns, row - 1, #line - 1, {
-        end_col = #line, conceal = "",
-      })
-    end
+    parent = entry.seq
   end
 end
 
-local function delete_name_char()
-  local row, col = unpack(vim.api.nvim_win_get_cursor(0))
-  local line = vim.api.nvim_get_current_line()
-  local tab = line:find("\t", 1, true)
-  if not line:match("^%$%d+\t") then
-    vim.cmd("normal! x")
-    return
+local function new_identity(buf, rows)
+  -- ponytail: full snapshots/anchors suit a small session list; prune and update
+  -- incrementally only if large lists or long-lived editors make this costly.
+  local a, f = vim.api, vim.fn
+  local I = { history = {}, bindings = {}, registers = {}, next_token = 0,
+    ns = a.nvim_create_namespace("tmux-oil-identity"), buf = buf }
+  local function text() return a.nvim_buf_get_lines(buf, 0, -1, false) end
+  local function token(id)
+    I.next_token = I.next_token + 1
+    I.bindings[I.next_token] = id
+    return I.next_token
   end
-  local name_start = tab + 1
-  local name_end = #line - 1
-  -- x may edit the visible name, never the hidden JSON delimiters.
-  if line:sub(tab + 1, tab + 1) ~= '"' or line:sub(-1) ~= '"'
-      or col < name_start or col >= name_end then
-    return
+  local function anchors(s)
+    a.nvim_buf_clear_namespace(buf, I.ns, 0, -1)
+    I.marks = {}
+    for row, t in ipairs(s.tokens) do
+      I.marks[t] = a.nvim_buf_set_extmark(buf, I.ns, row - 1, #s.lines[row], {
+        end_row = row, end_col = 0, strict = false, right_gravity = true,
+        end_right_gravity = false, invalidate = true, undo_restore = true,
+      })
+    end
   end
-  vim.cmd("normal! x")
-  local updated = vim.api.nvim_get_current_line()
-  vim.api.nvim_win_set_cursor(0, { row, math.min(col, #updated - 1) })
+  local function settle_move(s)
+    if not s.move then return end
+    local before, tokens, seen = s.move, {}, {}
+    -- Only native move-region transports every newline anchor intact. Filters,
+    -- sort and API replacements collapse/invalidate these anchors instead.
+    for row, t in ipairs(before.tokens) do
+      local mark = I.marks[t]
+        and a.nvim_buf_get_extmark_by_id(buf, I.ns, I.marks[t], { details = true }) or {}
+      local dest = mark[1] and mark[1] + 1
+      if not dest or mark[3].invalid or dest > #s.lines or seen[dest]
+          or before.lines[row] ~= s.lines[dest] then
+        s.bad = "ambiguous whole-row transformation; undo it or :TmuxOilAcceptLive"
+        s.move = nil
+        return
+      end
+      seen[dest], tokens[dest] = true, t
+    end
+    if #tokens ~= #s.lines or vim.deep_equal(tokens, before.tokens) then
+      s.bad = "ambiguous whole-row transformation; undo it or :TmuxOilAcceptLive"
+    else
+      s.tokens = tokens
+    end
+    s.move = nil
+  end
+  function I.current()
+    if I.fault then fail(I.fault) end
+    local s = I.history[f.undotree().seq_cur]
+    if not s or not vim.deep_equal(s.lines, text()) then
+      fail("identity history unavailable; undo to a known state or :TmuxOilAcceptLive")
+    end
+    settle_move(s)
+    anchors(s)
+    return s
+  end
+  function I.checked()
+    local s = I.current()
+    if s.bad then fail(s.bad) end
+    if #s.tokens ~= #s.lines then fail("identity row count mismatch; undo the edit") end
+    local seen = {}
+    for _, t in ipairs(s.tokens) do
+      if seen[t] then fail("ambiguous duplicate row identity; undo the put") end
+      seen[t] = true
+    end
+    return s
+  end
+  function I.ids()
+    local s, ids = I.checked(), {}
+    for row, t in ipairs(s.tokens) do ids[row] = I.bindings[t] or "+" end
+    return ids
+  end
+  local function guarded(callback)
+    return function(...)
+      if I.suspended then return end
+      local ok, err = pcall(callback, ...)
+      if not ok then I.fault = "identity observer failed: " .. tostring(err) end
+    end
+  end
+  local root_first
+  function I.replace(new_rows, initial)
+    local s = { lines = {}, tokens = {} }
+    local by_id = {}
+    for t, id in pairs(I.bindings) do by_id[id] = t end
+    for _, row in ipairs(new_rows) do
+      s.lines[#s.lines + 1] = row.name
+      s.tokens[#s.tokens + 1] = by_id[row.marker] or token(row.marker ~= "+" and row.marker or nil)
+    end
+    if #s.lines == 0 then s.lines, s.tokens = { "" }, { token() } end
+    if not initial then
+      local ok, old = pcall(I.current)
+      if ok and not old.bad and vim.deep_equal(old.lines, s.lines)
+          and vim.deep_equal(old.tokens, s.tokens) then return end
+    end
+    I.suspended = true
+    a.nvim_buf_set_lines(buf, 0, -1, false, s.lines)
+    I.suspended = false
+    local seq = f.undotree().seq_cur
+    if I.fault then
+      -- Accept-live after lost/imported history establishes a new known anchor;
+      -- old Neovim text undo remains usable, but has no trusted row snapshots.
+      I.history, I.root, root_first = {}, seq, nil
+    end
+    I.history[seq] = s
+    if I.root and seq == I.root + 1 then root_first = seq end
+    I.fault, I.put, I.bytes = nil, nil, nil
+    anchors(s)
+  end
+  I.replace(rows, true)
+  I.root = f.undotree().seq_cur
+  a.nvim_buf_attach(buf, false, {
+    on_bytes = guarded(function(_, _, _, _, _, _, oldrow, _, _, newrow)
+      if f.undotree().synced == 1 then I.bytes = nil; return end
+      I.bytes = I.bytes or oldrow > 0 or newrow > 0
+    end),
+    on_lines = guarded(function(_, _, _, first, last, newlast)
+      local tree = f.undotree()
+      -- 0.12 undo notifications carry the OLD seq_cur, including changedtick.
+      -- Forward edits are unsynced; restore traversal state only after it settles.
+      if tree.synced == 1 then I.bytes = nil; return end
+      local parent = undo_parent(tree.seq_cur, tree.entries, -1)
+      if parent == -1 then
+        if not root_first and tree.seq_cur == I.root + 1 then root_first = tree.seq_cur end
+        if root_first and undo_parent(root_first, tree.entries, -1) == -1 then parent = I.root end
+      end
+      local base = I.history[tree.seq_cur] or I.history[parent]
+      if not base then error("missing undo ancestry (history was replaced/pruned)") end
+      local s, now = vim.deepcopy(base), text()
+      local oldcount, newcount = last - first, newlast - first
+      local inserted = {}
+      if f.eval('&undolevels') < 1 then s.bad = "identity needs undo history; restore undolevels and accept live" end
+      if oldcount == newcount and not I.bytes then
+        for i = first + 1, last do inserted[#inserted + 1] = s.tokens[i] end
+      elseif newcount == 0 then
+        -- A removed line is deletion; an emptied line above retains its token.
+      elseif oldcount == 0 and I.put then
+        local put, live = I.put, {}
+        for _, t in ipairs(s.tokens) do live[t] = true end
+        if newcount % #put.contents ~= 0 then s.bad = "ambiguous put size; undo it" end
+        for i = 1, newcount do
+          if now[first + i] ~= put.contents[(i - 1) % #put.contents + 1] then
+            s.bad = "ambiguous put contents; undo it"
+          end
+          local source = put.tokens and put.tokens[(i - 1) % #put.tokens + 1]
+          if not source and not put.new then
+            s.bad = "ambiguous linewise put: register has no row provenance; undo it"
+          end
+          local t = source and not live[source] and source or token()
+          inserted[i], live[t] = t, true
+        end
+        I.put = nil
+      elseif oldcount == 0 and newcount == 1 and now[first + 1] == "" then
+        inserted[1] = token()
+      else
+        -- Keep an unresolved transaction until native move-region has adjusted
+        -- extmarks. Never infer its permutation from names alone.
+        s.move = s.move or vim.deepcopy(base)
+        for _ = 1, newcount do inserted[#inserted + 1] = token() end
+      end
+      local tokens = {}
+      for i = 1, first do tokens[#tokens + 1] = s.tokens[i] end
+      vim.list_extend(tokens, inserted)
+      for i = last + 1, #s.tokens do tokens[#tokens + 1] = s.tokens[i] end
+      if #tokens == 0 and #now == 1 and now[1] == "" then tokens = { token() } end
+      s.lines, s.tokens = now, tokens
+      I.history[tree.seq_cur] = s
+      I.bytes = nil
+    end),
+    on_reload = function() I.fault = "identity history reloaded; :TmuxOilAcceptLive required" end,
+  })
+  local group = a.nvim_create_augroup("tmux_oil_identity", { clear = true })
+  a.nvim_create_autocmd("TextYankPost", { group = group, callback = guarded(function()
+    local e = vim.v.event
+    local reg = e.regname ~= "" and e.regname or '"'
+    local info = f.getreginfo(reg)
+    local capture = { contents = vim.deepcopy(info.regcontents), type = info.regtype,
+      new = (a.nvim_get_current_buf() ~= buf or e.operator == "c") and not reg:match("%u") }
+    if a.nvim_get_current_buf() == buf and e.regtype == "V" and e.operator ~= "c"
+        and not reg:match("%u") then
+      local s = I.current()
+      if not s.bad then
+        capture.tokens = {}
+        local first = f.getpos("'[")[2]
+        for i = 1, #e.regcontents do capture.tokens[i] = s.tokens[first + i - 1] end
+      end
+    end
+    if e.operator == "d" or e.operator == "c" then
+      if e.regtype == "V" then
+        for i = 9, 2, -1 do I.registers[tostring(i)] = I.registers[tostring(i - 1)] end
+        I.registers['1'] = capture
+      else
+        -- Some character motions force register 1 and others use '-'; the
+        -- event does not expose use_reg_one. Do not guess numbered lineage.
+        for i = 1, 9 do I.registers[tostring(i)] = nil end
+      end
+    end
+    I.registers[reg:lower()] = capture
+    local unnamed = f.getreginfo('"').points_to
+    if unnamed then I.registers[unnamed] = capture end
+    I.registers['"'] = capture
+  end) })
+  local function observe_put(reg)
+    local info, saved = f.getreginfo(reg), I.registers[reg]
+    if info.regtype == "V" then
+      I.put = { contents = vim.deepcopy(info.regcontents) }
+      -- ponytail: registers have no generation counter. Equal-text setreg()
+      -- retains observed provenance; cooperating API callers must supply intent.
+      if saved and saved.type == info.regtype and vim.deep_equal(saved.contents, info.regcontents) then
+        I.put.tokens, I.put.new = saved.tokens, saved.new
+      end
+    end
+  end
+  vim.on_key(guarded(function(key)
+    if a.nvim_get_current_buf() ~= buf then return end
+    pcall(I.current)
+    I.put, I.bytes = nil, nil
+    if (key == "p" or key == "P") and f.mode(1) == "n" then observe_put(vim.v.register) end
+    -- Observer only: no returned string, feedkeys, normal command or mapping.
+  end), I.ns)
+  a.nvim_create_autocmd("CmdlineLeave", { group = group, callback = guarded(function()
+    if a.nvim_get_current_buf() ~= buf or f.getcmdtype() ~= ":" or vim.v.event.abort then return end
+    local ok, cmd = pcall(a.nvim_parse_cmd, f.getcmdline(), {})
+    if ok and cmd.cmd == "rundo" then
+      I.fault = "undo history imported without row identity; :TmuxOilAcceptLive required"
+    elseif ok and cmd.cmd == "put" and cmd.nextcmd == "" then
+      observe_put(cmd.args[1] or '"')
+    end
+  end) })
+  return I
 end
-M.delete_name_char = delete_name_char
+
+function M.editor_ids() return identity.ids() end
 
 local function annotate(live, metadata)
   if not M.ui_active or not vim.api.nvim_buf_is_valid(M.buf) then return end
@@ -988,9 +1189,14 @@ local function annotate(live, metadata)
       end
     end
   end
-  local lines = vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)
-  for row, line in ipairs(lines) do
-    local id = line:match("^(%$%d+)\t")
+  local ok, ids = pcall(M.editor_ids)
+  if not ok then
+    vim.api.nvim_buf_set_extmark(M.buf, M.ns, 0, 0, {
+      virt_lines = { { { "⚠ " .. tostring(ids), "TmuxOilYellow" } } }, virt_lines_above = true,
+    })
+    return
+  end
+  for row, id in ipairs(ids) do
     if id and M.baseline.by_id[id] then
       local text, group = metadata[id] or "", "Comment"
       local marker, marker_group = "[ ] ", "TmuxOilMeta"
@@ -1025,7 +1231,7 @@ local function annotate(live, metadata)
           chunks = { { text:gsub("#%[[^%]]*%]", ""), group } }
         end
         vim.api.nvim_buf_set_extmark(M.buf, M.ns, row - 1, 0, {
-          virt_text = chunks, virt_text_win_col = M.status_col, hl_mode = "combine",
+          virt_text = chunks, virt_text_pos = "eol", hl_mode = "combine",
         })
       end
     end
@@ -1126,33 +1332,25 @@ function M.cleanup()
 end
 
 local manifest_help = 'To create a session, add a plain line like: work\n'
-  .. 'Encoded form: +<TAB>"work"; existing rows: $N<TAB>"name".'
+  .. 'Edit names to rename; dd/p moves rows. Empty existing names must be filled, not deleted.'
 
 local function editor_manifest(lines)
-  local encoded = {}
-  for _, line in ipairs(lines) do
-    if line ~= "" then
-      if line:find("\t", 1, true) then
-        encoded[#encoded + 1] = line
-      else
-        encoded[#encoded + 1] = "+\t" .. vim.json.encode(validate_name(line))
+  local ids, encoded = identity.ids(), {}
+  for row, line in ipairs(lines) do
+    local id = ids[row]
+    if not id then fail("missing row identity") end
+    if id ~= "+" or line ~= "" then
+      if id ~= "+" and not M.baseline.by_id[id] then
+        fail("session " .. id .. " no longer exists in the saved baseline; undo cannot restore killed processes")
       end
+      encoded[#encoded + 1] = id .. "\t" .. vim.json.encode(validate_name(line))
     end
   end
   return table.concat(encoded, "\n")
 end
 
-function M.append_name()
-  local row = vim.api.nvim_win_get_cursor(0)[1]
-  local line = vim.api.nvim_get_current_line()
-  if line:match("^%$%d+\t\"") and line:sub(-1) == '"' then
-    -- The closing quote is concealed, so normal A would append outside the
-    -- JSON string. Start inserting immediately before that quote instead.
-    vim.api.nvim_win_set_cursor(0, { row, #line - 1 })
-    vim.cmd("startinsert")
-  else
-    vim.cmd("normal! A")
-  end
+function M.editor_intent()
+  return M.parse_manifest(editor_manifest(vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)), M.baseline)
 end
 
 local function save_error(message)
@@ -1179,16 +1377,6 @@ local function save_error(message)
   if ok then return path end
   return nil, tostring(err)
 end
-
-local function render_intent(intent, display)
-  local lines = {}
-  local rows = display and intent.display_order or intent.order
-  for _, row in ipairs(rows) do
-    lines[#lines + 1] = row.marker .. "\t" .. vim.json.encode(row.name)
-  end
-  return lines
-end
-M.render_intent = render_intent
 
 local function intent_with_created_ids(intent, created_ids)
   local result = vim.deepcopy(intent)
@@ -1362,9 +1550,19 @@ function M.save()
     end
     return save_failure(result)
   end
+  M.recovered_creates = M.pending_recovery and M.pending_recovery.created_ids
   M.pending_recovery = nil
   if result.warning then
     vim.notify(result.warning, vim.log.levels.WARN, { title = "tmux-oil ordering skipped" })
+  end
+  -- Creation acknowledgement binds the private token in every undo branch.
+  -- Never resurrect a killed ID by matching its old name to a live session.
+  local state = identity.checked()
+  for row, token in ipairs(state.tokens) do
+    if not identity.bindings[token] then
+      identity.bindings[token] = (result.created_ids or {})[state.lines[row]]
+        or (M.recovered_creates or {})[state.lines[row]]
+    end
   end
   vim.bo[M.buf].modified = false
   M.start()
@@ -1399,7 +1597,7 @@ function M.refresh()
     local live = M.snapshot()
     local reconciled, conflict = M.reconcile(base, refresh_intent, live)
     if not reconciled then fail(conflict .. "\nedit the conflicting row or use :TmuxOilAcceptLive") end
-    vim.api.nvim_buf_set_lines(M.buf, 0, -1, false, render_intent(reconciled, true))
+    identity.replace(reconciled.display_order or reconciled.order)
     M.baseline = live
     vim.bo[M.buf].modified = not intent_matches_state(reconciled, live)
     M.pending_recovery = nil
@@ -1430,46 +1628,9 @@ function M.accept_live()
   return true
 end
 
--- Session rows are whole lines. Route mouse drags and plain v through
--- line-wise Visual mode for row operations; refresh_visual_lines supplies
--- the screen-width paint that Neovim's built-in Visual range omits after EOL.
-local function refresh_visual_lines()
-  vim.api.nvim_buf_clear_namespace(M.buf, M.visual_ns, 0, -1)
-  if vim.fn.mode() ~= "V" then return end
-  local anchor = vim.fn.line("v")
-  local cursor = vim.api.nvim_win_get_cursor(0)[1]
-  for row = math.min(anchor, cursor), math.max(anchor, cursor) do
-    vim.api.nvim_buf_set_extmark(M.buf, M.visual_ns, row - 1, 0, {
-      line_hl_group = "Visual",
-    })
-  end
-end
-M.refresh_visual_lines = refresh_visual_lines
-
-local function drag_linewise(pos)
-  if pos == nil then pos = vim.fn.getmousepos() end
-  local row = tonumber(pos and pos.line)
-  if row == nil or row < 1 then return end
-  local last = vim.api.nvim_buf_line_count(M.buf)
-  if row > last then row = last end
-  local mode = vim.fn.mode()
-  if mode == "V" then
-    vim.api.nvim_win_set_cursor(0, { row, 0 })
-  elseif mode == "n" then
-    vim.cmd("normal! V")
-    vim.api.nvim_win_set_cursor(0, { row, 0 })
-  else
-    vim.cmd("normal! V")
-    vim.api.nvim_win_set_cursor(0, { row, 0 })
-  end
-  refresh_visual_lines()
-end
-M.drag_linewise = drag_linewise
-
 function M.jump()
-  local line = vim.api.nvim_get_current_line()
-  local id = line:match("^(%$%d+)\t")
-  if not id then fail("place the cursor on an existing session to jump") end
+  local id = identity.ids()[vim.api.nvim_win_get_cursor(0)[1]]
+  if not id or not M.baseline.by_id[id] then fail("place the cursor on an existing session to jump") end
   if vim.bo[M.buf].modified then
     fail("buffer has unsaved changes - :wq to apply or abandon before jumping")
   end
@@ -1482,13 +1643,19 @@ function M.start()
   M.buf = vim.api.nvim_get_current_buf()
   M.baseline = M.snapshot()
   M.ns = M.ns or vim.api.nvim_create_namespace("tmux-oil-live")
-  M.presentation_ns = M.presentation_ns
-    or vim.api.nvim_create_namespace("tmux-oil-presentation")
-  M.visual_ns = M.visual_ns or vim.api.nvim_create_namespace("tmux-oil-visual-lines")
+
   M.poll_generation = (M.poll_generation or 0) + 1
   M.started_polls, M.completed_polls, M.overlapping_polls = 0, 0, 0
-  vim.api.nvim_buf_set_lines(M.buf, 0, -1, false,
-    vim.split(M.render(M.baseline), "\n", { plain = true }))
+  local rows = {}
+  for _, id in ipairs(M.baseline.order) do rows[#rows + 1] = { marker = id, name = M.baseline.by_id[id] } end
+  if identity and identity.buf == M.buf then
+    identity.replace(rows)
+  else
+    local levels = vim.bo[M.buf].undolevels
+    vim.bo[M.buf].undolevels = -1
+    identity = new_identity(M.buf, rows)
+    vim.bo[M.buf].undolevels = levels
+  end
   vim.api.nvim_buf_set_name(M.buf, "tmux-oil://sessions")
   vim.bo[M.buf].buftype = "acwrite"
   vim.bo[M.buf].filetype = "tmux-oil"
@@ -1499,8 +1666,6 @@ function M.start()
   vim.wo.cursorline = true
   vim.wo.cursorlineopt = "line"
   vim.opt.laststatus = 0
-  vim.wo.conceallevel = 3
-  vim.wo.concealcursor = "nvic"
   vim.api.nvim_set_hl(0, "Normal", {
     bg = "#000000", fg = "#e4e4e4", ctermbg = 0, ctermfg = 7,
   })
@@ -1512,31 +1677,12 @@ function M.start()
   vim.api.nvim_set_hl(0, "TmuxOilGreen", { fg = "#5fff87", ctermfg = 10 })
   vim.api.nvim_set_hl(0, "TmuxOilYellow", { fg = "#ffff00", ctermfg = 11 })
   vim.api.nvim_set_hl(0, "TmuxOilRed", { fg = "#ff5f5f", ctermfg = 9 })
-  local longest = 0
-  for id, name in pairs(M.baseline.by_id) do
-    local prefix = M.baseline.tree_prefix_by_id[id] or ""
-    local parent_option = M.baseline.parent_option_by_id[id]
-    local orphan = parent_option and not M.baseline.parent_by_id[id]
-      and "[orphan " .. parent_option .. "] " or ""
-    longest = math.max(longest,
-      vim.fn.strdisplaywidth(prefix .. "[ ] " .. orphan .. name))
-  end
-  M.status_col = math.max(42, longest + 4)
-  refresh_presentation()
   local target_row, current = 1, current_session_id()
   for row, id in ipairs(M.baseline.order) do
     if id == current then target_row = row; break end
   end
-  local target = vim.api.nvim_buf_get_lines(M.buf, target_row - 1, target_row, false)[1]
-  local tab = target and target:find("\t", 1, true)
-  if tab then vim.api.nvim_win_set_cursor(0, { target_row, tab + 1 }) end
+  vim.api.nvim_win_set_cursor(0, { target_row, 0 })
   local group = vim.api.nvim_create_augroup("tmux_oil_private", { clear = true })
-  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
-    group = group, buffer = M.buf, callback = refresh_presentation,
-  })
-  vim.api.nvim_create_autocmd({ "ModeChanged", "CursorMoved" }, {
-    group = group, buffer = M.buf, callback = refresh_visual_lines,
-  })
   vim.api.nvim_create_autocmd("BufWriteCmd", {
     group = group, buffer = M.buf,
     callback = function()
@@ -1550,13 +1696,6 @@ function M.start()
   vim.keymap.set("n", "<CR>", M.jump, { buffer = M.buf, silent = true })
   vim.api.nvim_buf_create_user_command(M.buf, "TmuxOilRefresh", M.refresh, { force = true })
   vim.api.nvim_buf_create_user_command(M.buf, "TmuxOilAcceptLive", M.accept_live, { force = true })
-  vim.keymap.set("n", "A", M.append_name, { buffer = M.buf, silent = true })
-  vim.keymap.set("n", "x", delete_name_char, { buffer = M.buf, silent = true })
-  -- Highlights must cover the whole row: mouse drags select line-wise, and v
-  -- opens the same line-wise selection (char-wise stays reachable by pressing
-  -- v again inside the selection, or double-click for a word).
-  vim.keymap.set({ "n", "v" }, "<LeftDrag>", M.drag_linewise, { buffer = M.buf })
-  vim.keymap.set("n", "v", "V", { buffer = M.buf })
   M.resume_polling()
 end
 

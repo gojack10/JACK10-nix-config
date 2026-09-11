@@ -932,23 +932,48 @@ local function refresh_presentation()
   if not M.buf or not vim.api.nvim_buf_is_valid(M.buf) then return end
   vim.api.nvim_buf_clear_namespace(M.buf, M.presentation_ns, 0, -1)
   for row, line in ipairs(vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)) do
-    local tab = line:find('\t"', 1, true)
-    if tab and line:match("^%$%d+\t\"") then
+    local existing_prefix = line:match("^%$%d+\t")
+    if existing_prefix and line:sub(#existing_prefix + 1, #existing_prefix + 1) == '"' then
+      existing_prefix = existing_prefix .. '"'
+    end
+    if existing_prefix then
+      -- Keep manifest bookkeeping invisible even while a row is malformed.
       vim.api.nvim_buf_set_extmark(M.buf, M.presentation_ns, row - 1, 0, {
-        end_col = tab + 1, conceal = "",
+        end_col = #existing_prefix, conceal = "",
       })
     elseif line:sub(1, 3) == '+\t"' then
       vim.api.nvim_buf_set_extmark(M.buf, M.presentation_ns, row - 1, 1, {
         end_col = 3, conceal = " ",
       })
     end
-    if tab and line:sub(-1) == '"' then
+    if existing_prefix and line:sub(-1) == '"' then
       vim.api.nvim_buf_set_extmark(M.buf, M.presentation_ns, row - 1, #line - 1, {
         end_col = #line, conceal = "",
       })
     end
   end
 end
+
+local function delete_name_char()
+  local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+  local line = vim.api.nvim_get_current_line()
+  local tab = line:find("\t", 1, true)
+  if not line:match("^%$%d+\t") then
+    vim.cmd("normal! x")
+    return
+  end
+  local name_start = tab + 1
+  local name_end = #line - 1
+  -- x may edit the visible name, never the hidden JSON delimiters.
+  if line:sub(tab + 1, tab + 1) ~= '"' or line:sub(-1) ~= '"'
+      or col < name_start or col >= name_end then
+    return
+  end
+  vim.cmd("normal! x")
+  local updated = vim.api.nvim_get_current_line()
+  vim.api.nvim_win_set_cursor(0, { row, math.min(col, #updated - 1) })
+end
+M.delete_name_char = delete_name_char
 
 local function annotate(live, metadata)
   if not M.ui_active or not vim.api.nvim_buf_is_valid(M.buf) then return end
@@ -1511,6 +1536,7 @@ function M.start()
   vim.api.nvim_buf_create_user_command(M.buf, "TmuxOilRefresh", M.refresh, { force = true })
   vim.api.nvim_buf_create_user_command(M.buf, "TmuxOilAcceptLive", M.accept_live, { force = true })
   vim.keymap.set("n", "A", M.append_name, { buffer = M.buf, silent = true })
+  vim.keymap.set("n", "x", delete_name_char, { buffer = M.buf, silent = true })
   -- Highlights must cover the whole row: mouse drags select line-wise, and v
   -- opens the same line-wise selection (char-wise stays reachable by pressing
   -- v again inside the selection, or double-click for a word).

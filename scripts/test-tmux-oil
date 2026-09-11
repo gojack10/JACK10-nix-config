@@ -1086,6 +1086,25 @@ check(parsed_edit, "A-style editing produced an invalid JSON string")
 vim.api.nvim_buf_set_lines(M.buf, 0, 1, false, { original_line })
 vim.bo[M.buf].modified = false
 vim.cmd("stopinsert")
+
+-- x must not eat the hidden JSON delimiters after the last name character.
+check(vim.fn.maparg("x", "n") ~= "", "x did not map to safe name deletion")
+local name_start = original_line:find("\t", 1, true) + 1
+vim.api.nvim_win_set_cursor(0, { 1, name_start })
+for _ = 1, #M.baseline.by_id[alpha] do vim.cmd("normal x") end
+local empty_name_line = vim.api.nvim_get_current_line()
+check(empty_name_line == alpha .. "\t\"\"", "x did not preserve empty JSON name delimiters")
+vim.cmd("normal x")
+check(vim.api.nvim_get_current_line() == empty_name_line,
+  "x deleted a JSON delimiter from an empty name")
+local empty_cursor = vim.api.nvim_win_get_cursor(0)
+vim.api.nvim_buf_set_text(M.buf, 0, empty_cursor[2], 0, empty_cursor[2], { "renamed" })
+local safe_rename = pcall(function()
+  return M.parse_manifest(vim.api.nvim_get_current_line(), M.baseline)
+end)
+check(safe_rename, "x then rename produced an invalid JSON string")
+vim.api.nvim_buf_set_lines(M.buf, 0, 1, false, { original_line })
+vim.bo[M.buf].modified = false
 local before_tick = vim.b.changedtick
 local before_modified = vim.bo[M.buf].modified
 local before_undo = vim.fn.undotree().seq_cur

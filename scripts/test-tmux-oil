@@ -1494,9 +1494,9 @@ run_tree_case() {
   "$TMUX_BIN" -L "$socket" -f /dev/null set-option -t beta @pi_subagent_parent_id "$alpha_id"
   "$TMUX_BIN" -L "$socket" -f /dev/null set-option -t gamma @pi_subagent_parent_id '$999'
   "$TMUX_BIN" -L "$socket" -f /dev/null set-option -t alpha \
-    @pi_cache_session '#[fg=yellow]BUSY#[default] countdown=9s ctx=10% cost=$1.00'
+    @pi_cache_session '#[fg=yellow]BUSY界#[default]| ctx 10% | $1.00 | working'
   "$TMUX_BIN" -L "$socket" -f /dev/null set-option -t beta \
-    @pi_cache_session '#[fg=green]AGENT DONE#[default] countdown=8s ctx=11% cost=$1.25'
+    @pi_cache_session '#[fg=green]AGENT DONE#[default]| ctx 11% | $12.25 | done'
   socket_path=$("$TMUX_BIN" -L "$socket" -f /dev/null display-message -p '#{socket_path}')
   server_pid=$("$TMUX_BIN" -L "$socket" -f /dev/null display-message -p '#{pid}')
 
@@ -1546,24 +1546,143 @@ for row, line in ipairs(vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)) do
     "tree rendering changed real buffer line " .. row)
 end
 
+local function native(cmd)
+  vim.cmd(cmd)
+  vim.cmd('let &ul=&ul')
+end
+local function poll()
+  local before = { vim.api.nvim_buf_get_lines(M.buf, 0, -1, false),
+    vim.b[M.buf].changedtick, vim.bo[M.buf].modified, vim.fn.undotree() }
+  local completed = M.completed_polls
+  M.poll()
+  wait_for(function() return M.completed_polls > completed and M.poll_process == nil end,
+    'alignment metadata poll did not complete')
+  check(vim.deep_equal(before, { vim.api.nvim_buf_get_lines(M.buf, 0, -1, false),
+    vim.b[M.buf].changedtick, vim.bo[M.buf].modified, vim.fn.undotree() }),
+    'alignment poll changed buffer/modified/undo state')
+end
+local function alignment(label, leftcol)
+  local names = vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)
+  local labels, statuses, columns, max_width = {}, {}, {}, 0
+  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(M.buf, M.ns, 0, -1,
+    { details = true })) do
+    local details, row = mark[4], mark[2] + 1
+    if details.virt_text_pos == 'inline' then
+      labels[row] = M.annotation_text(details)
+    elseif details.virt_text then
+      check(details.virt_text_win_col ~= nil, label .. ': status has no aligned placement')
+      columns[row], statuses[row] = details.virt_text_win_col, M.annotation_text(details)
+    end
+  end
+  for row, name in ipairs(names) do
+    max_width = math.max(max_width, vim.fn.strdisplaywidth((labels[row] or '') .. name))
+  end
+  -- Read the actual attached headless UI grid, not just formatted strings.
+  vim.api.nvim_win_set_cursor(0, {leftcol and 2 or 1, leftcol or 0})
+  vim.fn.winrestview({ leftcol = leftcol or 0 })
+  vim.cmd('redraw!')
+  local expected, count = nil, 0
+  for row, name in ipairs(names) do
+    local rendered_bars = {}
+    for col = 1, vim.api.nvim_win_get_width(0) do
+      if vim.fn.screenstring(row, col) == '|' then rendered_bars[#rendered_bars + 1] = col end
+    end
+    if statuses[row] then
+      count = count + 1
+      check(columns[row] == max_width + 2, label .. ': status overlaps a name or starts unevenly')
+      local bars = {}
+      for pos in statuses[row]:gmatch('()|') do
+        bars[#bars + 1] = columns[row] + 1 + vim.fn.strdisplaywidth(statuses[row]:sub(1, pos - 1))
+      end
+      check(#bars == 3, label .. ': status separators missing')
+      expected = expected or bars
+      check(vim.deep_equal(bars, expected), label .. ': extmark separator columns differ')
+      local visible_bars = vim.tbl_filter(function(col)
+        return col <= vim.api.nvim_win_get_width(0)
+      end, bars)
+      check(vim.deep_equal(rendered_bars, visible_bars), label .. ': rendered separator columns differ: '
+        .. vim.inspect(rendered_bars) .. ' expected ' .. vim.inspect(visible_bars))
+      local start = max_width + 3
+      if start <= vim.api.nvim_win_get_width(0) then
+        check(vim.fn.screenstring(row, start) == statuses[row]:sub(1, 1),
+          label .. ': rendered status start differs')
+      end
+    else
+      check(#rendered_bars == 0, label .. ': status appeared on a status-free row')
+    end
+  end
+  check(count == 2, label .. ': lost status on an edited row')
+  return max_width
+end
+alignment('tree/status/orphan prefixes')
+native('normal! ggcca\27')
+native('normal! 2Gcc界é\27')
+native('normal! 3Gccno-status-' .. string.rep('界', 20) .. '\27')
+poll()
+local wide = alignment('wide/combining names; widest row has no status')
+native('normal! Goprospective-' .. string.rep('n', 85) .. '\27')
+poll()
+check(alignment('new raw row without status') > wide, 'new row did not move status right')
+native('normal! 2Gcc' .. string.rep('long-name-', 12) .. '\27')
+-- Cached metadata redraw must work without waiting for a tmux metadata change.
+vim.api.nvim_exec_autocmds('TextChangedI', { buffer = M.buf })
+check(alignment('long-name edit before polling') > wide, 'edited name did not move status right')
+poll()
+alignment('long-name edit with unchanged metadata')
+M.tmux({ 'set-option', '-t', alpha, '@pi_cache_session',
+  '#[fg=yellow]BUSY ' .. string.rep('界', 24) .. '#[default]| ctx 99% | $1234.00 | refreshed' })
+poll()
+alignment('long-name edit then changed metadata')
+alignment('horizontal scroll', 40)
+native('normal! 2Gcc' .. string.rep('longer-than-the-window-', 20) .. '\27')
+poll()
+check(alignment('offscreen status clips instead of overlaying names') > vim.api.nvim_win_get_width(0),
+  'overflow test did not exceed the window width')
+native('undo 0')
+vim.bo[M.buf].modified = false
+poll()
+check(alignment('undo restores narrow alignment') < wide, 'undo left stale name width')
+
 local unchanged = M.render(M.baseline)
 M.apply(M.baseline, M.parse_manifest(unchanged, M.baseline))
 check(vim.tbl_count(M.snapshot().by_id) == 3,
   "unchanged save did not keep all three sessions alive")
 
-io.stdout:write("TREE_ANNOTATIONS=" .. vim.json.encode(annotations()) .. "\n")
-for _, result in ipairs({
+M.test_output = table.concat({
+  "TREE_ANNOTATIONS=" .. vim.json.encode(annotations()),
   "PASS tagged child renders with tree prefix",
   "PASS orphaned parent tag renders as a marked root",
   "PASS status markers map done working and plain sessions",
   "PASS tree rendering leaves buffer lines untouched",
   "PASS unchanged save keeps parent metadata sessions alive",
-}) do io.stdout:write(result .. "\n") end
-io.stdout:flush()
+  "PASS actual UI status/separator alignment across wide names, prefixes and status-free rows",
+  "PASS long-name edit and metadata refresh preserve status, raw buffer and undo state",
+  "PASS virtual status remains aligned through horizontal scroll and shrinks after undo",
+}, '\n')
+LUA
+
+  cat >"$tmp/screen.lua" <<'LUA'
+-- Attach a wide, isolated UI so screenstring() can check every status column.
+local errors = {}
+local child = vim.fn.jobstart({ vim.v.progpath, '--headless', '--embed', '--clean',
+  '-u', 'NONE', '-i', 'NONE' }, { rpc = true,
+  on_stderr = function(_, data) vim.list_extend(errors, data) end, env = {
+    TMUX_OIL_TEST_LUA = vim.env.TMUX_OIL_SCREEN_TEST, TMUX_OIL_TEST_STAY = '1',
+  } })
+local ok, result = pcall(function()
+  vim.rpcrequest(child, 'nvim_ui_attach', 320, 24, {})
+  return vim.rpcrequest(child, 'nvim_exec_lua',
+    'assert(load(vim.env.TMUX_OIL_INIT))(); return tmux_oil.test_output', {})
+end)
+vim.fn.jobstop(child)
+vim.fn.jobwait({ child }, 1000)
+assert(ok, tostring(result) .. '\n' .. table.concat(errors, '\n'))
+io.stdout:write(assert(result, 'missing screen test result') .. '\n')
 LUA
 
   TMUX="$socket_path,$server_pid,0" \
-  TMUX_OIL_TEST_LUA="$tmp/tree.lua" \
+  TMUX_OIL_TEST_LUA="$tmp/screen.lua" \
+  TMUX_OIL_SCREEN_TEST="$tmp/tree.lua" \
   TMUX_OIL_TEST_SOCKET="$socket" \
   ./scripts/tmux-oil
 }

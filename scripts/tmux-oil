@@ -1196,7 +1196,10 @@ local function annotate(live, metadata)
     })
     return
   end
+  local lines = vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)
+  local statuses, status_col = {}, 0
   for row, id in ipairs(ids) do
+    local row_width = vim.fn.strdisplaywidth(lines[row])
     if id and M.baseline.by_id[id] then
       local text, group = metadata[id] or "", "Comment"
       local marker, marker_group = "[ ] ", "TmuxOilMeta"
@@ -1219,6 +1222,7 @@ local function annotate(live, metadata)
       if parent_option and not live.parent_by_id[id] then
         label[#label + 1] = { "[orphan " .. parent_option .. "] ", "TmuxOilYellow" }
       end
+      row_width = vim.fn.strdisplaywidth(annotation_text({ virt_text = label }) .. lines[row])
       vim.api.nvim_buf_set_extmark(M.buf, M.ns, row - 1, 0, {
         virt_text = label, virt_text_pos = "inline", hl_mode = "combine",
         right_gravity = false,
@@ -1230,11 +1234,17 @@ local function annotate(live, metadata)
         else
           chunks = { { text:gsub("#%[[^%]]*%]", ""), group } }
         end
-        vim.api.nvim_buf_set_extmark(M.buf, M.ns, row - 1, 0, {
-          virt_text = chunks, virt_text_pos = "eol", hl_mode = "combine",
-        })
+        statuses[row] = chunks
       end
     end
+    status_col = math.max(status_col, row_width + 2)
+  end
+  -- Include every current name, even new/status-free rows. EOL padding drifts
+  -- when horizontal scrolling passes a short name; a shared column stays aligned.
+  for row, chunks in pairs(statuses) do
+    vim.api.nvim_buf_set_extmark(M.buf, M.ns, row - 1, 0, {
+      virt_text = chunks, virt_text_win_col = status_col, hl_mode = "combine",
+    })
   end
   local added = {}
   for _, id in ipairs(live.order) do
@@ -1688,6 +1698,12 @@ function M.start()
     callback = function()
       local ok, err = pcall(M.save)
       if not ok then save_failure(err) end
+    end,
+  })
+  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "TextChangedP" }, {
+    group = group, buffer = M.buf,
+    callback = function()
+      if M.last_live then annotate(M.last_live, M.last_metadata) end
     end,
   })
   vim.api.nvim_create_autocmd({ "BufWipeout", "VimLeavePre" }, {

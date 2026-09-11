@@ -1311,6 +1311,37 @@ native('normal! \27')
 check(vim.b[M.buf].changedtick == before_tick and vim.bo[M.buf].modified == before_modified
     and vim.fn.undotree().seq_cur == before_undo, 'visual mode changed edit history')
 
+for _, case in ipairs({
+  { '', '[ ] ', 'TmuxOilMeta' },
+  { 'NO CACHE', '[ ] ', 'TmuxOilMeta' },
+  { 'CACHE REUSED', '[ ] ', 'TmuxOilMeta' },
+  { 'CACHE EXPIRED', '[ ] ', 'TmuxOilMeta' },
+  { 'CACHE WARM', '[ ] ', 'TmuxOilMeta' },
+  { 'CACHE CREATED', '[ ] ', 'TmuxOilMeta' },
+  { 'CACHE REBUILT', '[ ] ', 'TmuxOilMeta' },
+  { 'CACHE CHECKING', '[~] ', 'TmuxOilYellow' },
+  { 'BUSY 2s', '[~] ', 'TmuxOilYellow' },
+  { 'NO CACHE | #[fg=yellow]BUSY 2s#[default]', '[~] ', 'TmuxOilYellow' },
+  { 'AGENT DONE', '[✓] ', 'TmuxOilGreen' },
+  { 'CACHE REUSED | #[fg=green]AGENT DONE#[default]', '[✓] ', 'TmuxOilGreen' },
+}) do
+  local before = { lines(), vim.b[M.buf].changedtick, vim.bo[M.buf].modified, vim.fn.undotree() }
+  control({ 'set-option', '-t', alpha, '@pi_cache_session', case[1] })
+  local polled = M.completed_polls
+  M.poll()
+  wait_for(function() return M.completed_polls > polled and M.poll_process == nil end,
+    'status classification poll did not complete: ' .. case[1])
+  local label
+  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(M.buf, M.ns, 0, -1, { details = true })) do
+    if mark[2] == 0 and mark[4].virt_text_pos == 'inline' then label = mark[4].virt_text end
+  end
+  check(vim.deep_equal(label, { { case[2], case[3] } }),
+    'wrong status marker/color for ' .. vim.inspect(case[1]) .. ': ' .. vim.inspect(label))
+  check(vim.deep_equal(before,
+    { lines(), vim.b[M.buf].changedtick, vim.bo[M.buf].modified, vim.fn.undotree() }),
+    'status classification changed buffer/changedtick/modified/undo: ' .. case[1])
+end
+
 control({ "set-option", "-t", alpha, "@pi_cache_session",
   "#[fg=green]AGENT DONE#[default] countdown=8s ctx=11% cost=$1.25" })
 local completed = M.completed_polls
@@ -1453,6 +1484,7 @@ for _, result in ipairs({
   "PASS unchanged poll preserves annotation extmark IDs",
   "PASS ticking metadata changes extmark without changing lines",
   "PASS ticking metadata leaves modified flag and undo history unchanged",
+  "PASS cache outcomes stay white; CACHE CHECKING/BUSY yellow; AGENT DONE green without edits",
   "PASS native empty tracked-name write preserves identity, dirty editor, annotations and polling",
   "PASS buffer reorder remaps stable-ID annotations",
   "PASS cleanup and resume repaint unchanged metadata",

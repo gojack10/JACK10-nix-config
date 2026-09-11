@@ -1211,7 +1211,7 @@ local function annotate(live, metadata)
         marker, marker_group = "[~] ", "TmuxOilYellow"
       elseif text:find("AGENT DONE", 1, true) then
         marker, marker_group = "[✓] ", "TmuxOilGreen"
-      elseif text:find("BUSY", 1, true) or text:find("CACHE", 1, true) then
+      elseif text:find("BUSY", 1, true) or text:find("CACHE CHECKING", 1, true) then
         marker, marker_group = "[~] ", "TmuxOilYellow"
       end
       local prefix = live.tree_prefix_by_id[id] or M.baseline.tree_prefix_by_id[id] or ""

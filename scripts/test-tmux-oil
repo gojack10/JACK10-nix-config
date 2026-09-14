@@ -1459,6 +1459,30 @@ check(vim.deep_equal(
   bars(M.aligned_status("prefix| ctx | $ 1.00 | done", { 6, 5, 9 })),
   bars(M.aligned_status("prefix| ctx | $ 12.00 | done", { 6, 5, 9 }))),
   "status separators were not aligned")
+local stable_static = "stale cache | CTX 22% | $ 1.10 | stale runtime"
+local stable_state = vim.json.encode({ version = 1, busyStartedAt = 820000, agentDone = false,
+  entries = {
+    { model = "first", result = "REUSED", expiresAt = 1121000,
+      durationMs = 300000, lastSeenAt = 900000 },
+    { model = "later", result = "CREATED", expiresAt = 1300000,
+      durationMs = 300000, lastSeenAt = 800000 },
+  } })
+local rendered = M.render_cache_status(stable_static, stable_state, 1000000)
+check(rendered:find("02:01", 1, true) and rendered:find("first +1", 1, true)
+    and rendered:find("BUSY 3m", 1, true),
+  "stable aggregate did not render countdown, multi-pane count and busy elapsed time")
+rendered = M.render_cache_status(stable_static, stable_state, 1122000)
+check(rendered:find("02:58", 1, true) and rendered:find("later", 1, true)
+    and not rendered:find("first", 1, true) and rendered:find("BUSY 5m", 1, true),
+  "expired first pane did not yield to the remaining warm pane")
+local no_cache_state = vim.json.encode({ version = 1, agentDone = true, entries = {
+  { model = "policy", result = "NO CACHE", expiresAt = 1100,
+    durationMs = 1000, lastSeenAt = 100 },
+} })
+check(M.render_cache_status(stable_static, no_cache_state, 1000):find("CACHE WARM", 1, true),
+  "policy cache was not warm before expiry")
+check(M.render_cache_status(stable_static, no_cache_state, 1200):find("NO CACHE", 1, true),
+  "policy cache did not expire from warm to no-cache")
 check(vim.g.tmux_oil_init_loaded == true, "private init marker is absent")
 check(vim.g.daily_config_loaded == nil, "daily Nvim config sentinel loaded")
 M.start()
@@ -1587,6 +1611,29 @@ for _, case in ipairs({
     { lines(), vim.b[M.buf].changedtick, vim.bo[M.buf].modified, vim.fn.undotree() }),
     'status classification changed buffer/changedtick/modified/undo: ' .. case[1])
 end
+
+local old_now, dynamic_now = M.now_ms, 1000000
+M.now_ms = function() return dynamic_now end
+control({ "set-option", "-t", alpha, "@pi_cache_session", stable_static })
+control({ "set-option", "-t", alpha, "@pi_cache_state", stable_state })
+local dynamic_completed = M.completed_polls
+M.poll()
+wait_for(function() return M.completed_polls > dynamic_completed and M.poll_process == nil end,
+  "initial stable-state poll did not complete")
+local dynamic_before = annotations()
+check(contains(dynamic_before, "02:01") and contains(dynamic_before, "BUSY 3m"),
+  "stable-state poll did not render initial wall-clock values")
+dynamic_now = 1061000
+dynamic_completed = M.completed_polls
+M.poll()
+wait_for(function() return M.completed_polls > dynamic_completed and M.poll_process == nil end,
+  "wall-clock-only poll did not complete")
+local dynamic_after = annotations()
+check(contains(dynamic_after, "01:00") and contains(dynamic_after, "BUSY 4m")
+    and not contains(dynamic_after, "02:01"),
+  "unchanged tmux options did not advance countdown and busy duration")
+control({ "set-option", "-u", "-t", alpha, "@pi_cache_state" })
+M.now_ms = old_now
 
 control({ "set-option", "-t", alpha, "@pi_cache_session",
   "#[fg=green]AGENT DONE#[default] countdown=8s ctx=11% cost=$1.25" })
@@ -1731,6 +1778,8 @@ for _, result in ipairs({
   "PASS ticking metadata changes extmark without changing lines",
   "PASS ticking metadata leaves modified flag and undo history unchanged",
   "PASS cache outcomes stay white; CACHE CHECKING/BUSY yellow; AGENT DONE green without edits",
+  "PASS stable aggregate advances countdown, expiry/warm state, busy time and pane selection",
+  "PASS unchanged tmux options still repaint changed wall-clock status",
   "PASS native empty tracked-name write preserves identity, dirty editor, annotations and polling",
   "PASS buffer reorder remaps stable-ID annotations",
   "PASS cleanup and resume repaint unchanged metadata",

@@ -858,20 +858,23 @@ function M.apply(baseline, intent)
   return report
 end
 
+M.now_ms = function() return os.time() * 1000 end
+local render_cache_status
+
 local function parse_live(output)
   if output:sub(-1) == "\n" then output = output:sub(1, -2) end
   if output == "" then return model({}), {} end
   local rows, metadata = {}, {}
   for _, line in ipairs(vim.split(output, "\n", { plain = true })) do
-    local rank, id, name, status, parent = line:match(
-      "^(%d+)\t([^\t]+)\t([^\t]*)\t([^\t]*)\t([^\t]*)$")
+    local rank, id, name, status, cache_state, parent = line:match(
+      "^(%d+)\t([^\t]+)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)$")
     if not id or not id:match("^%$%d+$") then fail("invalid live metadata row") end
     validate_name(name)
     rows[#rows + 1] = {
       rank = tonumber(rank), id = id, name = name,
       parent = parent:match("^%$%d+$") and parent or nil,
     }
-    metadata[id] = status
+    metadata[id] = render_cache_status(status, cache_state, M.now_ms())
   end
   return model(rows), metadata
 end
@@ -915,6 +918,94 @@ local function status_fields(text)
   if #fields ~= 4 then return nil end
   return fields
 end
+
+local function fit_status(value, width, left)
+  local clipped = value
+  while vim.fn.strdisplaywidth(clipped) > width do
+    clipped = vim.fn.strcharpart(clipped, 0, vim.fn.strchars(clipped) - 1)
+  end
+  return left and clipped .. string.rep(" ", width - vim.fn.strdisplaywidth(clipped))
+    or string.rep(" ", width - vim.fn.strdisplaywidth(clipped)) .. clipped
+end
+
+local function hub_timer(milliseconds)
+  local total = math.max(0, math.ceil(milliseconds / 1000))
+  local hours = math.floor(total / 3600)
+  local minutes = math.floor((total % 3600) / 60)
+  local seconds = total % 60
+  if hours > 0 then return string.format("%d:%02d:%02d", hours, minutes, seconds) end
+  return string.format("%02d:%02d", minutes, seconds)
+end
+
+local function busy_duration(milliseconds)
+  local total = math.max(0, math.floor(milliseconds / 60000))
+  if total < 1 then return "<1m" end
+  local hours, minutes = math.floor(total / 60), total % 60
+  return hours > 0 and string.format("%dh %02dm", hours, minutes) or total .. "m"
+end
+
+local cache_results = {
+  CHECKING = true, REUSED = true, REBUILT = true, CREATED = true, ["NO CACHE"] = true,
+}
+
+render_cache_status = function(status, encoded, now)
+  if encoded == "" then return status end
+  local ok, state = pcall(vim.json.decode, encoded)
+  if not ok or type(state) ~= "table" or state.version ~= 1 or type(state.entries) ~= "table" then
+    return status
+  end
+  local fields = vim.split(status, "|", { plain = true })
+  if #fields < 3 then return status end
+
+  local entries, warm = {}, {}
+  for _, entry in ipairs(state.entries) do
+    if type(entry) == "table" and type(entry.model) == "string"
+        and cache_results[entry.result] and type(entry.lastSeenAt) == "number" then
+      entries[#entries + 1] = entry
+      if type(entry.expiresAt) == "number" and entry.expiresAt > now then
+        warm[#warm + 1] = entry
+      end
+    end
+  end
+  table.sort(warm, function(a, b) return a.expiresAt < b.expiresAt end)
+  table.sort(entries, function(a, b) return a.lastSeenAt > b.lastSeenAt end)
+  local entry = warm[1] or entries[1]
+  local cache = "NO CACHE"
+  if entry then
+    local remaining = type(entry.expiresAt) == "number" and entry.expiresAt - now or 0
+    local timer, timer_color = "-", "white"
+    if remaining > 0 then
+      timer = hub_timer(remaining)
+      local duration = type(entry.durationMs) == "number" and entry.durationMs or nil
+      timer_color = duration and remaining <= duration * 0.25 and "red"
+        or duration and remaining <= duration * 0.5 and "yellow" or "green"
+    end
+    local label
+    if entry.result ~= "CHECKING" and entry.result ~= "NO CACHE"
+        and type(entry.durationMs) == "number" and remaining <= 0 then
+      label = "CACHE EXPIRED"
+    elseif entry.result == "NO CACHE" and remaining > 0 then
+      label = "CACHE WARM"
+    else
+      label = entry.result == "NO CACHE" and "NO CACHE" or "CACHE " .. entry.result
+    end
+    local model_name = entry.model .. (#warm > 1 and " +" .. (#warm - 1) or "")
+    cache = "#[fg=" .. timer_color .. "]" .. fit_status(timer, 8)
+      .. "#[default]  " .. fit_status(model_name, 16, true)
+      .. " " .. fit_status(label, 14, true)
+  end
+
+  local runtime
+  if type(state.busyStartedAt) == "number" then
+    runtime = "#[fg=yellow]BUSY " .. busy_duration(now - state.busyStartedAt) .. "#[default]"
+  elseif state.agentDone == true then
+    runtime = "#[fg=green]AGENT DONE#[default]"
+  end
+  local result = { cache, fields[2], fields[3] }
+  if runtime then result[4] = " " .. runtime end
+  return table.concat(result, "|")
+end
+M.render_cache_status = render_cache_status
 
 local function aligned_status(text, widths)
   local fields = status_fields(text)
@@ -1292,7 +1383,7 @@ function M.poll()
   process = vim.system(M.argv({
     "list-sessions", "-F", rank
       .. "\t#{session_id}\t#{session_name}\t#{@pi_cache_session}"
-      .. "\t#{@pi_subagent_parent_id}",
+      .. "\t#{@pi_cache_state}\t#{@pi_subagent_parent_id}",
   }), { text = true }, vim.schedule_wrap(function(result)
     if generation ~= M.poll_generation or process ~= M.poll_process or not M.ui_active then
       return
@@ -1302,16 +1393,19 @@ function M.poll()
     if result.code == 0 then
       local output = result.stdout or ""
       local changedtick = vim.b[M.buf].changedtick
-      if output ~= last_successful_raw or changedtick ~= last_successful_changedtick then
-        local ok, err = pcall(function()
-          local live, metadata = parse_live(output)
-          annotate(live, metadata)
-        end)
-        if ok then
-          last_successful_raw, last_successful_changedtick = output, changedtick
-        else
-          M.last_poll_error = tostring(err)
+      local ok, live, metadata = pcall(parse_live, output)
+      if ok then
+        if output ~= last_successful_raw or changedtick ~= last_successful_changedtick
+            or not vim.deep_equal(metadata, M.last_metadata) then
+          local annotated, err = pcall(annotate, live, metadata)
+          if annotated then
+            last_successful_raw, last_successful_changedtick = output, changedtick
+          else
+            M.last_poll_error = tostring(err)
+          end
         end
+      else
+        M.last_poll_error = tostring(live)
       end
     else
       M.last_poll_error = (result.stderr or "tmux metadata query failed"):gsub("%s+$", "")

@@ -36,10 +36,20 @@ local function ids(expected, label)
   assert(vim.deep_equal(got, expected), (label or '') .. ': ' .. vim.inspect(got))
 end
 local function root() command('undo 0'); ids({'$1','$2','$3'}, 'root') end
+local notify = vim.notify
 local function rejects(label)
   local ok, err = pcall(M.editor_intent)
   assert(not ok, label .. ' was accepted')
   io.stdout:write('REJECT ' .. label .. ': ' .. tostring(err) .. '\n')
+end
+local function notify_message()
+  local captured = {}
+  vim.notify = function(message) captured[#captured + 1] = tostring(message) end
+  -- Replay the last refused-edit notice through annotate, which re-reads the
+  -- identity and replays the refusal notice if it is still pending.
+  pcall(M.editor_ids)
+  vim.notify = notify
+  return captured[1]
 end
 assert(vim.deep_equal(lines(), {'alpha','beta','gamma'}), 'raw initial lines')
 for _, key in ipairs({'h','l','x','A','I','v','p','u','<C-r>','<LeftDrag>'}) do
@@ -116,30 +126,54 @@ root()
 command('normal! ggdd'); command('normal! oalpha\27')
 ids({'$2','+','$3'}, 'typed row is new, not matched to tombstone')
 root()
+command('normal! Go\27')
+rejects('blank new row blocks save')
+command('normal! dd')
+root()
 command('%s/alpha\\|beta/\\={"alpha":"beta","beta":"alpha"}[submatch(0)]/')
 ids({'$1','$2','$3'}, 'substitution swap')
 root()
-command('1,2sort!'); rejects('sort without identity provenance')
+local sorted_before = lines()
+command('1,2sort!')
+-- Bulk rewrite is refused and automatically reverted to its pre-transaction state.
+assert(notify_message():find('reverted', 1, true) ~= nil, 'sort refusal notice')
+assert(vim.deep_equal(lines(), sorted_before), 'sort was reverted')
+ids({'$1','$2','$3'}, 'sort keeps identity after revert')
 root()
 vim.fn.setreg('z', {'alpha'}, 'V')
 command('normal! "zp'); rejects('unobserved linewise register')
 root()
-command('normal! ggJ'); rejects('join')
+local joined_before = lines()
+local joined_ids = M.editor_ids()
+command('normal! ggJ')
+-- Join is refused and automatically reverted; never authorizes kill-session.
+assert(notify_message():find('join session rows', 1, true) ~= nil, 'join refusal notice')
+assert(vim.deep_equal(lines(), joined_before), 'join was reverted')
+assert(vim.deep_equal(M.editor_ids(), joined_ids), 'join keeps every identity after revert')
 local calls = 0
-M.apply = function() calls = calls + 1; error('must not apply ambiguous identity') end
-local notify = vim.notify
+M.apply = function() calls = calls + 1; return { succeeded = {}, not_run = {} } end
 vim.notify = function() end
 local saved = M.save()
 vim.notify = notify
-assert(not saved and calls == 0, 'ambiguous save crossed apply boundary')
+assert(saved, 'join revert leaves a clean save with zero tmux commands')
+assert(calls == 1, 'empty apply plan ran exactly once')
+command('normal! gg0li\r\27')
+-- Split is supported (Q1): the first fragment keeps its session identity and
+-- the second fragment becomes a new session.
+ids({'$1','+','$2','$3'}, 'split keeps existing identity and creates a fresh one')
 root()
-command('normal! gg0li\r\27'); rejects('split')
+local filtered_before = lines()
+command('%!tail -r')
+assert(notify_message():find('reverted', 1, true) ~= nil, 'filter refusal notice')
+assert(vim.deep_equal(lines(), filtered_before), 'opaque filter was reverted')
+ids({'$1','$2','$3'}, 'filter keeps identity after revert')
 root()
-command('%!tail -r'); rejects('opaque filter')
-root()
+local replaced_before = lines()
+local replaced_ids = M.editor_ids()
 vim.api.nvim_buf_set_lines(M.buf, 0, -1, false, {'beta','alpha','gamma'})
-rejects('opaque API replacement')
-root()
+assert(notify_message():find('reverted', 1, true) ~= nil, 'API replacement refusal notice')
+assert(vim.deep_equal(lines(), replaced_before), 'whole-buffer API replacement was reverted')
+assert(vim.deep_equal(M.editor_ids(), replaced_ids), 'API replacement keeps identity after revert')
 command('normal! ggV'); assert(vim.fn.mode() == 'V'); command('normal! \27')
 command('normal! v'); assert(vim.fn.mode() == 'v', 'v is not characterwise'); command('normal! \27')
 command('normal! Gdd'); ids({'$1','$2'}, 'delete last row')
@@ -154,6 +188,7 @@ vim.bo.undolevels = 1000
 assert(M.accept_live()); ids({'$1','$2','$3'}, 'accept live after lost history')
 command('normal! ggA-changed\27')
 local undofile = vim.env.TMUX_OIL_ERROR_DIR .. '/history.undo'
+vim.fn.mkdir(vim.env.TMUX_OIL_ERROR_DIR, 'p')
 command('wundo! ' .. vim.fn.fnameescape(undofile))
 vim.api.nvim_feedkeys(':rundo ' .. vim.fn.fnameescape(undofile) .. '\r', 'xt', false)
 rejects('interactive imported undo history')
@@ -511,7 +546,9 @@ local function id_named(state, name)
   error("missing session named " .. name, 0)
 end
 
+local last_deleted = {}
 local function manifest(baseline, renames, deleted, creates)
+  last_deleted = deleted or {}
   local lines = {}
   for _, id in ipairs(baseline.order) do
     if not deleted[id] then
@@ -553,10 +590,18 @@ listing("BEFORE", baseline)
 local alpha = id_named(baseline, "alpha")
 local beta = id_named(baseline, "beta")
 
+-- A baseline row may vanish from the manifest only with explicit deletion
+-- provenance; manifest() records it so planned() transports it to apply.
+local function planned(text)
+  local intent = M.parse_manifest(text, baseline)
+  intent.kills = last_deleted
+  return intent
+end
+
 if scenario == "stable" then
   local text = manifest(baseline, { [alpha] = "alpha-renamed" }, {}, {})
   intent_listing(text)
-  local report = M.apply(baseline, M.parse_manifest(text, baseline))
+  local report = M.apply(baseline, planned(text))
   local after = M.snapshot()
   listing("AFTER", after)
   report_argv(report)
@@ -566,7 +611,7 @@ elseif scenario == "create-kill" then
   local text = manifest(baseline, { [beta] = "alpha" }, { [alpha] = true },
     { "gamma-created" })
   intent_listing(text)
-  local report = M.apply(baseline, M.parse_manifest(text, baseline))
+  local report = M.apply(baseline, planned(text))
   local after = M.snapshot()
   listing("AFTER", after)
   report_argv(report)
@@ -580,7 +625,7 @@ elseif scenario == "cycle" then
     [alpha] = "beta", [beta] = "gamma", [gamma] = "alpha",
   }, {}, {})
   intent_listing(text)
-  local report = M.apply(baseline, M.parse_manifest(text, baseline))
+  local report = M.apply(baseline, planned(text))
   local after = M.snapshot()
   listing("AFTER", after)
   report_argv(report)
@@ -597,7 +642,7 @@ elseif scenario == "drift" then
   control({ "rename-session", "-t", alpha, "--", "external-drift" })
   local immediately_before = M.snapshot()
   listing("IMMEDIATELY_BEFORE_APPLY", immediately_before)
-  local ok, err = pcall(M.apply, baseline, M.parse_manifest(text, baseline))
+  local ok, err = pcall(M.apply, baseline, planned(text))
   check(not ok and tostring(err):find("structural drift detected", 1, true),
     "drift immediately before apply was not rejected")
   local after = M.snapshot()
@@ -612,7 +657,7 @@ elseif scenario == "mid-failure" then
   M.test_before_command = function(index, operation)
     if index == 2 then control({ "kill-session", "-t", operation.id }) end
   end
-  local ok, err = pcall(M.apply, baseline, M.parse_manifest(text, baseline))
+  local ok, err = pcall(M.apply, baseline, planned(text))
   M.test_before_command = nil
   check(not ok and tostring(err):find("tmux error at operation 2", 1, true),
     "forced mid-apply tmux error was not reported")
@@ -634,7 +679,10 @@ elseif scenario == "safety" then
   local last_baseline = M.snapshot()
   listing("LAST_SESSION_BEFORE", last_baseline)
   intent_listing("")
-  local ok_last, last_err = pcall(M.apply, last_baseline, M.parse_manifest("", last_baseline))
+  local last_intent = M.parse_manifest("", last_baseline)
+  last_intent.kills = {}
+  for _, id in ipairs(last_baseline.order) do last_intent.kills[id] = true end
+  local ok_last, last_err = pcall(M.apply, last_baseline, last_intent)
   check(not ok_last and tostring(last_err):find("last session/server", 1, true),
     "last-session kill was not safely rejected")
   local after = M.snapshot()
@@ -653,7 +701,7 @@ elseif scenario == "self-delete" then
       observed = control({ "list-clients", "-F", "#{session_name}" }):gsub("%s+$", "")
     end
   end
-  local ok, err = pcall(M.apply, baseline, M.parse_manifest(text, baseline))
+  local ok, err = pcall(M.apply, baseline, planned(text))
   M.test_before_command = nil
   check(ok, "self-delete apply failed: " .. tostring(err))
   check(observed == "alpha", "the invoking client did not move to alpha before the kill")
@@ -674,7 +722,7 @@ elseif scenario == "tree-delete" then
     [id_named(baseline, "gamma")] = true,
   }, {})
   intent_listing(text)
-  local ok, err = pcall(M.apply, baseline, M.parse_manifest(text, baseline))
+  local ok, err = pcall(M.apply, baseline, planned(text))
   check(ok, "interleaved parent-tree deletion failed: " .. tostring(err))
   local after = M.snapshot()
   listing("AFTER", after)
@@ -1293,7 +1341,9 @@ elseif scenario == "combined" then
   local text = gamma .. '\t"gamma-renamed"\n+\t"delta-created"\n'
     .. alpha .. '\t"alpha-renamed"'
   intent(text)
-  M.apply(baseline, M.parse_manifest(text, baseline))
+  local combined = M.parse_manifest(text, baseline)
+  combined.kills = { [beta] = true }
+  M.apply(baseline, combined)
   local after = M.snapshot()
   local delta = id_named(after, "delta-created")
   listing("AFTER", after)
@@ -1741,8 +1791,10 @@ check(not revived_ok and tostring(revived_error):find('no longer exists', 1, tru
 native('redo')
 check(M.editor_intent().existing[deleted] == nil, 'redo delete lost identity history')
 native('normal! Go\27')
-local blank_ok, blank_error = pcall(vim.cmd, "write")
-check(blank_ok, blank_error or "blank line was not ignored")
+pcall(vim.cmd, "write")
+check(tostring(M.last_error):find('new rows need a session name', 1, true) ~= nil,
+  'blank new row did not block save')
+native('normal! dd')
 local error_count = #vim.fn.glob(vim.env.TMUX_OIL_ERROR_DIR .. "/*.log", false, true)
 native('normal! Gobad:name\27')
 local write_ok, write_error = pcall(vim.cmd, "write")
@@ -2446,10 +2498,14 @@ local pass_validation = true
 
 local intent_text = first .. "\t\"renamed\"\n+\t\"z-create\"\n+\t\"a-create\""
 local intent = M.parse_manifest(intent_text, baseline)
+intent.kills = { [second] = true }
 local deterministic = M.plan(baseline, intent, M.snapshot())
 local deterministic_again = M.plan(baseline, intent, M.snapshot())
 check(vim.deep_equal(deterministic, deterministic_again), "plan changed between identical inputs")
 check(#deterministic.operations == 4, "deterministic plan has wrong operation count")
+local unproven_plan = M.plan(baseline, M.parse_manifest(intent_text, baseline), M.snapshot())
+check(#unproven_plan.kills == 0 and #unproven_plan.operations == 3,
+  "plan killed a session without row-deletion provenance")
 check(deterministic.operations[1].kind == "rename" and deterministic.operations[1].id == first,
   "deterministic rename is wrong")
 check(deterministic.operations[2].kind == "create" and deterministic.operations[2].name == "a-create",

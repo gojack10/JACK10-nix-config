@@ -358,6 +358,7 @@ end
 function M.reconcile(baseline, intent, current)
   local conflicts, existing, names = {}, {}, {}
   local survivor = {}
+  local kills = vim.deepcopy(intent.kills or {})
   for id, desired in pairs(intent.existing) do
     local baseline_name = baseline.by_id[id]
     local live_name = current.by_id[id]
@@ -398,6 +399,16 @@ function M.reconcile(baseline, intent, current)
       if current.by_id[id] == baseline_name and live_parent == baseline_parent then
         survivor[id] = true
       end
+    end
+  end
+  -- A baseline session may vanish from the manifest only through explicit
+  -- row-deletion provenance; otherwise refuse with zero commands. Live
+  -- sessions that were never in the baseline are external creations, handled
+  -- by the attachment/conflict rules above, not deletion provenance.
+  for id in pairs(baseline.by_id) do
+    if existing[id] == nil and current.by_id[id] ~= nil and not kills[id] then
+      conflicts[#conflicts + 1] = string.format(
+        "conflict %s name: no explicit row-deletion provenance", id)
     end
   end
   if #conflicts > 0 then
@@ -497,6 +508,7 @@ function M.reconcile(baseline, intent, current)
   return {
     order = rows_for(result_order), display_order = rows_for(display_order),
     existing = vim.deepcopy(existing), new = vim.deepcopy(intent.new),
+    kills = kills,
   }
 end
 
@@ -504,14 +516,17 @@ function M.plan(baseline, intent, current)
   if M.structural_drift(baseline, current) then
     fail("structural drift detected")
   end
+  local kills = intent.kills or {}
   local plan = { renames = {}, creates = {}, kills = {}, operations = {} }
   for _, id in ipairs(sorted_ids(baseline)) do
     local wanted = intent.existing[id]
     if wanted == nil then
-      plan.kills[#plan.kills + 1] = {
-        kind = "kill", id = id,
-        argv = M.argv({ "kill-session", "-t", id }),
-      }
+      if kills[id] then
+        plan.kills[#plan.kills + 1] = {
+          kind = "kill", id = id,
+          argv = M.argv({ "kill-session", "-t", id }),
+        }
+      end
     elseif wanted ~= baseline.by_id[id] then
       plan.renames[#plan.renames + 1] = {
         kind = "rename", id = id, name = wanted,
@@ -646,6 +661,11 @@ local function execution_plan(plan, current)
       simulated.by_id[chosen] = name
       pending[chosen] = nil
     else
+      if temporary_index > 1000 then
+        -- A rename target held by a session that is neither renamed nor killed
+        -- can never free; fail instead of looping forever.
+        fail("rename cannot resolve: a target name is permanently occupied")
+      end
       chosen = ids[1]
       local temporary
       repeat
@@ -1034,12 +1054,18 @@ local function undo_parent(seq, entries, parent)
   end
 end
 
+local JOIN_REFUSAL = "Can't join session rows. Joining never deletes a tmux session; use dd to delete one."
+local BULK_REFUSAL = "That bulk rewrite isn't supported; the edit was reverted."
+local UNSUPPORTED_REFUSAL = "That edit is unsupported for tmux session identity; it was reverted."
+
 local function new_identity(buf, rows)
   -- ponytail: full snapshots/anchors suit a small session list; prune and update
   -- incrementally only if large lists or long-lived editors make this costly.
   local a, f = vim.api, vim.fn
   local I = { history = {}, bindings = {}, registers = {}, next_token = 0,
-    ns = a.nvim_create_namespace("tmux-oil-identity"), buf = buf }
+    ns = a.nvim_create_namespace("tmux-oil-identity"), buf = buf,
+    pending = nil, notice = nil, refuse = nil, rejected = {}, kills = {},
+    txn_seq = nil, glue = nil, brk = nil, cut = nil, marks = nil }
   local function text() return a.nvim_buf_get_lines(buf, 0, -1, false) end
   local function token(id)
     I.next_token = I.next_token + 1
@@ -1067,24 +1093,27 @@ local function new_identity(buf, rows)
       local dest = mark[1] and mark[1] + 1
       if not dest or mark[3].invalid or dest > #s.lines or seen[dest]
           or before.lines[row] ~= s.lines[dest] then
-        s.bad = "ambiguous whole-row transformation; undo it or :TmuxOilAcceptLive"
-        s.move = nil
+        s.refuse = s.refuse or UNSUPPORTED_REFUSAL
+        s.refuse_to = s.refuse_to or s.move_to
+        s.move, s.move_to = nil, nil
         return
       end
       seen[dest], tokens[dest] = true, t
     end
     if #tokens ~= #s.lines or vim.deep_equal(tokens, before.tokens) then
-      s.bad = "ambiguous whole-row transformation; undo it or :TmuxOilAcceptLive"
+      s.refuse = s.refuse or UNSUPPORTED_REFUSAL
+      s.refuse_to = s.refuse_to or s.move_to
+      s.move, s.move_to = nil, nil
     else
       s.tokens = tokens
+      s.move, s.move_to = nil, nil
     end
-    s.move = nil
   end
   local root_first
   local function known_snapshot(tree)
     local seq = tree.seq_cur
     while seq do
-      if I.history[seq] then return I.history[seq] end
+      if I.history[seq] then return I.history[seq], seq end
       local parent = undo_parent(seq, tree.entries, -1)
       if parent == -1 then
         if not root_first and seq == I.root + 1 then root_first = seq end
@@ -1093,25 +1122,62 @@ local function new_identity(buf, rows)
       seq = parent
     end
   end
+  local function refused_restore()
+    -- Undo-traverse back over a refused transaction; never mutate text from a
+    -- callback. Guarded by I.busy against reentry from the same read.
+    local pending = I.pending
+    I.pending = nil
+    if not pending then return end
+    I.suspended = true
+    local ok, err = pcall(vim.cmd, 'silent! undo ' .. pending.from)
+    I.suspended = false
+    I.bytes, I.glue, I.brk = nil, nil, nil
+    if not ok then
+      fail("identity could not revert a refused edit: " .. tostring(err))
+    end
+    local tree = f.undotree()
+    local back, back_seq = known_snapshot(tree)
+    if not back or not vim.deep_equal(back.lines, text()) then
+      I.fault = "identity history unavailable; undo to a known state or :TmuxOilAcceptLive"
+      fail(I.fault)
+    end
+    I.notice = pending.message
+    vim.notify("tmux-oil: " .. pending.message, vim.log.levels.WARN, { title = "tmux-oil" })
+  end
+
   function I.current()
     if I.fault then fail(I.fault) end
-    local tree = f.undotree()
-    local s = known_snapshot(tree)
-    if not s or not vim.deep_equal(s.lines, text()) then
-      fail("identity history unavailable; undo to a known state or :TmuxOilAcceptLive")
+    if I.busy then error("identity state reentry; undo to a known state or :TmuxOilAcceptLive", 0) end
+    for _ = 1, 3 do
+      if I.pending then refused_restore() end
+      local tree = f.undotree()
+      local s = known_snapshot(tree)
+      if not s or not vim.deep_equal(s.lines, text()) then
+        fail("identity history unavailable; undo to a known state or :TmuxOilAcceptLive")
+      end
+      if s.refuse and s.refuse_to and not I.busy then
+        I.pending = { from = s.refuse_to, message = s.refuse }
+      else
+        settle_move(s)
+        if s.refuse and s.refuse_to and not I.busy then
+          I.pending = { from = s.refuse_to, message = s.refuse }
+        else
+          if not I.history[tree.seq_cur] then
+            -- Native no-ops can add undo headers without a text-change notification.
+            -- Inherit only an actual ancestor with unchanged text, never a sibling.
+            s = vim.deepcopy(s)
+            I.history[tree.seq_cur] = s
+          end
+          anchors(s)
+          return s
+        end
+      end
     end
-    if not I.history[tree.seq_cur] then
-      -- Native no-ops can add undo headers without a text-change notification.
-      -- Inherit only an actual ancestor with unchanged text, never a sibling.
-      s = vim.deepcopy(s)
-      I.history[tree.seq_cur] = s
-    end
-    settle_move(s)
-    anchors(s)
-    return s
+    error("identity could not settle a refused edit; :TmuxOilAcceptLive required", 0)
   end
   function I.checked()
     local s = I.current()
+    if s.refuse then fail(s.refuse) end
     if s.bad then fail(s.bad) end
     if #s.tokens ~= #s.lines then fail("identity row count mismatch; undo the edit") end
     local seen = {}
@@ -1125,6 +1191,28 @@ local function new_identity(buf, rows)
     local s, ids = I.checked(), {}
     for row, t in ipairs(s.tokens) do ids[row] = I.bindings[t] or "+" end
     return ids
+  end
+  function I.placeholder_row()
+    local s = I.current()
+    if not s.synthetic_token then return nil end
+    for row, t in ipairs(s.tokens) do
+      if t == s.synthetic_token then return s.lines[row] == "" and row or nil end
+    end
+    return nil
+  end
+  function I.killed()
+    local s, killed = I.checked(), {}
+    local present = {}
+    for _, t in ipairs(s.tokens) do present[t] = true end
+    for t in pairs(s.kills or {}) do
+      if not present[t] and I.bindings[t] then killed[I.bindings[t]] = true end
+    end
+    return killed
+  end
+  function I.refused()
+    local s = I.current()
+    if s.refuse and s.refuse_to then return s.refuse end
+    return nil
   end
   local function guarded(callback)
     return function(...)
@@ -1141,7 +1229,10 @@ local function new_identity(buf, rows)
       s.lines[#s.lines + 1] = row.name
       s.tokens[#s.tokens + 1] = by_id[row.marker] or token(row.marker ~= "+" and row.marker or nil)
     end
-    if #s.lines == 0 then s.lines, s.tokens = { "" }, { token() } end
+    if #s.lines == 0 then
+      s.lines, s.tokens = { "" }, { token() }
+      s.synthetic_token = s.tokens[1]
+    end
     if not initial then
       local ok, old = pcall(I.current)
       if ok and not old.bad and vim.deep_equal(old.lines, s.lines)
@@ -1159,32 +1250,83 @@ local function new_identity(buf, rows)
     I.history[seq] = s
     if I.root and seq == I.root + 1 then root_first = seq end
     I.fault, I.put, I.bytes = nil, nil, nil
+    I.pending, I.notice, I.glue, I.brk, I.cut = nil, nil, nil, nil, nil
+    I.kills, I.rejected, I.refuse, I.txn_seq = {}, {}, nil, nil
     anchors(s)
   end
   I.replace(rows, true)
   I.root = f.undotree().seq_cur
   a.nvim_buf_attach(buf, false, {
     on_bytes = guarded(function(_, _, _, _, _, _, oldrow, _, _, newrow)
-      if f.undotree().synced == 1 then I.bytes = nil; return end
+      if f.undotree().synced == 1 then I.bytes = nil; I.glue, I.brk = nil, nil; return end
       I.bytes = I.bytes or oldrow > 0 or newrow > 0
+      -- Structural facts carried by this notification group: a line break was
+      -- consumed (oldrow) or one was added (newrow). Used to distinguish a
+      -- supported split from an unsupported same-row rewrite or a join.
+      I.glue, I.brk = I.glue or oldrow > 0, I.brk or newrow > 0
     end),
     on_lines = guarded(function(_, _, _, first, last, newlast)
       local tree = f.undotree()
       -- 0.12 undo notifications carry the OLD seq_cur, including changedtick.
       -- Forward edits are unsynced; restore traversal state only after it settles.
-      if tree.synced == 1 then I.bytes = nil; return end
+      if tree.synced == 1 then I.bytes, I.glue, I.brk = nil, nil, nil; return end
       -- A real edit may follow several unobserved text-no-op undo headers.
-      local base = known_snapshot(tree)
+      local base, base_seq = known_snapshot(tree)
       if not base then error("missing undo ancestry (history was replaced/pruned)") end
+      if I.refuse and I.refuse.seq == tree.seq_cur and I.refuse.from == base_seq then
+        -- Sticky: this transaction was already refused; inherit the refusal.
+        I.refuse.after = text()
+        I.bytes, I.glue, I.brk = nil, nil, nil
+        return
+      end
+      if I.txn_seq ~= tree.seq_cur then
+        -- A new transaction begins: reset per-transaction counters and any
+        -- refusal recorded for a previous undo sequence.
+        I.txn_seq = tree.seq_cur
+        I.refuse = nil
+      end
       local s, now = vim.deepcopy(base), text()
       local oldcount, newcount = last - first, newlast - first
       local inserted = {}
+      s.txn_removed, s.txn_ins = nil, nil
+      local function refuse(message)
+        -- Refusal never becomes save intent: record the pre-transaction state
+        -- (its seq) so the next read can undo-traverse the whole transaction.
+        s.refuse, s.refuse_to = message, base_seq
+        I.refuse = { seq = tree.seq_cur, from = base_seq, before = base.lines,
+          after = now, message = message }
+        I.notice = message
+      end
       if f.eval('&undolevels') < 1 then s.bad = "identity needs undo history; restore undolevels and accept live" end
       if oldcount == newcount and not I.bytes then
+        -- Same row count with no line-break change: ordinary text edit.
         for i = first + 1, last do inserted[#inserted + 1] = s.tokens[i] end
-      elseif newcount == 0 then
-        -- A removed line is deletion; an emptied line above retains its token.
-      elseif oldcount == 0 and I.put then
+      elseif oldcount == 1 and newcount >= 2 and I.brk and not I.glue and not I.cut then
+        -- 1 -> N split (Q1): the first fragment keeps the existing session
+        -- identity; the remaining fragments are new sessions.
+        inserted[1] = s.tokens[first + 1]
+        for _ = 2, newcount do inserted[#inserted + 1] = token() end
+      elseif oldcount == newcount and I.bytes then
+        -- Same row count but a line break was consumed or added: an unsupported
+        -- same-row rewrite (join when only one row merges, bulk for
+        -- sort/filter/API replacement).
+        refuse(oldcount == 1 and I.glue and not I.brk and JOIN_REFUSAL or BULK_REFUSAL)
+      elseif newcount == 0 and oldcount >= 1 then
+        if (s.txn_removed or 0) >= 2 then
+          -- A transaction removing more than one row is a bulk/global rewrite.
+          refuse(BULK_REFUSAL)
+        else
+          s.txn_removed = (s.txn_removed or 0) + 1
+          -- N -> 0 actual line deletion: removed tokens become deletion intent.
+          s.kills = s.kills or {}
+          for i = first + 1, last do
+            local t = s.tokens[i]
+            if t then s.kills[t] = true end
+          end
+        end
+      elseif oldcount == 0 and newcount >= 1 and I.put and not I.glue then
+        -- Put with register provenance (yy -> p: fresh token; dd -> p:
+        -- transport the same token back out of deletion intent).
         local put, live = I.put, {}
         for _, t in ipairs(s.tokens) do live[t] = true end
         if newcount % #put.contents ~= 0 then s.bad = "ambiguous put size; undo it" end
@@ -1192,11 +1334,12 @@ local function new_identity(buf, rows)
           if now[first + i] ~= put.contents[(i - 1) % #put.contents + 1] then
             s.bad = "ambiguous put contents; undo it"
           end
-          local source = put.tokens and put.tokens[(i - 1) % #put.tokens + 1]
+          local source = put.tokens and put.tokens[(i - 1) % #put.contents + 1]
           if not source and not put.new then
             s.bad = "ambiguous linewise put: register has no row provenance; undo it"
           end
           local t = source and not live[source] and source or token()
+          if source and s.kills and s.kills[source] then s.kills[source] = nil end
           inserted[i], live[t] = t, true
         end
         I.put = nil
@@ -1206,16 +1349,23 @@ local function new_identity(buf, rows)
         -- Keep an unresolved transaction until native move-region has adjusted
         -- extmarks. Never infer its permutation from names alone.
         s.move = s.move or vim.deepcopy(base)
+        s.move_to = base_seq
         for _ = 1, newcount do inserted[#inserted + 1] = token() end
       end
       local tokens = {}
       for i = 1, first do tokens[#tokens + 1] = s.tokens[i] end
       vim.list_extend(tokens, inserted)
       for i = last + 1, #s.tokens do tokens[#tokens + 1] = s.tokens[i] end
-      if #tokens == 0 and #now == 1 and now[1] == "" then tokens = { token() } end
+      if #tokens == 0 and #now == 1 and now[1] == "" then
+        -- Sole synthetic empty row after every row was deleted; this placeholder
+        -- is exempt from the blank-new-row save block (the deletions carry
+        -- their own provenance).
+        tokens = { token() }
+        s.synthetic_token = tokens[1]
+      end
       s.lines, s.tokens = now, tokens
       I.history[tree.seq_cur] = s
-      I.bytes = nil
+      I.bytes, I.glue, I.brk = nil, nil, nil
     end),
     on_reload = function() I.fault = "identity history reloaded; :TmuxOilAcceptLive required" end,
   })
@@ -1455,10 +1605,13 @@ local manifest_help = 'To create a session, add a plain line like: work\n'
 
 local function editor_manifest(lines)
   local ids, encoded = identity.ids(), {}
+  local placeholder = identity.placeholder_row()
   for row, line in ipairs(lines) do
     local id = ids[row]
     if not id then fail("missing row identity") end
-    if id ~= "+" or line ~= "" then
+    if id == "+" and line == "" and row ~= placeholder then
+      fail("new rows need a session name; fill it in or delete the row (dd)")
+    elseif id ~= "+" or line ~= "" then
       if id ~= "+" and not M.baseline.by_id[id] then
         fail("session " .. id .. " no longer exists in the saved baseline; undo cannot restore killed processes")
       end
@@ -1469,7 +1622,15 @@ local function editor_manifest(lines)
 end
 
 function M.editor_intent()
-  return M.parse_manifest(editor_manifest(vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)), M.baseline)
+  local intent = M.parse_manifest(editor_manifest(vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)), M.baseline)
+  local kills = identity.killed()
+  for _, id in ipairs(M.baseline.order) do
+    if intent.existing[id] == nil and not kills[id] then
+      fail("session " .. id .. " disappeared without an explicit row deletion; undo the edit or use :TmuxOilAcceptLive")
+    end
+  end
+  intent.kills = kills
+  return intent
 end
 
 local function save_error(message)
@@ -1626,7 +1787,7 @@ function M.save()
   M.last_apply_report = nil
   local parsed_intent, apply_baseline, apply_intent, attempt, lines
   local ok, result = pcall(function()
-    -- Reject invalid edits without blanking annotations or interrupting polling.
+    -- Phase 1: preflight with zero tmux side effects and zero UI teardown.
     local valid, validation_error = pcall(M.editor_intent)
     if not valid then
       fail(tostring(validation_error):gsub("^tmux%-oil: ", "") .. "\n" .. manifest_help)
@@ -1641,6 +1802,8 @@ function M.save()
       fail(tostring(intent):gsub("^tmux%-oil: ", "") .. "\n" .. manifest_help)
     end
     parsed_intent = intent
+    -- The final reread must carry the same deletion provenance validated above.
+    intent.kills = identity.killed()
     apply_baseline, apply_intent = M.baseline, intent
     if M.pending_recovery then
       local recovered, recovery_error = recovery_intent(intent, M.pending_recovery)
@@ -1712,6 +1875,7 @@ function M.refresh()
       return M.parse_manifest(editor_manifest(lines), M.baseline)
     end)
     if not parsed then fail(tostring(intent):gsub("^tmux%-oil: ", "")) end
+    intent.kills = identity.killed()
     local base, refresh_intent = M.baseline, intent
     if M.pending_recovery then
       local recovered, recovery_error = recovery_intent(intent, M.pending_recovery)

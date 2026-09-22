@@ -19,7 +19,6 @@
         homeDirectory = "/home/jack";
         gitName = "jack";
         gitEmail = "gojack10@gmail.com";
-        omlxPatched = true;
         fontSize = 11.0;
         fontSizeFoot = 11.5;
         fontSizeWaybar = 11.0;
@@ -34,7 +33,6 @@
         homeDirectory = "/Users/jack";
         gitName = "jack";
         gitEmail = "gojack10@gmail.com";
-        omlxPatched = true;
         fontSize = 11.0;
         fontSizeFoot = 11.5;
         fontSizeWaybar = 11.0;
@@ -66,7 +64,6 @@
           homeDirectory = "/Users/jack.tenbosch";
           gitName = null;
           gitEmail = null;
-          omlxPatched = false;
           fontSizeGhostty = 12;
         };
       };
@@ -121,7 +118,7 @@
         ./modules/darwin/defaults.nix
         ./modules/darwin/fan.nix
         ./modules/darwin/gpu-over-50.nix
-        ./modules/darwin/omlx.nix
+        ./modules/darwin/local-llm.nix
         ./modules/darwin/reverse-ssh-tunnel.nix
       ];
 

@@ -38,11 +38,20 @@ in {
 
     if [ ! -d ${lib.escapeShellArg mlxSource}/.git ]; then
       ${pkgs.git}/bin/git clone https://github.com/ml-explore/mlx-lm.git ${lib.escapeShellArg mlxSource}
+      ${pkgs.git}/bin/git -C ${lib.escapeShellArg mlxSource} remote add gojack10 git@github.com:gojack10/mlx-lm.git
     fi
 
     if [ -d ${lib.escapeShellArg mlxSource}/.git ]; then
-      ${pkgs.git}/bin/git -C ${lib.escapeShellArg mlxSource} fetch origin main
-      ${pkgs.git}/bin/git -C ${lib.escapeShellArg mlxSource} checkout -B main origin/main
+      # Only advance a clean checkout that is actually on main. An integration
+      # branch or local work must never be reset by an activation, because the
+      # tool install below builds from whatever HEAD is checked out.
+      if [ -z "$(${pkgs.git}/bin/git -C ${lib.escapeShellArg mlxSource} status --porcelain)" ] \
+         && [ "$(${pkgs.git}/bin/git -C ${lib.escapeShellArg mlxSource} rev-parse --abbrev-ref HEAD)" = "main" ]; then
+        ${pkgs.git}/bin/git -C ${lib.escapeShellArg mlxSource} fetch origin main
+        ${pkgs.git}/bin/git -C ${lib.escapeShellArg mlxSource} merge --ff-only origin/main
+      else
+        echo "mlx-lm checkout is dirty or on a non-main branch; leaving it untouched" >&2
+      fi
       HOME=${lib.escapeShellArg home} ${pkgs.uv}/bin/uv tool install --force --from ${lib.escapeShellArg mlxSource} mlx-lm
     fi
 
@@ -65,7 +74,7 @@ in {
       StandardOutPath = mlxLog;
       StandardErrorPath = mlxLog;
       ExitTimeOut = 60;
-      RunAtLoad = true;
+      RunAtLoad = false;
       KeepAlive = false;
     };
   };

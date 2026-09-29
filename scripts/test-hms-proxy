@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Test the real hms script with a fake build and launchd, never touching /tmp's
+# live hms activation link or the running services.
+here=$(cd "$(dirname "$0")" && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/bin" "$tmp/home/Library/LaunchAgents" "$tmp/flake" "$tmp/gen/LaunchAgents"
+: > "$tmp/flake/flake.nix"
+live="$tmp/home/Library/LaunchAgents/com.local.llm.proxy.plist"
+built="$tmp/gen/LaunchAgents/com.local.llm.proxy.plist"
+printf 'old\n' > "$live"
+
+source_text=$(< "$here/hms")
+source_text=${source_text//\/tmp\/hms-activation-/$tmp\/activation-}
+[[ "$source_text" != *'/tmp/hms-activation-'* ]] || { echo 'test fixture did not isolate hms activation link' >&2; exit 1; }
+printf '%s\n' "$source_text" > "$tmp/hms"
+chmod +x "$tmp/hms"
+
+cat > "$tmp/bin/nix" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  eval) printf '["m5-max"]\n' ;;
+  flake) exit 0 ;;
+  build) ln -sfn "$MOCK_GEN" "$4" ;;
+  *) exit 2 ;;
+esac
+STUB
+cat > "$tmp/bin/launchctl" <<'STUB'
+#!/usr/bin/env bash
+if [[ ${MOCK_DS4_RUNNING:-0} == 1 ]]; then printf '    pid = 12345\n'; fi
+STUB
+cat > "$tmp/bin/home-manager" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+cat > "$tmp/gen/activate" <<'STUB'
+#!/usr/bin/env bash
+printf 'activated\n' > "$MOCK_ACTIVATED"
+STUB
+chmod +x "$tmp/bin/"* "$tmp/gen/activate"
+export HOME="$tmp/home" JACK10_NIX_CONFIG_FLAKE="$tmp/flake"
+export PATH="$tmp/bin:$PATH" MOCK_GEN="$tmp/gen" MOCK_ACTIVATED="$tmp/activated"
+
+printf 'old\n' > "$built"
+MOCK_DS4_RUNNING=1 "$tmp/hms" m5-max
+[[ -f "$MOCK_ACTIVATED" ]] || exit 1
+rm "$MOCK_ACTIVATED"
+
+printf 'changed\n' > "$built"
+if MOCK_DS4_RUNNING=1 "$tmp/hms" m5-max > "$tmp/output" 2>&1; then
+  echo 'changed proxy plist activated with DS4 running' >&2; exit 1
+fi
+[[ ! -f "$MOCK_ACTIVATED" ]] && grep -q 'refusing an unsafe proxy-only restart' "$tmp/output"
+
+MOCK_DS4_RUNNING=0 "$tmp/hms" m5-max
+[[ -f "$MOCK_ACTIVATED" ]] || exit 1
+printf 'PASS: unchanged passes, changed+resident blocks, changed+stopped passes\n'

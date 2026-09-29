@@ -3,12 +3,29 @@ set -euo pipefail
 
 PROJECT="$HOME/projects/canary-coreml-transcribe"
 SUPERVISOR="$PROJECT/canary_qwen_transcribe/transcribe_supervisor.py"
+MLX_PROJECT="$HOME/projects/mlx-transcribe"
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export UV_OFFLINE=1
 
-if [[ ! -d "$PROJECT" ]]; then
+# Backend: MLX Parakeet TDT v3 by default. Speaker attribution is not provided by
+# the MLX backend, so any speaker flag routes back to the Canary engine. Override
+# with TRANSCRIBE_BACKEND=canary to force the old engine.
+backend="${TRANSCRIBE_BACKEND:-mlx}"
+want_speakers=0
+for a in "$@"; do
+  case "$a" in
+    --speakers|--no-speakers|--num-speakers|--min-speakers|--max-speakers) want_speakers=1 ;;
+  esac
+done
+if (( want_speakers )); then backend=canary; fi
+
+if [[ "$backend" == canary && ! -d "$PROJECT" ]]; then
   echo "transcribe: project missing: $PROJECT" >&2
+  exit 1
+fi
+if [[ "$backend" == mlx && ! -f "$MLX_PROJECT/mlx_stt.py" ]]; then
+  echo "transcribe: mlx backend missing: $MLX_PROJECT/mlx_stt.py" >&2
   exit 1
 fi
 if [[ ! -f "$SUPERVISOR" ]]; then
@@ -115,7 +132,18 @@ if [[ "$tmp" -eq 0 && -n "$src" ]]; then
   fi
 fi
 
-cmd=(uv run --project "$PROJECT" --offline --frozen python -m canary_qwen_transcribe.transcribe_compat "$@")
+case "$backend" in
+  canary)
+    cmd=(uv run --project "$PROJECT" --offline --frozen python -m canary_qwen_transcribe.transcribe_compat "$@")
+    ;;
+  mlx)
+    cmd=(uv run --project "$MLX_PROJECT" --offline --frozen python "$MLX_PROJECT/mlx_stt.py" "$@")
+    ;;
+  *)
+    echo "transcribe: unknown TRANSCRIBE_BACKEND: $backend" >&2
+    exit 2
+    ;;
+esac
 
 if [[ -n "$archive" ]]; then
   # The Python supervisor tees stdout to the archive and runs uv/python in a

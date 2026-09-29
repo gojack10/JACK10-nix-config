@@ -6,7 +6,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$tmp/bin" "$tmp/home/Library/LaunchAgents" "$tmp/flake" "$tmp/gen/LaunchAgents"
+mkdir -p "$tmp/bin" "$tmp/home/Library/LaunchAgents" "$tmp/flake/scripts" "$tmp/gen/LaunchAgents"
 : > "$tmp/flake/flake.nix"
 live="$tmp/home/Library/LaunchAgents/com.local.llm.proxy.plist"
 built="$tmp/gen/LaunchAgents/com.local.llm.proxy.plist"
@@ -35,25 +35,51 @@ cat > "$tmp/bin/home-manager" <<'STUB'
 #!/usr/bin/env bash
 exit 0
 STUB
+cat > "$tmp/bin/uv" <<'STUB'
+#!/usr/bin/env bash
+args=("$@")
+n=${#args[@]}
+bash "${args[n-2]}" "${args[n-1]}"
+STUB
+cat > "$tmp/flake/scripts/hms-proxy-switch" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$1" == smoke ]]; then printf 'smoked\n' > "$MOCK_SMOKED"; exit 0; fi
+printf 'called\n' > "$MOCK_RECOVERED"
+[[ ${MOCK_RECOVERY_FAIL:-0} == 0 ]] || exit 1
+"$1/activate"
+[[ ${MOCK_PARTIAL_FAIL:-0} == 0 ]] || exit 51
+STUB
 cat > "$tmp/gen/activate" <<'STUB'
 #!/usr/bin/env bash
 printf 'activated\n' > "$MOCK_ACTIVATED"
 STUB
 chmod +x "$tmp/bin/"* "$tmp/gen/activate"
 export HOME="$tmp/home" JACK10_NIX_CONFIG_FLAKE="$tmp/flake"
-export PATH="$tmp/bin:$PATH" MOCK_GEN="$tmp/gen" MOCK_ACTIVATED="$tmp/activated"
+export PATH="$tmp/bin:$PATH" MOCK_GEN="$tmp/gen"
+export MOCK_ACTIVATED="$tmp/activated" MOCK_RECOVERED="$tmp/recovered" MOCK_SMOKED="$tmp/smoked"
 
 printf 'old\n' > "$built"
 MOCK_DS4_RUNNING=1 "$tmp/hms" m5-max
-[[ -f "$MOCK_ACTIVATED" ]] || exit 1
+[[ -f "$MOCK_ACTIVATED" && ! -f "$MOCK_RECOVERED" && ! -f "$MOCK_SMOKED" ]] || exit 1
 rm "$MOCK_ACTIVATED"
 
 printf 'changed\n' > "$built"
-if MOCK_DS4_RUNNING=1 "$tmp/hms" m5-max > "$tmp/output" 2>&1; then
-  echo 'changed proxy plist activated with DS4 running' >&2; exit 1
+MOCK_DS4_RUNNING=1 "$tmp/hms" m5-max
+[[ -f "$MOCK_ACTIVATED" && -f "$MOCK_RECOVERED" && -f "$MOCK_SMOKED" ]] || exit 1
+rm "$MOCK_ACTIVATED" "$MOCK_RECOVERED" "$MOCK_SMOKED"
+
+if MOCK_DS4_RUNNING=1 MOCK_RECOVERY_FAIL=1 "$tmp/hms" m5-max > "$tmp/output" 2>&1; then
+  echo 'failed coordinated recovery reported success' >&2; exit 1
 fi
-[[ ! -f "$MOCK_ACTIVATED" ]] && grep -q 'refusing an unsafe proxy-only restart' "$tmp/output"
+[[ ! -f "$MOCK_ACTIVATED" && -f "$MOCK_RECOVERED" && ! -f "$MOCK_SMOKED" ]] || exit 1
+rm "$MOCK_RECOVERED"
+
+if MOCK_DS4_RUNNING=1 MOCK_PARTIAL_FAIL=1 "$tmp/hms" m5-max > "$tmp/output" 2>&1; then
+  echo 'partial activation failure reported success' >&2; exit 1
+fi
+[[ -f "$MOCK_ACTIVATED" && -f "$MOCK_RECOVERED" && -f "$MOCK_SMOKED" ]] || exit 1
+rm "$MOCK_ACTIVATED" "$MOCK_RECOVERED" "$MOCK_SMOKED"
 
 MOCK_DS4_RUNNING=0 "$tmp/hms" m5-max
-[[ -f "$MOCK_ACTIVATED" ]] || exit 1
-printf 'PASS: unchanged passes, changed+resident blocks, changed+stopped passes\n'
+[[ -f "$MOCK_ACTIVATED" && ! -f "$MOCK_RECOVERED" && ! -f "$MOCK_SMOKED" ]] || exit 1
+printf 'PASS: unchanged skips; changed+resident recovers; early failure blocks; partial activation smokes and fails; stopped DS4 switches\n'

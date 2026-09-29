@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Run by hms under the shared GPU lease when Home Manager changes the proxy
+# LaunchAgent while DS4 is resident. An ordinary proxy restart cannot rebind
+# old native receipts: the new proxy has lost its process-lifetime ticket map.
+set -euo pipefail
+
+result=${1:?activation package required}
+uid=$(id -u)
+proxy="gui/$uid/com.local.llm.proxy"
+engine="gui/$uid/com.dsv4.server"
+ctl() { launchctl asuser "$uid" launchctl "$@"; }
+listener() { lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1 || true; }
+wait_down() {
+  local pid=$1 port=$2
+  for ((i=0; i<300; i++)); do
+    if ! kill -0 "$pid" 2>/dev/null && [[ -z $(listener "$port") ]]; then return 0; fi
+    sleep .2
+  done
+  echo "hms: $pid did not stop cleanly on :$port; no forced kill" >&2
+  return 1
+}
+wait_up() {
+  local port=$1 path=$2
+  for ((i=0; i<450; i++)); do
+    if curl -fsS --max-time 1 "http://127.0.0.1:$port$path" >/dev/null 2>&1; then return 0; fi
+    sleep .2
+  done
+  echo "hms: :$port$path did not become ready" >&2
+  return 1
+}
+
+model=$(tr -d '[:space:]' < "$HOME/.dsv4/desired-model")
+case "$model" in
+  qwen) model_id=qwen3.8-flash-next ;;
+  glm) model_id=glm-5.3-flash ;;
+  ds41) model_id=deepseek-v4.1-flash ;;
+  *) echo "hms: unknown desired DS4 model: $model" >&2; exit 1 ;;
+esac
+
+# The smoke runs only AFTER hms releases the GPU lease, which the proxy needs
+# to admit its request. A model listing did not detect the original HTTP 500.
+if [[ "$result" == smoke ]]; then
+  smoke=$(mktemp /tmp/hms-qwen-smoke.XXXXXXXX)
+  trap 'rm -f "$smoke"' EXIT
+  key=$(< "$HOME/.pi/agent/.proxy-key")
+  request_id="hms-recovery-$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  body=$(jq -nc --arg model "$model_id" '{model:$model,messages:[{role:"user",content:"Reply with exactly READY."}],temperature:0,max_tokens:32,stream:true}')
+  code=$(curl -sS --max-time 90 -o "$smoke" -w '%{http_code}' \
+    -H "Authorization: Bearer $key" -H 'Content-Type: application/json' \
+    -H "X-Pi-Request-Id: $request_id" --data "$body" \
+    http://127.0.0.1:8002/v1/chat/completions)
+  [[ "$code" == 200 ]] && grep -q '\[DONE\]' "$smoke" && grep -q READY "$smoke" || {
+    echo "hms: $model_id did not complete a real request (HTTP $code)" >&2; exit 1;
+  }
+  echo "hms: verified $model_id generation through :8002"
+  exit 0
+fi
+
+# Check before Home Manager restarts the proxy. The caller holds
+# /tmp/gpu-lease.lock for activation + recovery; do not interrupt live work.
+curl -fsS --max-time 3 http://127.0.0.1:8002/admin/api/stats |
+  jq -e '.chat_owner == null and .queue_depth == 0' >/dev/null
+curl -fsS --max-time 3 http://127.0.0.1:8002/health |
+  jq -e '.status == "ok" and .ds4_active_requests == 0' >/dev/null
+curl -fsS --max-time 3 http://127.0.0.1:8001/admin/api/stats |
+  jq -e '[.active_models.models[] | select((.prefilling|length)>0 or (.generating|length)>0)] | length == 0' >/dev/null
+[[ -z $(lsof -nP -iTCP:8001 -sTCP:ESTABLISHED -t 2>/dev/null | head -1) ]] || {
+  echo 'hms: DS4 has an established client; refusing restart' >&2; exit 1;
+}
+
+activation_rc=0
+"$result/activate" || activation_rc=$?
+
+# Even a partially failed activation may have restarted the proxy. Restore
+# service health before returning the activation error to the caller.
+# The activation may have restarted either or both LaunchAgents. Always pair
+# them to a new owner-only native gate, then prove an actual generation works.
+p=$(listener 8002)
+if [[ -n "$p" ]]; then
+  launchctl bootout "$proxy"
+  wait_down "$p" 8002
+fi
+p=$(listener 8001)
+if [[ -n "$p" ]]; then
+  launchctl kill SIGTERM "$engine"
+  wait_down "$p" 8001
+fi
+
+gate=$(mktemp -d "$HOME/.dsv4/reservation-hms-XXXXXXXX")
+chmod 700 "$gate"
+ctl setenv DS4_FREEZE_DIR "$gate"
+[[ $(ctl getenv DS4_FREEZE_DIR) == "$gate" ]] || { echo 'hms: GUI gate environment mismatch' >&2; exit 1; }
+launchctl kickstart "$engine"
+for ((i=0; i<450; i++)); do
+  if [[ -f "$gate/terminal-engine" ]] &&
+     curl -fsS --max-time 1 http://127.0.0.1:8001/v1/models >/dev/null 2>&1; then break; fi
+  sleep .2
+done
+[[ -f "$gate/terminal-engine" ]] || { echo 'hms: fresh DS4 has no native gate' >&2; exit 1; }
+pid=$(listener 8001)
+[[ -n "$pid" ]] && jq -e --argjson p "$pid" '.pid == $p and .supported == 1' "$gate/terminal-engine" >/dev/null || {
+  echo 'hms: native gate does not match fresh DS4 process' >&2; exit 1;
+}
+ctl setenv LOCAL_PROXY_DS4_GATE "$gate"
+ctl setenv LOCAL_PROXY_DS4_PID "$pid"
+ctl setenv LOCAL_PROXY_DS4_BINARY "$HOME/ds4/ds4-server"
+if ! launchctl print "$proxy" >/dev/null 2>&1; then
+  launchctl bootstrap "gui/$uid" "$HOME/Library/LaunchAgents/com.local.llm.proxy.plist" ||
+    launchctl print "$proxy" >/dev/null
+fi
+wait_up 8002 /v1/models
+echo "hms: paired proxy with fresh DS4 PID $pid and native gate"
+if (( activation_rc != 0 )); then
+  echo "hms: Home Manager activation failed ($activation_rc); proxy + DS4 recovered, but switch is incomplete" >&2
+  exit 51  # paired and ready; hms must smoke outside the GPU lease, then fail
+fi

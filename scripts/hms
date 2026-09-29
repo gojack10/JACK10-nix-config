@@ -54,18 +54,30 @@ main() {
   local result="/tmp/hms-activation-$host"
   nix build "$flake#homeConfigurations.$host.activationPackage" -o "$result"
 
-  # Home Manager restarts an agent whenever its plist changes. A proxy-only
-  # restart loses the in-memory native ticket map while DS4 keeps its gate and
-  # receipts, leaving every Qwen request blocked with HTTP 500. Stop before
-  # activation rather than killing a live conversation or bypassing that guard.
+  # A changed proxy plist restarts :8002. If DS4 is resident, pair that
+  # restart with a fresh native gate and prove a real request before returning.
   if [[ "$host" == m5-max ]] &&
      ! cmp -s "$result/LaunchAgents/com.local.llm.proxy.plist" \
               "$HOME/Library/LaunchAgents/com.local.llm.proxy.plist" &&
      launchctl print "gui/$(id -u)/com.dsv4.server" 2>/dev/null |
        grep -Eq '^[[:space:]]*pid = [0-9]+'; then
-    echo "hms: proxy LaunchAgent changed while DS4 is running; refusing an unsafe proxy-only restart." >&2
-    echo "hms: coordinate stopping the proxy and DS4, activating, then starting DS4 with a fresh gate; a proxy-only retry will still fail." >&2
-    return 1
+    local rc=0
+    uv run --no-project --offline python -c '
+import fcntl, subprocess, sys
+f = open("/tmp/gpu-lease.lock", "a+")
+try:
+    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit("hms: GPU lease is held; retry after the active request finishes")
+sys.exit(subprocess.call(["bash", sys.argv[1], sys.argv[2]]))
+' "$flake/scripts/hms-proxy-switch" "$result" || rc=$?
+    # rc=51 means activation failed but both services were paired. In either
+    # paired case, release our GPU lease before the proxy can admit the smoke.
+    if (( rc == 0 || rc == 51 )); then
+      bash "$flake/scripts/hms-proxy-switch" smoke
+    fi
+    (( rc == 0 )) || return 1
+    return
   fi
 
   if command -v home-manager >/dev/null 2>&1; then

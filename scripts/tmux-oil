@@ -881,10 +881,29 @@ end
 M.now_ms = function() return os.time() * 1000 end
 local render_cache_status
 
+-- Agent kinds publishing into a session, from @pi_cache_state. State written
+-- before Pi tagged agents is a Pi session; no state means no known agent.
+local function state_agents(encoded)
+  if encoded == "" then return nil end
+  local ok, state = pcall(vim.json.decode, encoded)
+  if not ok or type(state) ~= "table" or state.version ~= 1 then return nil end
+  if type(state.agents) ~= "table" then return { pi = true } end
+  local agents = {}
+  for _, kind in ipairs(state.agents) do
+    if kind == "pi" or kind == "claude" then agents[kind] = true end
+  end
+  return next(agents) and agents or nil
+end
+M.state_agents = state_agents
+
 local function parse_live(output)
   if output:sub(-1) == "\n" then output = output:sub(1, -2) end
-  if output == "" then return model({}), {} end
-  local rows, metadata = {}, {}
+  if output == "" then
+    local live = model({})
+    live.agents_by_id = {}
+    return live, {}
+  end
+  local rows, metadata, agents_by_id = {}, {}, {}
   for _, line in ipairs(vim.split(output, "\n", { plain = true })) do
     local rank, id, name, status, cache_state, parent = line:match(
       "^(%d+)\t([^\t]+)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)$")
@@ -895,8 +914,11 @@ local function parse_live(output)
       parent = parent:match("^%$%d+$") and parent or nil,
     }
     metadata[id] = render_cache_status(status, cache_state, M.now_ms())
+    agents_by_id[id] = state_agents(cache_state)
   end
-  return model(rows), metadata
+  local live = model(rows)
+  live.agents_by_id = agents_by_id
+  return live, metadata
 end
 
 local function annotation_text(details)
@@ -914,6 +936,33 @@ local style_groups = {
   yellow = "TmuxOilYellow",
   red = "TmuxOilRed",
 }
+
+-- Badge drawn right after the status box, in this order when a session holds both.
+local agent_glyphs = {
+  { kind = "pi", text = "π", group = "TmuxOilMeta" },
+  { kind = "claude", text = "*", group = "TmuxOilClaude" },
+}
+
+local function agent_chunks(agents)
+  local chunks = {}
+  for _, glyph in ipairs(agent_glyphs) do
+    if agents and agents[glyph.kind] then chunks[#chunks + 1] = { glyph.text, glyph.group } end
+  end
+  return chunks
+end
+
+local function merge_chunks(chunks)
+  local merged = {}
+  for _, chunk in ipairs(chunks) do
+    local last = merged[#merged]
+    if last and last[2] == chunk[2] then
+      last[1] = last[1] .. chunk[1]
+    else
+      merged[#merged + 1] = { chunk[1], chunk[2] }
+    end
+  end
+  return merged
+end
 
 local function styled_chunks(text)
   local chunks, group, offset = {}, "TmuxOilMeta", 1
@@ -1453,27 +1502,37 @@ local function annotate(live, metadata)
     return
   end
   local lines = vim.api.nvim_buf_get_lines(M.buf, 0, -1, false)
+  local agents_by_id = live.agents_by_id or {}
+  -- Pad badge-less rows to the widest badge so names stay in one column.
+  local badge_width = 0
+  for _, agents in pairs(agents_by_id) do
+    badge_width = math.max(badge_width, #agent_chunks(agents))
+  end
   local statuses, status_col = {}, 0
   for row, id in ipairs(ids) do
     local row_width = vim.fn.strdisplaywidth(lines[row])
     if id and M.baseline.by_id[id] then
       local text, group = metadata[id] or "", "Comment"
-      local marker, marker_group = "[ ] ", "TmuxOilMeta"
+      local marker, marker_group = "[ ]", "TmuxOilMeta"
       if live.by_id[id] == nil then
         text, group = "⚠ externally deleted", "TmuxOilYellow"
-        marker, marker_group = "[x] ", "TmuxOilRed"
+        marker, marker_group = "[x]", "TmuxOilRed"
       elseif live.by_id[id] ~= M.baseline.by_id[id] then
         text, group = "⚠ externally renamed to " .. live.by_id[id], "TmuxOilYellow"
-        marker, marker_group = "[~] ", "TmuxOilYellow"
+        marker, marker_group = "[~]", "TmuxOilYellow"
       elseif text:find("AGENT DONE", 1, true) then
-        marker, marker_group = "[✓] ", "TmuxOilGreen"
+        marker, marker_group = "[✓]", "TmuxOilGreen"
       elseif text:find("BUSY", 1, true) or text:find("CACHE CHECKING", 1, true) then
-        marker, marker_group = "[~] ", "TmuxOilYellow"
+        marker, marker_group = "[~]", "TmuxOilYellow"
       end
       local prefix = live.tree_prefix_by_id[id] or M.baseline.tree_prefix_by_id[id] or ""
       local label = {}
       if prefix ~= "" then label[#label + 1] = { prefix, "TmuxOilMeta" } end
-      label[#label + 1] = { marker, marker_group }
+      local box = { { marker, marker_group } }
+      local badge = live.by_id[id] ~= nil and agent_chunks(agents_by_id[id]) or {}
+      vim.list_extend(box, badge)
+      box[#box + 1] = { string.rep(" ", badge_width - #badge + 1), marker_group }
+      vim.list_extend(label, merge_chunks(box))
       local parent_option = live.parent_option_by_id[id]
       if parent_option and not live.parent_by_id[id] then
         label[#label + 1] = { "[orphan " .. parent_option .. "] ", "TmuxOilYellow" }
@@ -1965,6 +2024,7 @@ function M.start()
   vim.api.nvim_set_hl(0, "TmuxOilGreen", { fg = "#5fff87", ctermfg = 10 })
   vim.api.nvim_set_hl(0, "TmuxOilYellow", { fg = "#ffff00", ctermfg = 11 })
   vim.api.nvim_set_hl(0, "TmuxOilRed", { fg = "#ff5f5f", ctermfg = 9 })
+  vim.api.nvim_set_hl(0, "TmuxOilClaude", { fg = "#d77757", ctermfg = 173 })
   local target_row, current = 1, current_session_id()
   for row, id in ipairs(M.baseline.order) do
     if id == current then target_row = row; break end

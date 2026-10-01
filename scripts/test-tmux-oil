@@ -1539,7 +1539,7 @@ M.start()
 check(vim.o.laststatus == 0, "statusline was not removed")
 wait_for(function() return M.completed_polls >= 1 and M.poll_process == nil end,
   "first metadata poll did not complete")
-local alpha = id_named("alpha")
+local alpha, beta = id_named("alpha"), id_named("beta")
 local before_lines = lines()
 local function native(cmd)
   vim.cmd(cmd)
@@ -1661,6 +1661,49 @@ for _, case in ipairs({
     { lines(), vim.b[M.buf].changedtick, vim.bo[M.buf].modified, vim.fn.undotree() }),
     'status classification changed buffer/changedtick/modified/undo: ' .. case[1])
 end
+
+check(M.state_agents('') == nil and M.state_agents('not json') == nil
+    and vim.deep_equal(M.state_agents('{"version":1,"entries":[]}'), { pi = true })
+    and vim.deep_equal(M.state_agents('{"version":1,"entries":[],"agents":["claude","bogus"]}'),
+      { claude = true })
+    and M.state_agents('{"version":1,"entries":[],"agents":[]}') == nil,
+  'state_agents misread agent kinds')
+local function inline_labels()
+  local by_row = {}
+  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(M.buf, M.ns, 0, -1, { details = true })) do
+    if mark[4].virt_text_pos == 'inline' then by_row[mark[2] + 1] = mark[4].virt_text end
+  end
+  local ids, labels = M.editor_ids(), {}
+  for row, id in ipairs(ids) do labels[id] = by_row[row] end
+  return labels
+end
+for _, case in ipairs({
+  { '{"version":1,"entries":[],"agentDone":true}',
+    { { '[✓]', 'TmuxOilGreen' }, { 'π', 'TmuxOilMeta' }, { ' ', 'TmuxOilGreen' } },
+    { { '[ ]  ', 'TmuxOilMeta' } } },
+  { '{"version":1,"entries":[],"agentDone":true,"agents":["claude"]}',
+    { { '[✓]', 'TmuxOilGreen' }, { '*', 'TmuxOilClaude' }, { ' ', 'TmuxOilGreen' } },
+    { { '[ ]  ', 'TmuxOilMeta' } } },
+  { '{"version":1,"entries":[],"agentDone":true,"agents":["claude","pi"]}',
+    { { '[✓]', 'TmuxOilGreen' }, { 'π', 'TmuxOilMeta' }, { '*', 'TmuxOilClaude' },
+      { ' ', 'TmuxOilGreen' } },
+    { { '[ ]   ', 'TmuxOilMeta' } } },
+  { '{"version":1,"entries":[],"agentDone":true,"agents":[]}',
+    { { '[✓] ', 'TmuxOilGreen' } },
+    { { '[ ] ', 'TmuxOilMeta' } } },
+}) do
+  control({ 'set-option', '-t', alpha, '@pi_cache_state', case[1] })
+  local polled = M.completed_polls
+  M.poll()
+  wait_for(function() return M.completed_polls > polled and M.poll_process == nil end,
+    'agent badge poll did not complete: ' .. case[1])
+  local labels = inline_labels()
+  check(vim.deep_equal(labels[alpha], case[2]),
+    'wrong agent badge for ' .. case[1] .. ': ' .. vim.inspect(labels[alpha]))
+  check(vim.deep_equal(labels[beta], case[3]),
+    'badge-less row not padded for ' .. case[1] .. ': ' .. vim.inspect(labels[beta]))
+end
+control({ 'set-option', '-u', '-t', alpha, '@pi_cache_state' })
 
 local old_now, dynamic_now = M.now_ms, 1000000
 M.now_ms = function() return dynamic_now end
@@ -1830,6 +1873,7 @@ for _, result in ipairs({
   "PASS ticking metadata changes extmark without changing lines",
   "PASS ticking metadata leaves modified flag and undo history unchanged",
   "PASS cache outcomes stay white; CACHE CHECKING/BUSY yellow; AGENT DONE green without edits",
+  "PASS agent badges mark Pi (π) and Claude (orange *) rows and pad badge-less rows",
   "PASS stable aggregate advances countdown, expiry/warm state, busy time and pane selection",
   "PASS unchanged tmux options still repaint changed wall-clock status",
   "PASS native empty tracked-name write preserves identity, dirty editor, annotations and polling",

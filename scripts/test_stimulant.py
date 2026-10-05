@@ -19,14 +19,33 @@ with patch("subprocess.run", return_value=CompletedProcess([], 0, "SleepDisabled
     assert stimulant["enabled"]()
 
 with patch("subprocess.run", return_value=CompletedProcess([], 0)) as run:
-    stimulant["set_enabled"](True)
-    assert run.call_args.args[0] == ["sudo", "/usr/bin/pmset", "-a", "disablesleep", "1"]
+    stimulant["set_enabled"](False)
+    assert [c.args[0] for c in run.call_args_list] == [
+        ["sudo", "/usr/bin/pmset", "-a", "restoredefaults"],
+        ["sudo", "/usr/bin/pmset", "-a", "disablesleep", "0"],
+    ], "restore must return to Apple defaults and clear the lid override"
 
 with patch("subprocess.run", return_value=CompletedProcess([], 0)) as run:
-    stimulant["run_timer"](7200)
-    command = run.call_args.args[0]
-    assert command[:3] == ["sudo", "/bin/sh", "-c"]
-    assert command[-1] == "7200"
-    assert "trap cleanup EXIT HUP INT TERM" in command[3]
+    stimulant["set_enabled"](True)
+    assert run.call_args.args[0] == [
+        "sudo", "/usr/bin/pmset", "-a",
+        "disablesleep", "1", "displaysleep", "0", "sleep", "0", "disksleep", "0",
+    ], "awake must cover lid, display, idle sleep and disk sleep"
 
-print("stimulant checks passed")
+# The timed mode escalates only pmset, never a root shell, and always restores.
+with patch("subprocess.run", return_value=CompletedProcess([], 0)) as run, \
+        patch("time.sleep") as sleep:
+    stimulant["run_timer"](7200)
+    assert sleep.call_args.args == (7200,)
+    escalated = [c.args[0] for c in run.call_args_list]
+    assert all(cmd[:2] == ["sudo", "/usr/bin/pmset"] for cmd in escalated), escalated
+    assert escalated[0][2:4] == ["-a", "disablesleep"]
+    assert ["-a", "restoredefaults"] in [cmd[2:] for cmd in escalated]
+
+with patch("subprocess.run", return_value=CompletedProcess([], 0)) as run, \
+        patch("time.sleep", side_effect=KeyboardInterrupt):
+    stimulant["run_timer"](7200)
+    assert ["-a", "restoredefaults"] in [c.args[0][2:] for c in run.call_args_list], \
+        "Ctrl-C must still restore defaults"
+
+print("stimulant: ok")

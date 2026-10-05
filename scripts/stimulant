@@ -1,11 +1,20 @@
 #!/usr/bin/env -S uv run --script
-"""Keep a Mac awake with its lid closed."""
+"""Keep a Mac fully awake, or hand it back to macOS defaults.
+
+One rule: stimulant on means nothing ever turns off — the lid, the display,
+idle system sleep and disk sleep. Stimulant off means Apple's defaults.
+"""
 
 import argparse
 import re
 import subprocess
+import time
 
 PMSET = "/usr/bin/pmset"
+
+# Stimulant on: nothing dims, sleeps or spins down, and a closed lid keeps
+# the machine running.
+AWAKE = ["disablesleep", "1", "displaysleep", "0", "sleep", "0", "disksleep", "0"]
 
 
 def positive_seconds(value: str) -> int:
@@ -15,40 +24,45 @@ def positive_seconds(value: str) -> int:
     return seconds
 
 
+def pmset(*args: str) -> None:
+    subprocess.run(["sudo", PMSET, *args], check=True)
+
+
 def enabled() -> bool:
     result = subprocess.run([PMSET, "-g"], check=True, capture_output=True, text=True)
     return re.search(r"\bSleepDisabled\s+1\b", result.stdout) is not None
 
 
 def set_enabled(value: bool) -> None:
-    subprocess.run(["sudo", PMSET, "-a", "disablesleep", str(int(value))], check=True)
+    if value:
+        pmset("-a", *AWAKE)
+        return
+    # `restoredefaults` does not touch disablesleep, so clear it explicitly.
+    pmset("-a", "restoredefaults")
+    pmset("-a", "disablesleep", "0")
 
 
 def run_timer(seconds: int) -> None:
-    script = f"""
-set -e
-cleanup() {{
-  trap - EXIT HUP INT TERM
-  {PMSET} -a disablesleep 0
-}}
-trap cleanup EXIT HUP INT TERM
-{PMSET} -a disablesleep 1
-/bin/sleep "$1"
-"""
     print(f"Stimulant on for {seconds} seconds; press Ctrl-C to stop early.", flush=True)
-    subprocess.run(["sudo", "/bin/sh", "-c", script, "stimulant", str(seconds)], check=True)
+    set_enabled(True)
+    try:
+        time.sleep(seconds)
+    except KeyboardInterrupt:
+        print()
+    finally:
+        set_enabled(False)
     print("Stimulant off.")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Toggle closed-lid sleep, or keep this Mac awake for a fixed time."
+        description="Never let this Mac dim, sleep or spin down, or restore Apple defaults."
     )
     parser.add_argument(
         "seconds",
         nargs="?",
         type=positive_seconds,
-        help="seconds to stay awake before automatically restoring normal sleep (example: 7200)",
+        help="seconds to stay awake before restoring defaults (example: 7200)",
     )
     args = parser.parse_args()
 

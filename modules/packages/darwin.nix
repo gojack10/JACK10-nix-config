@@ -385,7 +385,6 @@ let
 in
 {
   nixpkgs.config.allowUnfreePredicate = pkg: builtins.elem (pkgs.lib.getName pkg) [
-    "terraform"
     "unrar"
   ];
 
@@ -413,7 +412,5 @@ in
     unrar
   ] ++ lib.optionals (hostname == "m5-max") [
     vlc-bin
-  ] ++ lib.optionals (builtins.elem hostname [ "m5-max" "work-mac" ]) [
-    terraform
   ];
 }

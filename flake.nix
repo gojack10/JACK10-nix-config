@@ -76,7 +76,6 @@
         ./modules/packages/browser-harness.nix
         ./modules/packages/common.nix
         ./modules/packages/notion-cli.nix
-        ./modules/packages/salesforce-cli.nix
         ./modules/scripts.nix
         ./modules/shell/zsh.nix
         ./modules/shell/tmux.nix
@@ -86,7 +85,7 @@
       ];
 
       # Small profile for storage-constrained machines. Heavy media, browser
-      # automation, Salesforce, Node, and workstation scripts stay out.
+      # automation, Node, and workstation scripts stay out.
       minimalSharedModules = [
         ./home.nix
         ./modules/packages/setzer.nix

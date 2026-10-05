@@ -1,7 +1,10 @@
-{ config, pkgs, lib, ... }:
+{ config, pkgs, lib, hostname, ... }:
 
 let
   home = config.home.homeDirectory;
+  # Only the machine that hosts the engines runs the proxy. A client Mac must
+  # keep 127.0.0.1:8002 free for its SSH forward to the host's proxy.
+  enabled = hostname == "m5-max";
   mlxSource = "${home}/mlx-lm-src";
   mlxServer = "${home}/.local/bin/mlx_lm.server";
   mlxHome = "${home}/.mlx-lm";
@@ -15,7 +18,7 @@ in {
 
   # mlx-lm serves one checkpoint per process. local-proxy.py atomically writes
   # the desired checkpoint path and owns every bootout/bootstrap transition.
-  home.file.".mlx-lm/mlx-server.sh" = {
+  home.file.".mlx-lm/mlx-server.sh" = lib.mkIf enabled {
     force = true;
     executable = true;
     text = ''
@@ -33,7 +36,7 @@ in {
     '';
   };
 
-  home.activation.setup-local-llm = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+  home.activation.setup-local-llm = lib.mkIf enabled (lib.hm.dag.entryAfter [ "writeBoundary" ] ''
     mkdir -p ${lib.escapeShellArg mlxHome} ${lib.escapeShellArg home}/.pi/agent
 
     if [ ! -d ${lib.escapeShellArg mlxSource}/.git ]; then
@@ -59,9 +62,9 @@ in {
       ${pkgs.uv}/bin/uv venv --python 3.14 ${lib.escapeShellArg proxyVenv}
     fi
     ${pkgs.uv}/bin/uv pip install --python ${lib.escapeShellArg proxyPython} aiohttp==3.14.3
-  '';
+  '');
 
-  launchd.agents.mlx-lm-server = {
+  launchd.agents.mlx-lm-server = lib.mkIf enabled {
     enable = true;
     config = {
       Label = "com.mlx-lm.server";
@@ -79,7 +82,7 @@ in {
     };
   };
 
-  launchd.agents.local-llm-proxy = {
+  launchd.agents.local-llm-proxy = lib.mkIf enabled {
     enable = true;
     config = {
       Label = "com.local.llm.proxy";

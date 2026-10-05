@@ -8,14 +8,12 @@ let
   # file; no hostnames, usernames or private ports belong in this repository.
   enabled = hostname != "m5-max";
   localConfig = "${home}/.config/JACK10-nix-config/local/ssh.env";
-  keyPath = "${home}/.ssh/jack10_llm_tunnel";
   logFile = "${home}/Library/Logs/llm-client-tunnel.log";
   errLogFile = "${home}/Library/Logs/llm-client-tunnel.err.log";
   launcher = pkgs.writeShellScript "llm-client-tunnel-launch" ''
     set -eu
 
     local_config=${lib.escapeShellArg localConfig}
-    key=${lib.escapeShellArg keyPath}
 
     log() {
       printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
@@ -34,6 +32,7 @@ let
     tunnel_port="''${JACK10_REVERSE_SSH_TUNNEL_PORT:-''${JACK10_SSH_PORT:-}}"
     remote_forwards="''${JACK10_LLM_CLIENT_REMOTE_FORWARDS:-}"
     local_forwards="''${JACK10_LLM_CLIENT_LOCAL_FORWARDS:-}"
+    tunnel_key="''${JACK10_LLM_CLIENT_SSH_KEY:-}"
 
     if [ -z "$tunnel_target" ]; then
       log "llm client tunnel is missing JACK10_SSH_TARGET in $local_config."
@@ -45,13 +44,12 @@ let
       exit 78
     fi
 
-    # The tunnel authenticates with its own key, so a host with no configured
-    # identity still works. Authorize the printed public key on the target.
-    if [ ! -f "$key" ]; then
-      mkdir -p "$(dirname "$key")"
-      ssh-keygen -q -t ed25519 -N ''' -C "llm-client-tunnel-${hostname}" -f "$key"
-      log "created tunnel key; authorize this on the target:"
-      log "  $(cat "$key.pub")"
+    # Default: whatever identity this machine already uses for the target, from
+    # ~/.ssh/config or the agent. JACK10_LLM_CLIENT_SSH_KEY pins a dedicated key
+    # for a host that has no working identity of its own.
+    if [ -n "$tunnel_key" ] && [ ! -f "$tunnel_key" ]; then
+      log "JACK10_LLM_CLIENT_SSH_KEY points at a missing key: $tunnel_key"
+      exit 78
     fi
 
     set -- ${pkgs.autossh}/bin/autossh \
@@ -62,10 +60,12 @@ let
       -o ServerAliveInterval=15 \
       -o ServerAliveCountMax=2 \
       -o BatchMode=yes \
-      -o IdentitiesOnly=yes \
       -o StrictHostKeyChecking=accept-new \
-      -o ConnectTimeout=10 \
-      -i "$key"
+      -o ConnectTimeout=10
+
+    if [ -n "$tunnel_key" ]; then
+      set -- "$@" -o IdentitiesOnly=yes -i "$tunnel_key"
+    fi
 
     if [ -n "$tunnel_port" ]; then
       set -- "$@" -p "$tunnel_port"
@@ -107,6 +107,8 @@ Suggested shape (values are per-machine, never committed):
   JACK10_LLM_CLIENT_LOCAL_FORWARDS='local_port:localhost:remote_port'
   # Optional if not already in ~/.ssh/config:
   # JACK10_SSH_PORT=22
+  # Optional, only when the machine has no working identity for the target:
+  # JACK10_LLM_CLIENT_SSH_KEY=~/.ssh/id_ed25519
 
 No hostnames, usernames, or private ports should be committed to git.
 EOF

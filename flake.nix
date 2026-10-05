@@ -119,6 +119,7 @@
         ./modules/darwin/fan.nix
         ./modules/darwin/gpu-over-50.nix
         ./modules/darwin/local-llm.nix
+        ./modules/darwin/llm-client-tunnel.nix
         ./modules/darwin/reverse-ssh-tunnel.nix
       ];
 

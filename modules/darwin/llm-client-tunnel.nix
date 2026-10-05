@@ -49,7 +49,7 @@ let
     # identity still works. Authorize the printed public key on the target.
     if [ ! -f "$key" ]; then
       mkdir -p "$(dirname "$key")"
-      ssh-keygen -q -t ed25519 -N '' -C "llm-client-tunnel-${hostname}" -f "$key"
+      ssh-keygen -q -t ed25519 -N ''' -C "llm-client-tunnel-${hostname}" -f "$key"
       log "created tunnel key; authorize this on the target:"
       log "  $(cat "$key.pub")"
     fi
@@ -90,7 +90,7 @@ in {
     fi
 
     if [ ! -f ${lib.escapeShellArg localConfig} ] \
-      || { ! grep -Eq '^[[:space:]]*(JACK10_REVERSE_SSH_TUNNEL_TARGET|JACK10_SSH_TARGET)=' ${lib.escapeShellArg localConfig} && ! grep -Eq '^[[:space:]]*JACK10_LLM_CLIENT_(REMOTE|LOCAL)_FORWARDS=' ${lib.escapeShellArg localConfig}; } \
+      || ! grep -Eq '^[[:space:]]*(JACK10_REVERSE_SSH_TUNNEL_TARGET|JACK10_SSH_TARGET)=' ${lib.escapeShellArg localConfig} \
       || ! grep -Eq '^[[:space:]]*JACK10_LLM_CLIENT_(REMOTE|LOCAL)_FORWARDS=' ${lib.escapeShellArg localConfig}; then
       cat >&2 <<'EOF'
 warning: llm client tunnel launchagent is installed but not configured.

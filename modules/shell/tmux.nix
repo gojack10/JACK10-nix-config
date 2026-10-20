@@ -143,7 +143,7 @@ in {
       set -g status-interval 1
       set -g message-style 'bg=black fg=white'
 
-      set -g status 1
+      set -g status on
 
       # Line 0: session+windows left, stats+date right
       # tmux-continuum normally injects its save hook into status-right, but

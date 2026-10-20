@@ -253,10 +253,10 @@ index 00000000..395f7e8b
 +[ "$($TMUX list-sessions -O name -F '#{session_name}')" = "$(printf 'beta\nmiddle\nomega')" ]
 diff --git a/regress/paste-keys.py b/regress/paste-keys.py
 new file mode 100644
-index 00000000..6ba146d6
+index 00000000..bbf0cfeb
 --- /dev/null
 +++ b/regress/paste-keys.py
-@@ -0,0 +1,255 @@
+@@ -0,0 +1,261 @@
 +#!/usr/bin/env -S uv run --no-project python
 +"""Real-PTY paste/extended-key checks. Run with uv run python, no dependencies.
 +
@@ -499,6 +499,12 @@ index 00000000..6ba146d6
 +        expected = keys if fmt == "csi-u" else b"\x1b[27;5;105~\t\x1b[27;5;106~\r\x1b[27;6;65~"
 +        raw_case(tmux, keys, expected, fmt)
 +        print(f"PASS {version} {fmt}: Ctrl-I != Tab, Ctrl-J != Enter, Ctrl-Shift-A", flush=True)
++        reply = b"\x1b[?62;22;52c"
++        typed = b"62;22;52c"
++        raw_case(tmux, reply + reply + typed, typed, fmt)
++        literal_paste = b"\x1b[200~" + reply + b"\x1b[201~"
++        raw_case(tmux, reply + literal_paste, literal_paste, fmt)
++        print(f"PASS {version} {fmt}: repeated device replies are consumed; typed and pasted literals preserved", flush=True)
 +    if args.nvim:
 +        nvim_case(tmux, str(Path(shutil.which(args.nvim) or args.nvim).resolve()), args.user_config)
 +        config = "user-config" if args.user_config else "--clean"
@@ -732,6 +738,30 @@ index b53dae8e..7050c5a8 100644
  
  	char		*name;
  	const char	*cwd;
+diff --git a/tty-keys.c b/tty-keys.c
+index 7125dcaf..e8e5133c 100644
+--- a/tty-keys.c
++++ b/tty-keys.c
+@@ -1473,7 +1473,7 @@ tty_keys_device_attributes(struct tty *tty, const char *buf, size_t len,
+ 	char		 tmp[128], *endptr, p[32] = { 0 }, *cp, *next;
+ 
+ 	*size = 0;
+-	if (tty->flags & TTY_HAVEDA)
++	if (tty->flags & TTY_BRACKETPASTE)
+ 		return (-1);
+ 
+ 	/* First three bytes are always \033[?. */
+@@ -1515,6 +1515,10 @@ tty_keys_device_attributes(struct tty *tty, const char *buf, size_t len,
+ 			break;
+ 	}
+ 
++	/* Repeated replies must not become (possibly extended) key input. */
++	if (tty->flags & TTY_HAVEDA)
++		return (0);
++
+ 	/* Add terminal features. */
+ 	switch (p[0]) {
+ 	case 61: /* level 1 */
 diff --git a/window-tree.c b/window-tree.c
 index 7e90a5a2..61a0c367 100644
 --- a/window-tree.c

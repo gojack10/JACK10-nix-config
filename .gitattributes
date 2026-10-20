@@ -1,2 +1,0 @@
-# Unified-diff context includes intentional leading spaces before source tabs.
-modules/shell/patches/*.patch -whitespace

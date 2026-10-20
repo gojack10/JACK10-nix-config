@@ -10,12 +10,12 @@ in {
     package = if isNixOS then pkgs.tmux else pkgs.tmux.overrideAttrs (old: {
       version = "3.8";
       src = pkgs.fetchFromGitHub {
-        owner = "tmux";
+        owner = "gojack10";
         repo = "tmux";
-        rev = "7f2a35ad3321f9ba57a1062ca73b1f3ff26aca53"; # 3.8
-        hash = "sha256-pv2wlr3coo+E0pfpb58giJJQn9PGgMFqtVA6nk+9JdE=";
+        rev = "419c08e28ca9a310e884fefc4924a4b7a51195ff"; # 3.8 + session UI and late-reply fixes
+        hash = "sha256-RxzG/GqKhU4sGZbynbIdvgDEQwgregjHQIlktZX6MVw=";
       };
-      patches = [ ./patches/tmux-3.8-session-ui.patch ];
+      patches = [];
       # Upstream recommends jemalloc for macOS allocation correctness.
       buildInputs = old.buildInputs ++ lib.optionals pkgs.stdenv.isDarwin [ pkgs.jemalloc ];
       configureFlags = old.configureFlags ++ lib.optionals pkgs.stdenv.isDarwin [ "--enable-jemalloc" ];

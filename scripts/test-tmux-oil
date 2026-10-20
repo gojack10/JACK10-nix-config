@@ -1411,9 +1411,12 @@ run_order_suite() {
   run_order_case drift "$PATCHED_TMUX_BIN"
   printf '%s\n' 'PASS external reorder drift is rejected without mutation'
 
-  vanilla_package=$(nix eval --raw nixpkgs#tmux.outPath)
-  nix build --no-link nixpkgs#tmux >/dev/null
-  vanilla_tmux=$vanilla_package/bin/tmux
+  vanilla_tmux=${VANILLA_TMUX_BIN-}
+  if [ -z "$vanilla_tmux" ]; then
+    vanilla_package=$(nix eval --raw nixpkgs#tmux.outPath)
+    nix build --no-link nixpkgs#tmux >/dev/null
+    vanilla_tmux=$vanilla_package/bin/tmux
+  fi
   run_order_case fallback "$vanilla_tmux"
   printf '%s\n' 'PASS unpatched fallback warns and applies non-order operations'
 }
@@ -2165,6 +2168,11 @@ run_popup_open_case() {
     trap - EXIT HUP INT TERM
     "$TMUX_BIN" -L "$socket" -f /dev/null kill-server >/dev/null 2>&1 || status=1
     [ -n "$socket_path" ] && rm -f "$socket_path"
+    if [ -n "${TMUX_OIL_TEST_ARTIFACT_DIR-}" ]; then
+      mkdir -p "$TMUX_OIL_TEST_ARTIFACT_DIR"
+      cp "$capture" "$TMUX_OIL_TEST_ARTIFACT_DIR/popup-open.pty"
+      [ ! -f "$tmp/opening" ] || cp "$tmp/opening" "$TMUX_OIL_TEST_ARTIFACT_DIR/popup-opening.pty"
+    fi
     rm -rf "$tmp"
     [ -n "$socket_path" ] && [ ! -e "$socket_path" ] || status=1
     exit "$status"
@@ -2236,7 +2244,9 @@ SH
     return 1
   fi
   black_surface=$(printf '\033[38;5;254m\033[48;5;16m')
-  LC_ALL=C grep -Fq "$black_surface" "$tmp/opening" || {
+  black_surface_rgb=$(printf '\033[38;2;228;228;228m\033[48;2;0;0;0m')
+  # Newer tmux emits truecolor here rather than its 256-color approximation.
+  LC_ALL=C grep -Fq -e "$black_surface" -e "$black_surface_rgb" "$tmp/opening" || {
     printf '%s\n' 'popup-open: first surface did not match the editor background' >&2
     return 1
   }

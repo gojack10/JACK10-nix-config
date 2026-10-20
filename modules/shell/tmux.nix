@@ -2,29 +2,23 @@
 
 let
   isNixOS = settings.isNixOS or false;
-  tmuxChooseTreeBase = "549c35b06165f6ae023115eb76f83f2cbf945395";
-  # Tag: jack-tmux-3.5a-r2. Pin the commit, never the movable tag name.
-  tmuxChooseTreeTip = "b47f68012eb24a64c405f64cfb9248a2b02cea7b";
 in {
   programs.tmux = {
     enable = true;
-    # tmux 3.6a is crashing this machine's long-lived server when entering
-    # copy-mode (macOS crash reports show invalid free in grid_clear_lines via
-    # cmd_copy_mode_exec). Pin to the previous stable release until upstream or
-    # nixpkgs carries a fix.
-    package = if isNixOS then pkgs.tmux else pkgs.tmux.overrideAttrs (old: rec {
-      version = "3.5a";
-      src = pkgs.fetchurl {
-        url = "https://github.com/tmux/tmux/releases/download/${version}/tmux-${version}.tar.gz";
-        hash = "sha256-FiFr0IdxcN/MZBVwhbqQE2ELErCCVIx8lULMAQMZiVE=";
+    # 3.8 contains upstream's literal-paste fix. Keep session ordering and
+    # choose-tree UX without retaining the historical 3.5a version pin.
+    package = if isNixOS then pkgs.tmux else pkgs.tmux.overrideAttrs (old: {
+      version = "3.8";
+      src = pkgs.fetchFromGitHub {
+        owner = "tmux";
+        repo = "tmux";
+        rev = "7f2a35ad3321f9ba57a1062ca73b1f3ff26aca53"; # 3.8
+        hash = "sha256-pv2wlr3coo+E0pfpb58giJJQn9PGgMFqtVA6nk+9JdE=";
       };
-      patches = (old.patches or []) ++ [
-        (pkgs.fetchpatch {
-          name = "tmux-choose-tree-jack-tmux-3.5a-r2.patch";
-          url = "https://github.com/gojack10/tmux/compare/${tmuxChooseTreeBase}...${tmuxChooseTreeTip}.diff";
-          hash = "sha256-/w6T9SYQ5mkthBuYzqH7pVlUCYTd37lL9QRmP7aezPE=";
-        })
-      ];
+      patches = [ ./patches/tmux-3.8-session-ui.patch ];
+      # Upstream recommends jemalloc for macOS allocation correctness.
+      buildInputs = old.buildInputs ++ lib.optionals pkgs.stdenv.isDarwin [ pkgs.jemalloc ];
+      configureFlags = old.configureFlags ++ lib.optionals pkgs.stdenv.isDarwin [ "--enable-jemalloc" ];
     });
     prefix = "C-Space";
     mouse = true;
@@ -58,8 +52,7 @@ in {
       set -g renumber-windows on
       set -g repeat-time 600
       set -g extended-keys on
-      # Keep tmux extended keys in CSI-u form; xterm form can leak
-      # sequences like [27;5;106~ into Pi's editor during paste/newlines.
+      # Use CSI-u for modified keys; bracketed paste bypasses key encoding.
       set -g extended-keys-format csi-u
 
       # Session/pane persistence (tmux-resurrect + tmux-continuum)

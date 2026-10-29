@@ -2,6 +2,11 @@
 
 let
   isNixOS = settings.isNixOS or false;
+  pasteFromMac = pkgs.writeShellScript "tmux-paste-from-mac" ''
+    set -euo pipefail
+    /usr/bin/pbpaste | ${config.programs.tmux.package}/bin/tmux load-buffer -
+    exec ${config.programs.tmux.package}/bin/tmux paste-buffer -p -t "$1"
+  '';
 in {
   programs.tmux = {
     enable = true;
@@ -48,6 +53,17 @@ in {
       # Clipboard
       set -as terminal-features ',*:clipboard'
       set -g set-clipboard on
+      ${lib.optionalString pkgs.stdenv.isDarwin ''
+        # Copy directly to this Mac, including when attached over SSH.
+        set -s copy-command /usr/bin/pbcopy
+        # Import at paste time so external Cmd-C never leaves a stale tmux paste.
+        bind ] run-shell '${pasteFromMac} "#{pane_id}"'
+        bind -T root MouseDown2Pane select-pane -t = \; if-shell -F '#{||:#{pane_in_mode},#{mouse_any_flag}}' {
+          send-keys -M
+        } {
+          run-shell '${pasteFromMac} "#{pane_id}"'
+        }
+      ''}
       setw -g pane-base-index 1
       set -g renumber-windows on
       set -g repeat-time 600
@@ -62,7 +78,7 @@ in {
       bind R run-shell '${pkgs.tmuxPlugins.resurrect}/share/tmux-plugins/resurrect/scripts/restore.sh'
 
       # Copy mode bindings
-      bind-key -T copy-mode-vi y send-keys -X copy-selection-and-cancel
+      bind-key -T copy-mode-vi y send-keys -X copy-pipe-and-cancel
       bind-key -T copy-mode-vi v send-keys -X begin-selection
       bind-key -T copy-mode-vi Escape send-keys -X cancel
 

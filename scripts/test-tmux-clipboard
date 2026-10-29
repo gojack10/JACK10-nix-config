@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Isolated server + fake pasteboard: never reads or changes the real clipboard.
+set -euo pipefail
+config=${1:-$HOME/.config/tmux/tmux.conf}
+tmp=$(mktemp -d)
+trap 'tmux -S "$tmp/socket" kill-server 2>/dev/null || true; rm -rf "$tmp"' EXIT
+
+awk '/^# Clipboard$/ { copy=1 } copy { print } copy && /setw -g pane-base-index/ { exit }' "$config" > "$tmp/tmux.conf"
+grep '^bind-key -T copy-mode-vi y ' "$config" >> "$tmp/tmux.conf"
+helper=$(awk -F "'" '/bind \] run-shell/ { split($2, a, " "); print a[1]; exit }' "$tmp/tmux.conf")
+test -n "$helper"
+printf '#!/bin/sh\ncat > "%s/copied"\n' "$tmp" > "$tmp/pbcopy"
+printf '#!/bin/sh\ncat "%s/clipboard"\n' "$tmp" > "$tmp/pbpaste"
+chmod +x "$tmp/pbcopy" "$tmp/pbpaste"
+sed "s|/usr/bin/pbpaste|$tmp/pbpaste|g" "$helper" > "$tmp/paste"
+chmod +x "$tmp/paste"
+sed -i '' -e "s|/usr/bin/pbcopy|$tmp/pbcopy|g" -e "s|$helper|$tmp/paste|g" "$tmp/tmux.conf"
+
+t() { tmux -S "$tmp/socket" "$@"; }
+pane=$(t -f "$tmp/tmux.conf" new-session -d -P -F '#{pane_id}' -x 80 -y 24 'printf "clipboard-test"; exec sleep 60')
+# Wait only for this test pane's output, not any external/background job.
+for ((i=0; i<100; i++)); do
+  if t capture-pane -p -t "$pane" | grep -q clipboard-test; then break; fi
+  sleep 0.02
+done
+t copy-mode -t "$pane"
+for action in history-top start-of-line begin-selection end-of-line copy-pipe-and-cancel; do
+  t send-keys -t "$pane" -X "$action"
+done
+for ((i=0; i<100; i++)); do
+  [[ -s "$tmp/copied" ]] && break
+  sleep 0.02
+done
+# 3.5a includes a trailing newline for end-of-line; 3.8 does not.
+[[ $(< "$tmp/copied") == clipboard-test ]]
+t save-buffer "$tmp/buffer"
+cmp "$tmp/copied" "$tmp/buffer"
+
+# A new external copy must replace the stale tmux buffer, preserving bytes.
+printf 'external "copy"; $(not-a-command) ☃\nsecond line\n\n' > "$tmp/clipboard"
+pane=$(t new-window -d -P -F '#{pane_id}' "stty raw -echo; printf ready; exec cat > '$tmp/received'")
+for ((i=0; i<100; i++)); do
+  if t capture-pane -p -t "$pane" | grep -q ready; then break; fi
+  sleep 0.02
+done
+paste_command=$(awk '/bind \] run-shell/ { sub(/^ *bind \] /, ""); print; exit }' "$tmp/tmux.conf")
+t source-file /dev/stdin <<< "${paste_command//\#\{pane_id\}/$pane}"
+t save-buffer "$tmp/buffer"
+cmp "$tmp/clipboard" "$tmp/buffer"
+tr '\n' '\r' < "$tmp/clipboard" > "$tmp/expected-paste"
+for ((i=0; i<100; i++)); do
+  cmp -s "$tmp/expected-paste" "$tmp/received" && break
+  sleep 0.02
+done
+cmp "$tmp/expected-paste" "$tmp/received"
+t list-keys -T root MouseDown2Pane | grep -q "$tmp/paste"
+printf 'PASS: tmux copy exports; paste imports current clipboard; multiline text stays literal\n'

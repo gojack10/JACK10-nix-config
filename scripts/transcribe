@@ -63,9 +63,15 @@ if [[ -z "$src" && ! -t 0 ]]; then
     fi
   done
   trap - INT
-  if [[ -n "$src" ]]; then
-    set -- "$@" "$src"
+  if [[ -z "$src" ]]; then
+    echo "transcribe: upstream supplied no audio path; recording failed or was cancelled before capture" >&2
+    exit 1
   fi
+  if [[ ! -f "$src" ]]; then
+    echo "transcribe: upstream audio file does not exist: $src" >&2
+    exit 1
+  fi
+  set -- "$@" "$src"
 fi
 
 archive=""

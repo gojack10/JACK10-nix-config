@@ -372,14 +372,29 @@ let
 
   recordMic = pkgs.stdenv.mkDerivation {
     pname = "record-mic";
-    version = "1";
-    src = ../../scripts/record-mic.c;
+    version = "2";
+    src = ../../scripts/record-mic-helper.m;
     dontUnpack = true;
     buildPhase = ''
-      $CC -O2 -Wall -Wextra -DFFMPEG_PATH='"${pkgs.ffmpeg}/bin/ffmpeg"' "$src" -o record-mic
+      cp ${../../scripts/record-mic.c} record-mic.c
+      $CC -O2 -Wall -Wextra -fobjc-arc -fblocks -I. \
+        -framework AppKit -framework AVFoundation \
+        -DFFMPEG_PATH='"${pkgs.ffmpeg}/bin/ffmpeg"' \
+        -x objective-c "$src" -o record-mic-helper
+      $CC -O2 -Wall -Wextra \
+        -DRECORD_MIC_APP='"'"$out"'/Applications/Record Mic.app"' \
+        ${../../scripts/record-mic-client.c} -o record-mic
     '';
     installPhase = ''
       install -Dm755 record-mic "$out/bin/record-mic"
+      app="$out/Applications/Record Mic.app"
+      mkdir -p "$app/Contents/MacOS"
+      install -m755 record-mic-helper "$app/Contents/MacOS/record-mic-helper"
+      cp ${../../scripts/record-mic-Info.plist} "$app/Contents/Info.plist"
+    '';
+    # Signing must follow stripping, which changes the executable's identity.
+    postFixup = ''
+      /usr/bin/codesign --force --sign - "$out/Applications/Record Mic.app"
     '';
   };
 in

@@ -27,6 +27,14 @@
 #define SYSTEM_LOG_PATH "/usr/bin/log"
 #endif
 
+/* The app supplies native permission and controller-lifetime checks. */
+#ifndef MICROPHONE_ACCESS_ALLOWED
+#define MICROPHONE_ACCESS_ALLOWED() 1
+#endif
+#ifndef CONTROLLER_CONNECTED
+#define CONTROLLER_CONNECTED() 1
+#endif
+
 static volatile sig_atomic_t interrupted;
 
 static void handle_signal(int sig) {
@@ -39,18 +47,23 @@ static long long monotonic_ms(void) {
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-static void stop_child(pid_t pid) {
-    /* Give FFmpeg time to finalize audio after a terminal-delivered signal. */
+static int stop_child(pid_t pid) {
+    /* The helper is outside the terminal's process group: forward explicitly. */
+    kill(pid, SIGINT);
     for (int phase = 0; phase < 2; phase++) {
         if (phase) kill(pid, SIGTERM);
         for (int i = 0; i < 50; i++) {
-            pid_t done = waitpid(pid, NULL, WNOHANG);
-            if (done == pid || (done < 0 && errno != EINTR)) return;
+            int status;
+            pid_t done = waitpid(pid, &status, WNOHANG);
+            if (done == pid)
+                return WIFEXITED(status) && (WEXITSTATUS(status) == 0 || WEXITSTATUS(status) == 255);
+            if (done < 0 && errno != EINTR) return 0;
             usleep(10000);
         }
     }
     kill(pid, SIGKILL);
     while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
+    return 0;
 }
 
 static void audio_diagnostics(pid_t pid, const char *started) {
@@ -172,6 +185,7 @@ static int choose_mic(int use_airpods, char *chosen_name, size_t chosen_name_len
     long long deadline = monotonic_ms() + STARTUP_TIMEOUT_SECONDS * 1000;
 
     while (!interrupted) {
+        if (!CONTROLLER_CONNECTED()) { interrupted = SIGHUP; break; }
         if (monotonic_ms() >= deadline) {
             fprintf(stderr, "record-mic: microphone discovery timed out after %d seconds.\n", STARTUP_TIMEOUT_SECONDS);
             break;
@@ -223,8 +237,11 @@ static int choose_mic(int use_airpods, char *chosen_name, size_t chosen_name_len
 
 static int record_audio(const char *input, const char *out,
                         const char *mic_name, const char *started) {
-    int fds[2];
+    int fds[2], errors[2];
     if (pipe(fds) < 0) { perror("record-mic: progress pipe"); return 1; }
+    if (pipe(errors) < 0) {
+        perror("record-mic: diagnostic pipe"); close(fds[0]); close(fds[1]); return 1;
+    }
     char progress[32];
     snprintf(progress, sizeof(progress), "pipe:%d", fds[1]);
     char *const argv[] = {
@@ -237,6 +254,7 @@ static int record_audio(const char *input, const char *out,
         "-f", "avfoundation",
         "-i", (char *)input,
         "-vn",
+        "-af", "silencedetect=noise=-70dB:d=3",
         "-ar", "48000",
         "-c:a", "libopus",
         "-b:a", "64k",
@@ -248,6 +266,9 @@ static int record_audio(const char *input, const char *out,
     pid_t pid = fork();
     if (pid == 0) {
         close(fds[0]);
+        close(errors[0]);
+        dup2(errors[1], STDERR_FILENO);
+        close(errors[1]);
         signal(SIGINT, SIG_DFL);
         signal(SIGTERM, SIG_DFL);
         signal(SIGHUP, SIG_DFL);
@@ -256,32 +277,47 @@ static int record_audio(const char *input, const char *out,
         _exit(127);
     }
     close(fds[1]);
+    close(errors[1]);
     if (pid < 0) {
         close(fds[0]);
+        close(errors[0]);
         perror("record-mic: recording fork failed");
         return 1;
     }
     fprintf(stderr, "Opening mic '%s'; startup must succeed within %d seconds.\n", mic_name, STARTUP_TIMEOUT_SECONDS);
     long long deadline = monotonic_ms() + STARTUP_TIMEOUT_SECONDS * 1000;
-    char line[256];
-    size_t used = 0;
-    long long audio_us = 0, output_bytes = 0;
+    char line[256], error_line[2048];
+    size_t used = 0, error_used = 0;
+    long long audio_us = 0, output_bytes = 0, last_audio_us = 0, last_bytes = 0;
     int ready = 0, status = 0, failed = 0;
     for (;;) {
+        if (!CONTROLLER_CONNECTED()) interrupted = SIGHUP;
         if (interrupted) {
-            stop_child(pid);
+            failed = !stop_child(pid);
+            if (failed) fprintf(stderr, "record-mic: encoder did not finalize cleanly; partial audio will not be transcribed.\n");
             status = 128 + interrupted;
             break;
         }
-        if (!ready && monotonic_ms() >= deadline) {
-            fprintf(stderr, "\nrecord-mic: STARTUP FAILED: no saved audio after %d seconds.\n", STARTUP_TIMEOUT_SECONDS);
+        if (!MICROPHONE_ACCESS_ALLOWED()) {
+            fprintf(stderr, "record-mic: microphone permission was revoked; enable Record Mic in Privacy & Security > Microphone.\n");
             stop_child(pid);
             failed = 1;
             status = 1;
             break;
         }
-        struct pollfd pfd = {.fd = fds[0], .events = POLLIN};
-        int polled = poll(&pfd, 1, 100);
+        if (monotonic_ms() >= deadline) {
+            fprintf(stderr, "\nrecord-mic: %s: no saved audio progress for %d seconds.\n",
+                    ready ? "CAPTURE STALLED" : "STARTUP FAILED", STARTUP_TIMEOUT_SECONDS);
+            stop_child(pid);
+            failed = 1;
+            status = 1;
+            break;
+        }
+        struct pollfd pfds[2] = {
+            {.fd = fds[0], .events = POLLIN},
+            {.fd = errors[0], .events = POLLIN}
+        };
+        int polled = poll(pfds, 2, 100);
         if (polled < 0 && errno == EINTR) continue;
         if (polled < 0) {
             perror("record-mic: progress poll");
@@ -290,7 +326,26 @@ static int record_audio(const char *input, const char *out,
             status = 1;
             break;
         }
-        if (polled > 0) {
+        if (pfds[1].revents & (POLLIN | POLLHUP)) {
+            char buf[4096];
+            ssize_t n = read(errors[0], buf, sizeof(buf));
+            if (n > 0) {
+                fwrite(buf, 1, (size_t)n, stderr);
+                fflush(stderr);
+            }
+            for (ssize_t i = 0; i < n; i++) {
+                if (buf[i] != '\n' && error_used < sizeof(error_line) - 1) {
+                    error_line[error_used++] = buf[i];
+                    continue;
+                }
+                error_line[error_used] = '\0';
+                error_used = 0;
+                if (strstr(error_line, "silence_start:"))
+                    fprintf(stderr, "\nrecord-mic: warning: input has been below -70 dB for 3 seconds; recording continues.\n");
+            }
+            if (n == 0) { close(errors[0]); errors[0] = -1; }
+        }
+        if (pfds[0].revents & (POLLIN | POLLHUP)) {
             char buf[4096];
             ssize_t n = read(fds[0], buf, sizeof(buf));
             for (ssize_t i = 0; i < n; i++) {
@@ -304,23 +359,18 @@ static int record_audio(const char *input, const char *out,
                 if (!strncmp(line, "total_size=", 11)) output_bytes = strtoll(line + 11, NULL, 10);
             }
             struct stat st;
-            /* At least one 100ms Ogg audio page, flushed to the output file. */
-            if (!ready && audio_us >= 100000 && output_bytes > 0 &&
+            /* Saved audio, not merely repeated FFmpeg progress messages. */
+            if (audio_us > last_audio_us && output_bytes > last_bytes &&
                 stat(out, &st) == 0 && st.st_size >= output_bytes) {
-                if (printf("%s\n", out) < 0 || fflush(stdout) == EOF) {
-                    perror("record-mic: cannot deliver audio path to downstream command");
-                    stop_child(pid);
-                    failed = 1;
-                    status = 1;
-                    break;
+                last_audio_us = audio_us;
+                last_bytes = output_bytes;
+                deadline = monotonic_ms() + STARTUP_TIMEOUT_SECONDS * 1000;
+                if (!ready && audio_us >= 100000) {
+                    ready = 1;
+                    fprintf(stderr, "\nRecording mic '%s' to: %s\nPress q or Ctrl-C to stop.\n", mic_name, out);
                 }
-                ready = 1;
-                fprintf(stderr, "\nRecording mic '%s' to: %s\nPress q or Ctrl-C to stop.\n", mic_name, out);
             }
-            if (n == 0) {
-                /* EOF without process exit is still subject to the deadline. */
-                usleep(10000);
-            }
+            if (n == 0) { close(fds[0]); fds[0] = -1; }
         }
         pid_t done = waitpid(pid, &status, WNOHANG);
         if (done == pid) {
@@ -335,7 +385,15 @@ static int record_audio(const char *input, const char *out,
             break;
         }
     }
-    close(fds[0]);
+    if (fds[0] >= 0) close(fds[0]);
+    /* The child has exited: retain any final error/trailer still in its pipe. */
+    if (errors[0] >= 0) {
+        char buf[4096];
+        ssize_t n;
+        while ((n = read(errors[0], buf, sizeof(buf))) > 0)
+            fwrite(buf, 1, (size_t)n, stderr);
+        close(errors[0]);
+    }
     if (failed) {
         fprintf(stderr, "record-mic: %s (exit %d). FFmpeg stderr is shown above.\n",
                 ready ? "recording failed" : "recording did not start", status);
@@ -344,6 +402,15 @@ static int record_audio(const char *input, const char *out,
     }
     if (ready || access(out, F_OK) == 0)
         fprintf(stderr, "record-mic: keeping audio at %s\n", out);
+    /* Never release a failed/unfinished recording to the transcription pipe. */
+    if (!failed && ready && (!interrupted || interrupted == SIGINT) &&
+        (status == 0 || status == 128 + SIGINT)) {
+        if (printf("%s\n", out) < 0 || fflush(stdout) == EOF) {
+            perror("record-mic: cannot deliver audio path to downstream command"); return 1;
+        }
+    } else if (!failed && !ready) {
+        status = 1;
+    }
     if (interrupted) return 128 + interrupted;
     return status;
 }
@@ -392,7 +459,7 @@ int main(int argc, char **argv) {
     }
 
     char out[PATH_MAX];
-    if (snprintf(out, sizeof(out), "%s/mic-%s.opus", dir, stamp) >= (int)sizeof(out)) {
+    if (snprintf(out, sizeof(out), "%s/mic-%s-XXXXXX.opus", dir, stamp) >= (int)sizeof(out)) {
         fprintf(stderr, "record-mic: output path too long\n");
         return 1;
     }
@@ -413,5 +480,8 @@ int main(int argc, char **argv) {
     char input[32];
     snprintf(input, sizeof(input), ":%d", mic_idx);
 
+    int file = mkstemps(out, 5);
+    if (file < 0) { perror("record-mic: create output"); return 1; }
+    close(file);
     return record_audio(input, out, mic_name, started);
 }

@@ -32,6 +32,9 @@ let fontSizeGhostty = settings.fontSizeGhostty or 14; in
     palette = 14=5fd7ff
     palette = 15=ffffff
 
+    # Hide application progress bars (OSC 9;4).
+    progress-style = false
+
     # Cursor
     cursor-style = block
     cursor-style-blink = false

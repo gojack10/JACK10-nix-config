@@ -235,13 +235,13 @@ in {
       export SUDO_ASKPASS="$HOME/.local/bin/askpass-wofi"
       ''}
 
-      # pbcopy for local macOS; OSC 52 fallback for SSH/Linux/tmux.
+      # Native macOS locally; tmux owns clipboard forwarding inside tmux.
+      # Do not wrap OSC 52 in passthrough: allow-passthrough is off by default.
       pbcopy() {
         if [[ -z "$SSH_TTY" ]] && command -v /usr/bin/pbcopy &>/dev/null; then
           /usr/bin/pbcopy
         elif [[ -n "$TMUX" ]]; then
-          local data=$(base64 | tr -d '\n')
-          printf '\033Ptmux;\033\033]52;c;%s\007\033\\' "$data"
+          tmux load-buffer -w -
         elif [[ -n "$SSH_TTY" ]]; then
           local data=$(base64 | tr -d '\n')
           printf '\033]52;c;%s\007' "$data"

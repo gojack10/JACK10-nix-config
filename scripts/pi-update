@@ -266,21 +266,26 @@ check_active_runtime() {
   echo "Runtime reconciled: $RUNTIME_BRANCH contains $(git log -1 --format='%h %s' "$target")"
 }
 
+# NOTE: this function is called as `if ! run_candidate_checks ...`, which makes
+# bash ignore `set -e` for everything it runs. Every step must check its own
+# status, otherwise a failed check falls through to a later success.
 run_candidate_checks() {
   local candidate_dir="$1"
   (
-    cd "$candidate_dir"
+    cd "$candidate_dir" || exit 1
     echo "Installing candidate dependencies..."
-    $NPM_BIN ci --ignore-scripts --silent
-    echo "Checking candidate..."
-    $NPM_BIN run check --silent
-    echo "Testing candidate..."
-    $NPM_BIN --workspace packages/ai test --silent
-    $NPM_BIN --workspace packages/coding-agent test --silent
+    $NPM_BIN ci --ignore-scripts --silent || exit 1
+    # Build first: `check`/`tsgo` depends on generated model catalogs that only
+    # the build generates in a fresh worktree.
     echo "Building candidate..."
-    $NPM_BIN run build --silent
+    $NPM_BIN run build --silent || exit 1
+    echo "Checking candidate..."
+    $NPM_BIN run check --silent || exit 1
+    echo "Testing candidate..."
+    $NPM_BIN --workspace packages/ai test --silent || exit 1
+    $NPM_BIN --workspace packages/coding-agent test --silent || exit 1
     PI_PACKAGE_DIR="$candidate_dir/packages/coding-agent" \
-      $NODE_BIN "$candidate_dir/packages/coding-agent/dist/cli.js" --no-extensions --version
+      $NODE_BIN "$candidate_dir/packages/coding-agent/dist/cli.js" --no-extensions --version || exit 1
   )
 }
 

@@ -397,6 +397,30 @@ let
       /usr/bin/codesign --force --sign - "$out/Applications/Record Mic.app"
     '';
   };
+
+  transcriptionMenu = pkgs.stdenv.mkDerivation {
+    pname = "transcription-menu";
+    version = "1";
+    src = ../../scripts/transcription-menu.swift;
+    dontUnpack = true;
+    buildPhase = ''
+      cp $src transcription-menu.swift
+      export DEVELOPER_DIR=/Library/Developer/CommandLineTools
+      /Library/Developer/CommandLineTools/usr/bin/swiftc -swift-version 5 -O \
+        -sdk /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk \
+        -framework AppKit -framework ApplicationServices \
+        -o transcription-menu transcription-menu.swift
+    '';
+    installPhase = ''
+      app="$out/Applications/Transcription.app"
+      mkdir -p "$app/Contents/MacOS"
+      install -m755 transcription-menu "$app/Contents/MacOS/transcription-menu"
+      cp ${../../scripts/transcription-menu-Info.plist} "$app/Contents/Info.plist"
+    '';
+    postFixup = ''
+      /usr/bin/codesign --force --sign - "$out/Applications/Transcription.app"
+    '';
+  };
 in
 {
   nixpkgs.config.allowUnfreePredicate = pkg: builtins.elem (pkgs.lib.getName pkg) [
@@ -418,6 +442,7 @@ in
     audioCatchall
     recordCatchall
     recordMic
+    transcriptionMenu
 
     rustup
     docker
@@ -428,4 +453,19 @@ in
   ] ++ lib.optionals (hostname == "m5-max") [
     vlc-bin
   ];
+
+  # Menu bar controller for the record-mic | transcribe pipeline. F5 toggles
+  # recording; the finished transcript is pasted at the insertion point and
+  # left on the clipboard. Logs identify the built-in Dictation key event.
+  launchd.agents.transcription-menu = {
+    enable = true;
+    config = {
+      Label = "com.jack.transcription-menu";
+      ProgramArguments = [ "${transcriptionMenu}/Applications/Transcription.app/Contents/MacOS/transcription-menu" ];
+      RunAtLoad = true;
+      KeepAlive = { SuccessfulExit = false; };
+      StandardOutPath = "${config.home.homeDirectory}/Library/Logs/transcription-menu.log";
+      StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/transcription-menu.err.log";
+    };
+  };
 }

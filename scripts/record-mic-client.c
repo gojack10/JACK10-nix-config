@@ -171,10 +171,21 @@ int main(int argc, char **argv) {
             if (fwrite(buf, 1, (size_t)count, stderr) != (size_t)count) goto cleanup;
             fflush(stderr);
         }
-        if (fds[1].revents & (POLLIN | POLLHUP)) {
+        /* Losing the input owner cancels capture; never poll a dead input. */
+        if (fds[1].revents & (POLLHUP | POLLERR | POLLNVAL)) {
+            input_open = 0;
+            interrupted = SIGTERM;
+            continue;
+        }
+        if (fds[1].revents & POLLIN) {
             char buf[256];
             ssize_t count = read(STDIN_FILENO, buf, sizeof(buf));
-            if (count <= 0) { input_open = 0; continue; }
+            if (count < 0 && errno == EINTR) continue;
+            if (count <= 0) {
+                input_open = 0;
+                interrupted = SIGTERM;
+                continue;
+            }
             if (send(connection, buf, (size_t)count, 0) != count) goto cleanup;
             if (memchr(buf, 'q', (size_t)count)) {
                 input_open = 0;

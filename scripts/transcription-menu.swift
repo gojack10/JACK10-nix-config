@@ -58,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var eventTap: CFMachPort?
     private var state: State = .idle
     private var recorder: Process?
+    private var recorderInput: FileHandle?
     private var transcriber: Process?
     private var transcript = Data()
     private let recordingIcon = RecordingIcon()
@@ -198,9 +199,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let link = Pipe()
         let output = Pipe()
+        let control = Pipe()
 
         let recorder = Process()
         recorder.executableURL = URL(fileURLWithPath: home + "/.nix-profile/bin/record-mic")
+        // This app owns the write end; its exit closes stdin and cancels capture.
+        recorder.standardInput = control
         recorder.standardOutput = link
         recorder.standardError = FileHandle.standardError
 
@@ -227,8 +231,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         do {
             try recorder.run()
+            try? control.fileHandleForReading.close()
             try transcriber.run()
         } catch {
+            try? control.fileHandleForWriting.close()
+            try? control.fileHandleForReading.close()
+            try? link.fileHandleForWriting.close()
+            try? link.fileHandleForReading.close()
+            output.fileHandleForReading.readabilityHandler = nil
             logLine("could not start pipeline: \(error)")
             state = .failed
             updateIcon()
@@ -239,6 +249,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try? link.fileHandleForWriting.close()
         try? link.fileHandleForReading.close()
 
+        self.recorderInput = control.fileHandleForWriting
         self.recorder = recorder
         self.transcriber = transcriber
         state = .recording
@@ -258,7 +269,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func cancelRecording() {
-        recorder?.terminate()
+        try? recorderInput?.close()
+        recorderInput = nil
         transcriber?.terminate()
         recorder = nil
         transcriber = nil
@@ -267,6 +279,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func finishTranscription() {
+        try? recorderInput?.close()
+        recorderInput = nil
         recorder = nil
         transcriber = nil
         let text = String(data: transcript, encoding: .utf8)?

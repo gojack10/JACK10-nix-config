@@ -1,47 +1,48 @@
 import AppKit
 
+// Native vibrant-dark menu white, matching the supplied weather reference.
+private let statusTextColor = NSColor(white: 1, alpha: 229.0 / 255.0)
+
 private final class StatusMetricView: NSStackView {
     private let value = NSTextField(labelWithString: "-")
+    private let unit: String
 
     init(label: String, unit: String, capacity: String) {
+        self.unit = unit
         super.init(frame: .zero)
         orientation = .horizontal
         alignment = .firstBaseline
         spacing = 1
         setAccessibilityElement(false)
 
-        let font = NSFont.systemFont(ofSize: 12, weight: .regular)
-        let numberFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        let font = NSFont.systemFont(ofSize: 13, weight: .regular)
+        let numberFont = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
         if !label.isEmpty {
             let name = NSTextField(labelWithString: label)
             name.font = font
-            name.textColor = .secondaryLabelColor
+            name.textColor = statusTextColor
             name.setAccessibilityElement(false)
             addArrangedSubview(name)
             setCustomSpacing(3, after: name)
         }
 
         value.font = numberFont
+        value.stringValue = "-" + unit
+        value.textColor = statusTextColor
         value.alignment = .right
         value.lineBreakMode = .byClipping
         value.setAccessibilityElement(false)
         addArrangedSubview(value)
-        // Reserve the largest normal reading, not the current string's width.
-        // A separate unit field also pins the percentage sign / watt suffix.
-        let width = ceil((capacity as NSString).size(withAttributes: [.font: numberFont]).width) + 4
+        // One text run keeps the unit attached, without a second field's inset.
+        // Right alignment pins the unit and decimal even when digit counts change.
+        let width = ceil(((capacity + unit) as NSString).size(withAttributes: [.font: numberFont]).width) + 4
         value.widthAnchor.constraint(equalToConstant: width).isActive = true
-
-        let suffix = NSTextField(labelWithString: unit)
-        suffix.font = font
-        suffix.textColor = .secondaryLabelColor
-        suffix.setAccessibilityElement(false)
-        addArrangedSubview(suffix)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func update(_ text: String, color: NSColor = .labelColor) {
-        value.stringValue = text
+    func update(_ text: String, color: NSColor = statusTextColor) {
+        value.stringValue = text + unit
         value.textColor = color
     }
 }
@@ -49,8 +50,8 @@ private final class StatusMetricView: NSStackView {
 // Native fields inside the status button: fixed slots, no title-string reflow.
 final class StatusTitleView: NSStackView {
     private let cpu = StatusMetricView(label: "CPU", unit: "%", capacity: "000")
-    private let memory = StatusMetricView(label: "Mem", unit: "%", capacity: "000")
-    private let battery = StatusMetricView(label: "Bat", unit: "%", capacity: "000")
+    private let memory = StatusMetricView(label: "MEM", unit: "%", capacity: "000")
+    private let battery = StatusMetricView(label: "BAT", unit: "%", capacity: "000")
     private let power = StatusMetricView(label: "", unit: "W", capacity: "+000.0")
 
     override init(frame: NSRect) {
@@ -59,7 +60,8 @@ final class StatusTitleView: NSStackView {
         alignment = .firstBaseline
         spacing = 10
         setAccessibilityElement(false)
-        for metric in [cpu, memory, battery, power] { addArrangedSubview(metric) }
+        // Watts grows left into the outside margin, not into a gap between metrics.
+        for metric in [power, battery, cpu, memory] { addArrangedSubview(metric) }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -93,13 +95,12 @@ final class StatusTitleView: NSStackView {
 
         cpu.update(cpuText)
         memory.update(memoryText)
-        battery.update(batteryText, color: (batteryPercent ?? 100) <= 10 ? .systemRed
-            : (batteryPercent ?? 100) <= 25 ? .systemOrange : .labelColor)
+        battery.update(batteryText)
         let external = snapshot?.value("power.external_connected") as? Bool ?? false
         let powerColor: NSColor = (batteryPercent ?? 100) < 15 ? .systemRed
-            : !external ? .labelColor : (watts ?? 0) > 0.5 ? .systemGreen
-            : (watts ?? 0) < -0.5 ? .systemOrange : .labelColor
+            : !external ? statusTextColor : (watts ?? 0) > 0.5 ? .systemGreen
+            : (watts ?? 0) < -0.5 ? .systemOrange : statusTextColor
         power.update(powerText, color: powerColor)
-        return "CPU \(cpuText)%, memory \(memoryText)%, battery \(batteryText)%, net power \(powerText) watts"
+        return "Net power \(powerText) watts, battery \(batteryText)%, CPU \(cpuText)%, memory \(memoryText)%"
     }
 }

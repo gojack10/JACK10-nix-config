@@ -15,6 +15,7 @@ private func temperatureColor(_ value: Double?) -> Color {
 private struct CapacityIndicator: NSViewRepresentable {
     let label: String
     let value: Double?
+    var battery = false
 
     func makeNSView(context: Context) -> NSLevelIndicator {
         let indicator = NSLevelIndicator(frame: .zero)
@@ -32,6 +33,13 @@ private struct CapacityIndicator: NSViewRepresentable {
     func updateNSView(_ indicator: NSLevelIndicator, context: Context) {
         indicator.doubleValue = min(100, max(0, value ?? 0))
         indicator.isEnabled = value != nil
+        if battery {
+            // More battery is good; do not reuse the utilization warning scale.
+            let color: NSColor = (value ?? 100) <= 10 ? .systemRed : (value ?? 100) <= 25 ? .systemOrange : .systemGreen
+            indicator.fillColor = color
+            indicator.warningFillColor = color
+            indicator.criticalFillColor = color
+        }
         indicator.setAccessibilityLabel(value == nil ? "\(label) - unavailable" : label)
     }
 }
@@ -296,9 +304,44 @@ struct DashboardView: View {
         }
     }
 
+    private func battery(_ s: Snapshot) -> some View {
+        let percent = s.number("power.battery_pct")
+        let limit = s.number("power.charge_limit_pct")
+        let detail = limit.map { $0 < 100 ? "\(fixed($0, places: 0))% configured limit" : "No manual limit" } ?? "Charge limit unavailable"
+        return Button {
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Battery-Settings.extension")!)
+        } label: {
+            HStack(spacing: 12) {
+                Text("Battery").frame(width: 100, alignment: .leading)
+                CapacityIndicator(label: "Battery", value: percent, battery: true)
+                    .frame(width: 118, height: 12)
+                    .overlay(alignment: .trailing) {
+                        if let limit, limit > 0, limit < 100 {
+                            // Keep actual charge visible if macOS charges beyond the preference.
+                            RoundedRectangle(cornerRadius: 2)
+                                .strokeBorder(.secondary, style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: [1, 2]))
+                                .frame(width: 118 * (1 - limit / 100), height: 12)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                    .allowsHitTesting(false)
+                Text(fixed(percent, places: 0, suffix: "%")).monospacedDigit().frame(width: 72, alignment: .trailing)
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(minHeight: 18)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Open Battery settings. Dots mark the configured charge reserve, not lost capacity or a guarantee of enforcement.")
+        .accessibilityLabel("Battery \(fixed(percent, places: 0)) percent - \(detail)")
+        .accessibilityHint("Opens Battery settings")
+    }
+
     private func power(_ s: Snapshot) -> some View {
         MetricSection("Power") {
-            MetricRow(label: "Battery", value: fixed(s.number("power.battery_pct"), places: 0, suffix: "%"))
+            battery(s)
             MetricRow(label: "Adapter", value: fixed(s.number("power.adapter_watts"), suffix: "W"))
             MetricRow(label: "System", value: fixed(s.number("power.system_watts"), suffix: "W"))
             MetricRow(label: "Net", value: s.number("power.net_watts").map { String(format: "%+.1fW", $0) } ?? "-")

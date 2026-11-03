@@ -328,7 +328,7 @@ static void fans(JSON *out) {
     append(out, "}");
 }
 
-static void power(JSON *out) {
+static void power(JSON *out, int full) {
     double percent = NAN;
     int external = 0;
     CFTypeRef info = IOPSCopyPowerSourcesInfo();
@@ -350,6 +350,7 @@ static void power(JSON *out) {
     double adapter_watts = external ? smc_read("VD0R") * smc_read("ID0R") : 0;
     double net_watts = adapter_watts - system_watts;
     append(out, "{"); field(out, "battery_pct", percent);
+    if (full) { append(out, ","); field(out, "charge_limit_pct", m5_charge_limit_pct()); }
     append(out, ",\"external_connected\":%s,", external ? "true" : "false");
     field(out, "system_watts", system_watts);
     append(out, ","); field(out, "adapter_watts", adapter_watts);
@@ -381,7 +382,7 @@ void m5_sample(char *buffer, int capacity, int full) {
     size = sizeof(boot);
     result = sysctlbyname("kern.boottime", &boot, &size, NULL, 0);
     number(&out, result ? NAN : now.tv_sec - boot.tv_sec);
-    append(&out, ",\"power\":"); power(&out);
+    append(&out, ",\"power\":"); power(&out, full);
     if (full) {
         append(&out, ",\"thermals\":"); thermals(&out);
         append(&out, ",\"fans\":"); fans(&out);

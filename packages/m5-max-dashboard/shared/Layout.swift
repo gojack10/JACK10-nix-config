@@ -97,6 +97,7 @@ func sections(_ snapshot: Snapshot) -> [Section] {
     let top = Section(title: "TOP CPU - ps %CPU", rows: processRows)
     let power = Section(title: "POWER", rows: [
         row("battery", fixed(n("power.battery_pct"), places: 0, width: 6, suffix: "%")),
+        row("charge limit", fixed(n("power.charge_limit_pct"), places: 0, width: 6, suffix: "%") + " | configured manual ceiling"),
         row("adapter", fixed(n("power.adapter_watts"), width: 6, suffix: "W")),
         row("system", fixed(n("power.system_watts"), width: 6, suffix: "W")),
         row("net", n("power.net_watts").map { String(format: "%+6.1fW", $0) } ?? "     -W")

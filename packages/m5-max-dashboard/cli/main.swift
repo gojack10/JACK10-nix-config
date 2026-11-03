@@ -49,9 +49,9 @@ func render(_ piece: Piece) -> String {
     let style: String
     switch piece.tone {
     case .plain: return piece.text
-    case .success: style = piece.inverted ? "30;42" : "32"
-    case .warning: style = piece.inverted ? "30;43" : "33"
-    case .urgent: style = piece.inverted ? "30;41" : "31"
+    case .success: style = "32"
+    case .warning: style = "33"
+    case .urgent: style = "31"
     case .heading: style = "1;37"
     }
     return "\u{1b}[\(style)m\(piece.text)\u{1b}[0m"
@@ -64,10 +64,7 @@ func clipped(_ row: Row, start: Int, width: Int) -> Row {
         let lower = max(0, start - position)
         let upper = min(piece.text.count, start + width - position)
         guard upper > lower else { return nil }
-        var result = piece
-        result = Piece(text: String(piece.text.dropFirst(lower).prefix(upper - lower)),
-                       tone: result.tone, inverted: result.inverted)
-        return result
+        return Piece(text: String(piece.text.dropFirst(lower).prefix(upper - lower)), tone: piece.tone)
     }
 }
 

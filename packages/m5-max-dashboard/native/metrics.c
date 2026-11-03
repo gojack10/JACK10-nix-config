@@ -364,7 +364,7 @@ void m5_sample(char *buffer, int capacity, int full) {
     append(&out, "{\"sampled_at\":%.3f,\"memory\":", now.tv_sec + now.tv_usec / 1000000.0);
     memory(&out);
     append(&out, ",\"cpu\":"); cpu(&out, full);
-    append(&out, ",\"gpu\":"); gpu(&out);
+    if (full) { append(&out, ",\"gpu\":"); gpu(&out); }
     int32_t pressure = 0;
     size_t size = sizeof(pressure);
     int pressure_result = sysctlbyname("kern.memorystatus_vm_pressure_level", &pressure, &size, NULL, 0);

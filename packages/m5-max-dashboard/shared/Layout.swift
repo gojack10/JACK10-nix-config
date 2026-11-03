@@ -4,7 +4,6 @@ enum Tone { case plain, success, warning, urgent, heading }
 struct Piece {
     let text: String
     var tone: Tone = .plain
-    var inverted = false
 }
 typealias Row = [Piece]
 struct Section {
@@ -26,34 +25,6 @@ private func barRow(_ label: String, _ percent: Double?, _ detail: String) -> Ro
     return [Piece(text: "  " + rightPad(label, 14)),
             Piece(text: String(repeating: "█", count: filled) + String(repeating: "░", count: 10 - filled), tone: level(percent)),
             Piece(text: " " + fixed(percent, places: 0, width: 3, suffix: "%") + " | " + detail)]
-}
-
-func titlePieces(_ snapshot: Snapshot) -> Row {
-    let cpu = snapshot.number("cpu.utilization")
-    let gpu = snapshot.number("gpu.utilization")
-    let memory = snapshot.percent("memory.in_use_gb", of: "memory.total_gb")
-    let battery = snapshot.number("power.battery_pct")
-    let watts = snapshot.number("power.net_watts")
-    var pieces = [Piece(text: "CPU " + fixed(cpu, places: 0, width: 3) + "%", tone: level(cpu)),
-                  Piece(text: "GPU " + fixed(gpu, places: 0, width: 3) + "%", tone: level(gpu)),
-                  Piece(text: "MEM " + fixed(memory, places: 0, width: 3) + "%", tone: level(memory))]
-    if let battery {
-        pieces.append(Piece(text: "BAT " + fixed(battery, places: 0, width: 3) + "%",
-                            tone: battery <= 10 ? .urgent : battery <= 25 ? .warning : .plain))
-    }
-    if let watts {
-        let external = snapshot.value("power.external_connected") as? Bool ?? false
-        let tone: Tone = (battery ?? 100) < 15 ? .urgent
-            : !external ? .plain : watts > 0.5 ? .success : watts < -0.5 ? .warning : .plain
-        pieces.append(Piece(text: String(format: "%+6.1fW", watts), tone: tone))
-    }
-    return pieces.enumerated().flatMap { index, piece -> Row in
-        var item = piece
-        // Inverted basic-color blocks match tmux's BAT / power alerts.
-        item.inverted = piece.tone != .plain && (index >= 3 || piece.tone == .urgent)
-        if !item.inverted { item.tone = .plain }
-        return index == 0 ? [item] : [Piece(text: " | "), item]
-    }
 }
 
 func sections(_ snapshot: Snapshot) -> [Section] {

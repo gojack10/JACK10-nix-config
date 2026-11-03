@@ -117,6 +117,7 @@
         ./modules/darwin/defaults.nix
         ./modules/darwin/fan.nix
         ./modules/darwin/gpu-over-50.nix
+        ./modules/darwin/m5-max-dashboard.nix
         ./modules/darwin/local-llm.nix
         ./modules/darwin/llm-client-tunnel.nix
         ./modules/darwin/reverse-ssh-tunnel.nix

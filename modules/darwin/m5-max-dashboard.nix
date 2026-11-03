@@ -7,14 +7,7 @@ let
 in lib.mkIf (hostname == "m5-max") {
   home.packages = [ dashboard ];
 
-  # Retire the unmanaged Python/ASR service before the new loopback server starts.
-  # Neither service configuration nor the surviving sources depend on ~/projects.
-  home.activation.retire-legacy-m5-dashboard = lib.hm.dag.entryBetween [ "setupLaunchAgents" ] [ "writeBoundary" ] ''
-    legacy=${lib.escapeShellArg "${home}/Library/LaunchAgents/com.m5max.dashboard.plist"}
-    if [ -e "$legacy" ]; then
-      /bin/launchctl bootout --wait "gui/$(/usr/bin/id -u)/com.m5max.dashboard" 2>/dev/null || true
-      rm -f "$legacy"
-    fi
+  home.activation.prepare-m5-max-dashboard = lib.hm.dag.entryBetween [ "setupLaunchAgents" ] [ "writeBoundary" ] ''
     mkdir -p ${lib.escapeShellArg logDir}
   '';
 

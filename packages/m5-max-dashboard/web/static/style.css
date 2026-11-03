@@ -1,0 +1,92 @@
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-weight: 400;
+  src: url('/static/fonts/JetBrainsMono-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-weight: 600;
+  src: url('/static/fonts/JetBrainsMono-SemiBold.woff2') format('woff2');
+}
+:root {
+  color-scheme: dark;
+  --bg0: #0f0f0f;
+  --bg1: #151515;
+  --bg2: #1e1e1e;
+  --bg3: #282828;
+  --fg0: #fff;
+  --fg1: #d0d0d0;
+  --fg2: #8a8a8a;
+  --accent: #3a3a3a;
+  --success: #6b9b7a;
+  --warning: #b8853d;
+  --urgent: #b85450;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  min-height: 100vh;
+  background: var(--bg0);
+  color: var(--fg1);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 24px;
+  background: linear-gradient(var(--bg3), var(--bg2));
+  border-bottom: 2px solid var(--accent);
+  box-shadow: inset 0 1px 0 #ffffff14, 0 2px 4px #0008;
+}
+.eyebrow { color: var(--fg2); font-size: 8.5px; letter-spacing: .12em; }
+h1 { color: var(--fg0); font-size: 16px; font-weight: 600; }
+.sample { text-align: right; color: var(--fg2); white-space: pre-line; }
+.sample.urgent { color: var(--urgent); }
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  padding: 16px 24px;
+  max-width: 1800px;
+  margin: 0 auto;
+}
+.stat-group {
+  min-width: 0;
+  align-self: start;
+  padding: 16px;
+  border: 1px solid var(--accent);
+  background: var(--bg1);
+  box-shadow: inset 0 1px 0 #ffffff14, 0 2px 4px #0008;
+}
+h2 {
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--accent);
+  color: var(--fg2);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .04em;
+}
+pre {
+  overflow-x: auto;
+  font: inherit;
+  white-space: pre;
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent) transparent;
+}
+.success { color: var(--success); }
+.warning { color: var(--warning); }
+.urgent { color: var(--urgent); }
+footer { padding: 0 24px 16px; color: var(--fg2); font-size: 10px; }
+@media (max-width: 960px) {
+  .stats-grid { grid-template-columns: minmax(0, 1fr); }
+  .app-header, .stats-grid { padding-left: 16px; padding-right: 16px; }
+  .app-header { align-items: start; }
+}

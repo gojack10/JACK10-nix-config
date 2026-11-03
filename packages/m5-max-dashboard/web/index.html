@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>M5 Max Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/dashboard.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <div><div class="eyebrow">SYSTEM PULSE</div><h1>M5 MAX DASHBOARD</h1></div>
+    <div class="sample" id="sample" aria-live="polite">Waiting for first reading</div>
+  </header>
+  <main class="stats-grid" id="statsGrid">
+    <section class="stat-group" id="gpu"><h2>GPU</h2><pre></pre></section>
+    <section class="stat-group" id="cpu"><h2>CPU</h2><pre></pre></section>
+    <section class="stat-group" id="memory"><h2>MEMORY</h2><pre></pre></section>
+    <section class="stat-group" id="swap"><h2>SWAP</h2><pre></pre></section>
+    <section class="stat-group" id="pressure"><h2>PRESSURE</h2><pre></pre></section>
+    <section class="stat-group" id="thermals"><h2>THERMALS</h2><pre></pre></section>
+    <section class="stat-group" id="fans"><h2>FANS</h2><pre></pre></section>
+    <section class="stat-group" id="processes"><h2>TOP CPU</h2><pre></pre></section>
+    <section class="stat-group" id="power"><h2>POWER</h2><pre></pre></section>
+  </main>
+  <footer>Kernel split / reclaimable are estimates | thermal max observed since server start</footer>
+</body>
+</html>

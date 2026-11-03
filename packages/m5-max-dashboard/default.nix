@@ -9,7 +9,9 @@ stdenv.mkDerivation {
   buildPhase = ''
     runHook preBuild
     export DEVELOPER_DIR=/Library/Developer/CommandLineTools
-    make -j$NIX_BUILD_CORES CC="$CC"
+    make -j$NIX_BUILD_CORES \
+      CC=/Library/Developer/CommandLineTools/usr/bin/clang \
+      SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
     runHook postBuild
   '';
 

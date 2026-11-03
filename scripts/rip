@@ -2,13 +2,15 @@
 """
 rip - opinionated media downloader and converter
 
-download:
+download (default destination: /tmp):
   rip URL                    download as opus audio (default)
   rip -m URL                 download as mp3 audio
   rip -w URL                 download as wav audio (lossless)
   rip -v URL                 download as mp4 video
   rip -s URL                 force single video (strip playlist)
   rip -p URL                 force full playlist
+  rip --cwd URL              download into the current directory
+  rip --path DIR URL         download into DIR
 
 convert:
   rip -c FILE                convert to opus audio
@@ -82,6 +84,19 @@ def check_deps(spotify_mode=False):
             print(f"  {C.DIM}install with: sudo apt install {' '.join(missing)}{C.RESET}")
             print(f"  {C.DIM}or: pip install yt-dlp / brew install ffmpeg{C.RESET}")
         sys.exit(1)
+
+
+# --- Destination ---
+def resolve_destination(cwd, path):
+    """downloads land in /tmp unless --cwd or --path says otherwise"""
+    if path:
+        dest = Path(path).expanduser()
+    elif cwd:
+        dest = Path.cwd()
+    else:
+        dest = Path('/tmp')
+    dest.mkdir(parents=True, exist_ok=True)
+    return dest
 
 
 # --- URL Cleaning ---
@@ -249,7 +264,7 @@ def prompt_playlist_choice(playlist_title, count):
 
 
 # --- Download ---
-def download(url, video_mode=False, force_single=False, force_playlist=False, audio_fmt='opus', dry_run=False, custom_name=None):
+def download(url, video_mode=False, force_single=False, force_playlist=False, audio_fmt='opus', dry_run=False, custom_name=None, dest=Path('/tmp')):
     """download media from URL"""
 
     # clean URL
@@ -307,7 +322,7 @@ def download(url, video_mode=False, force_single=False, force_playlist=False, au
 
         ext = 'mp4' if video_mode else audio_fmt
         output_tpl = f"{filename}.%(ext)s"
-        log_detail(f"output: {filename}.{ext}")
+        log_detail(f"output: {dest / f'{filename}.{ext}'}")
 
     # build command
     # YouTube workaround: use iOS client and m3u8 formats to bypass 403 errors
@@ -335,6 +350,7 @@ def download(url, video_mode=False, force_single=False, force_playlist=False, au
 
     cmd += [
         '-ci', '--ignore-errors',
+        '-P', str(dest),
         '--no-playlist' if not playlist_mode else '--yes-playlist',
         '--restrict-filenames',
         '-o', output_tpl,
@@ -373,7 +389,7 @@ def download(url, video_mode=False, force_single=False, force_playlist=False, au
 
 
 # --- Spotify Download ---
-def download_spotify(url, video_mode=False, force_single=False, force_playlist=False, audio_fmt='opus', dry_run=False, custom_name=None):
+def download_spotify(url, video_mode=False, force_single=False, force_playlist=False, audio_fmt='opus', dry_run=False, custom_name=None, dest=Path('/tmp')):
     """download audio from Spotify using spotdl"""
 
     # clean URL (strip tracking params)
@@ -398,10 +414,12 @@ def download_spotify(url, video_mode=False, force_single=False, force_playlist=F
 
     if custom_name and not force_playlist:
         safe_name = sanitize(custom_name) or 'download'
-        cmd += ['--output', f'{safe_name}.{{output-ext}}']
+        cmd += ['--output', str(dest / f'{safe_name}.{{output-ext}}')]
         log_ok(f"custom name: {safe_name}")
-    elif custom_name:
-        log_warn("custom name may not behave as expected for Spotify lists")
+    else:
+        if custom_name:
+            log_warn("custom name may not behave as expected for Spotify lists")
+        cmd += ['--output', str(dest / '{artist} - {title}.{output-ext}')]
 
     cmd += [cleaned_url]
 
@@ -556,6 +574,8 @@ def main():
   rip -s youtube.com/watch?v=xxx   {C.DIM}single video (ignore playlist){C.RESET}
   rip -p youtube.com/watch?v=xxx   {C.DIM}full playlist{C.RESET}
   rip -n english-name URL          {C.DIM}force output filename{C.RESET}
+  rip --cwd URL                    {C.DIM}download into the current directory{C.RESET}
+  rip --path ~/media URL           {C.DIM}download into ~/media{C.RESET}
   rip open.spotify.com/playlist/x  {C.DIM}spotify playlist/album/track{C.RESET}
   rip -c video.mp4                 {C.DIM}convert to opus audio{C.RESET}
   rip -c -m video.mp4              {C.DIM}convert to mp3 audio{C.RESET}
@@ -572,6 +592,10 @@ def main():
     parser.add_argument('-u', '--update', action='store_true', help='update yt-dlp (uv tool)')
     parser.add_argument('-n', '--name', help='custom output filename for single downloads')
     parser.add_argument('--dry', action='store_true', help='show commands without executing')
+
+    dest_group = parser.add_mutually_exclusive_group()
+    dest_group.add_argument('--cwd', action='store_true', help='download into the current directory')
+    dest_group.add_argument('--path', help='download into this directory (default: /tmp)')
 
     # audio format options (mutually exclusive)
     fmt_group = parser.add_mutually_exclusive_group()
@@ -610,11 +634,13 @@ def main():
     if args.convert:
         sys.exit(0 if convert(args.target, args.video, audio_fmt, args.dry) else 1)
 
+    dest = resolve_destination(args.cwd, args.path)
+
     # download mode — spotify gets its own handler
     if spotify_mode:
-        sys.exit(0 if download_spotify(args.target, args.video, args.single, args.playlist, audio_fmt, args.dry, args.name) else 1)
+        sys.exit(0 if download_spotify(args.target, args.video, args.single, args.playlist, audio_fmt, args.dry, args.name, dest) else 1)
     else:
-        sys.exit(0 if download(args.target, args.video, args.single, args.playlist, audio_fmt, args.dry, args.name) else 1)
+        sys.exit(0 if download(args.target, args.video, args.single, args.playlist, audio_fmt, args.dry, args.name, dest) else 1)
 
 
 if __name__ == '__main__':

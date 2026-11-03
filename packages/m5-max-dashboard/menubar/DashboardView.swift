@@ -6,33 +6,33 @@ final class DashboardModel: ObservableObject {
     @Published var error: String?
 }
 
-private func barColor(_ value: Double?) -> Color {
-    switch level(value) {
-    case .success: return Color(nsColor: .green)
-    case .warning: return Color(nsColor: .yellow)
-    case .urgent: return Color(nsColor: .red)
-    default: return .secondary
-    }
+// Presentation thresholds, not hardware-specific throttling limits.
+private func temperatureColor(_ value: Double?) -> Color {
+    guard let value, value.isFinite else { return .secondary }
+    return Color(nsColor: value < 70 ? .systemGreen : value < 85 ? .systemOrange : .systemRed)
 }
 
-private struct SegmentedBar: View {
+private struct CapacityIndicator: NSViewRepresentable {
+    let label: String
     let value: Double?
 
-    var body: some View {
-        let filled = value.map { Int((min(100, max(0, $0)) / 10).rounded()) } ?? 0
-        let color = barColor(value)
-        HStack(spacing: 2) {
-            ForEach(0..<10, id: \.self) { index in
-                Rectangle()
-                    .fill(LinearGradient(colors: index < filled
-                        ? [color.opacity(0.65), color]
-                        : [Color.primary.opacity(0.04), Color.primary.opacity(0.12)],
-                                         startPoint: .top, endPoint: .bottom))
-                    .overlay(Rectangle().strokeBorder(index < filled ? color.opacity(0.8) : Color.primary.opacity(0.14), lineWidth: 0.5))
-            }
-        }
-        .frame(width: 118, height: 9)
-        .accessibilityLabel(value.map { String(format: "%.0f percent", $0) } ?? "Unavailable")
+    func makeNSView(context: Context) -> NSLevelIndicator {
+        let indicator = NSLevelIndicator(frame: .zero)
+        indicator.levelIndicatorStyle = .continuousCapacity
+        indicator.controlSize = .small
+        indicator.isEditable = false
+        indicator.minValue = 0
+        indicator.maxValue = 100
+        indicator.warningValue = 50
+        indicator.criticalValue = 80
+        indicator.drawsTieredCapacityLevels = false
+        return indicator
+    }
+
+    func updateNSView(_ indicator: NSLevelIndicator, context: Context) {
+        indicator.doubleValue = min(100, max(0, value ?? 0))
+        indicator.isEnabled = value != nil
+        indicator.setAccessibilityLabel(value == nil ? "\(label) - unavailable" : label)
     }
 }
 
@@ -50,7 +50,7 @@ private struct MetricRow: View {
                 .foregroundStyle(child ? .secondary : .primary)
                 .padding(.leading, child ? 12 : 0)
                 .frame(width: 100, alignment: .leading)
-            if bar { SegmentedBar(value: percent) }
+            if bar { CapacityIndicator(label: label, value: percent).frame(width: 118, height: 12) }
             else { Color.clear.frame(width: 118, height: 1) }
             Text(value).monospacedDigit().frame(width: 72, alignment: .trailing)
             Text(detail).font(.caption).foregroundStyle(.secondary).monospacedDigit()
@@ -83,6 +83,7 @@ struct DashboardView: View {
     @ObservedObject var model: DashboardModel
     let openWeb: () -> Void
     let quit: () -> Void
+    @State private var copyFeedback = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -125,7 +126,13 @@ struct DashboardView: View {
                 Text("Kernel split / reclaimable are estimates | thermal max observed since app start")
                     .font(.caption2).foregroundStyle(.secondary)
                 HStack {
+                    Button(action: copyAllStats) {
+                        Label("Copy All Stats", systemImage: "doc.on.doc")
+                    }
+                    .disabled(model.snapshot == nil)
+                    .help("Copy the complete displayed snapshot, including offscreen sections, as aligned text")
                     Button("Open Web", action: openWeb)
+                    Text(copyFeedback).font(.caption).foregroundStyle(.secondary).monospacedDigit()
                     Spacer()
                     Button("Quit", action: quit)
                 }
@@ -135,6 +142,18 @@ struct DashboardView: View {
         }
         .font(.system(size: 12))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func copyAllStats() {
+        guard let snapshot = model.snapshot else { return }
+        var text = dashboard(snapshot).map { $0.map(\.text).joined() }.joined(separator: "\n") + "\n"
+        if let error = model.error {
+            text = "STALE SNAPSHOT - \(clean(error))\n\n" + text
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        copyFeedback = pasteboard.setString(text, forType: .string)
+            ? "Copied \(snapshot.sampledAt.formatted(date: .omitted, time: .standard))" : "Copy failed"
     }
 
     private var header: some View {
@@ -215,11 +234,15 @@ struct DashboardView: View {
                     Text("Sensors").frame(width: 64, alignment: .trailing)
                 }.font(.caption).foregroundStyle(.secondary)
                 ForEach(["cpu", "gpu", "mem", "soc"], id: \.self) { key in
+                    let current = s.number(key == "soc" ? "thermals.soc" : "thermals.\(key)_max")
+                    let peak = s.number("thermals.\(key)_peak")
                     GridRow {
                         Text(key == "mem" ? "Memory" : key.uppercased())
-                        Text(fixed(s.number(key == "soc" ? "thermals.soc" : "thermals.\(key)_max"), suffix: " °C"))
+                        Text(fixed(current, suffix: " °C"))
+                            .foregroundStyle(temperatureColor(current))
                             .frame(width: 80, alignment: .trailing)
-                        Text(fixed(s.number("thermals.\(key)_peak"), suffix: " °C"))
+                        Text(fixed(peak, suffix: " °C"))
+                            .foregroundStyle(temperatureColor(peak))
                             .frame(width: 80, alignment: .trailing)
                         Text(key == "soc" ? (s.number("thermals.soc") == nil ? "-" : "1")
                             : fixed(s.number("thermals.\(key)_count"), places: 0))

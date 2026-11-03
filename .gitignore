@@ -1,5 +1,6 @@
 result
 __pycache__/
+packages/m5-max-dashboard/.build/
 
 # Machine-local secrets/config (never commit hostnames, ports, tokens, etc.)
 local/

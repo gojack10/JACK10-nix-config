@@ -423,9 +423,19 @@ let
   };
 in
 {
-  nixpkgs.config.allowUnfreePredicate = pkg: builtins.elem (pkgs.lib.getName pkg) [
-    "unrar"
-  ];
+  # The Android SDK components were already installed under the same Google
+  # licence through Homebrew; androidenv requires the acceptance to be explicit.
+  nixpkgs.config.android_sdk.accept_license = true;
+
+  # androidenv downloads Google's SDK archives, which nixpkgs marks unfree, so
+  # the predicate has to cover both the packaged component and its archive.
+  nixpkgs.config.allowUnfreePredicate = pkg:
+    let name = pkgs.lib.getName pkg; in
+    builtins.elem name [
+      "unrar"
+      "ndk"
+      "platform-tools"
+    ] || builtins.match "(android-ndk|android-sdk|platform-tools).*" name != null;
 
   home.packages = with pkgs; [
     # Fonts (nerd fonts install to nix profile; macOS apps can find them)
@@ -452,7 +462,68 @@ in
     unrar
   ] ++ lib.optionals (hostname == "m5-max") [
     vlc-bin
+
+    # Android toolchain. androidenv replaces the Homebrew casks; the NDK and
+    # platform-tools releases match what the Android builds were compiled with.
+    # The SDK manager is deliberately absent: Nix installs SDK components now.
+    androidenv.androidPkgs.ndk-bundle
+    androidenv.androidPkgs.platform-tools
+
+    # Home Manager links one JVM's binaries, so 25 is the one on PATH, matching
+    # the Homebrew default. 17 and 21 stay addressable through JAVA_*_HOME.
+    jdk25
+
+    # Compilers and language runtimes.
+    ghc
+    cabal-install
+    dotnet-sdk_10
+
+    # Document, security and network tools.
+    pandoc
+    trivy
+    terraform-docs
+    cloudflared
+    ssm-session-manager-plugin
+
+    # Transfers and archives.
+    transmission_4
+    aria2
+    _7zz
+    innoextract
+    apktool
+
+    # Audio, game-modding and hardware utilities.
+    sox
+    fluidsynth
+    vgmstream
+    blueutil
+    cpulimit
+    smartmontools
+    sshpass
+
+    # Build inputs and pkg-config files for the native SDL projects.
+    bison
+    cmake
+    ninja
+    pkgconf
+    gnutls
+    SDL2
+    SDL2_ttf
+    sdl2-compat
+    cairo
+    # The Zulu JDK ships its own libfreetype.dylib and loads it through
+    # @loader_path, so the profile copy only needs to win the name clash.
+    (lib.hiPrio freetype)
+    libvorbis
+    opus
+    opusfile
   ];
+
+  home.sessionVariables = lib.mkIf (hostname == "m5-max") {
+    JAVA_HOME = "${pkgs.jdk25.home}";
+    JAVA_17_HOME = "${pkgs.jdk17.home}";
+    JAVA_21_HOME = "${pkgs.jdk21.home}";
+  };
 
   # Menu bar controller for the record-mic | transcribe pipeline. F5 toggles
   # recording; the finished transcript is pasted at the insertion point and

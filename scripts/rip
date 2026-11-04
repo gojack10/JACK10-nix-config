@@ -82,7 +82,7 @@ def check_deps(spotify_mode=False):
             print(f"  {C.DIM}install with: uv tool install spotdl{C.RESET}")
         else:
             print(f"  {C.DIM}install with: sudo apt install {' '.join(missing)}{C.RESET}")
-            print(f"  {C.DIM}or: pip install yt-dlp / brew install ffmpeg{C.RESET}")
+            print(f"  {C.DIM}or: uv tool install yt-dlp / nix profile install nixpkgs#ffmpeg{C.RESET}")
         sys.exit(1)
 
 

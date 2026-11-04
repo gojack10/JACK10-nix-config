@@ -505,7 +505,10 @@ in
     bison
     cmake
     ninja
-    pkgconf
+    # pkgconf and pkg-config both ship share/aclocal/pkg.m4; keep both command
+    # names and let pkgconf's newer macro file win the clash.
+    (lib.hiPrio pkgconf)
+    pkg-config
     gnutls
     SDL2
     SDL2_ttf

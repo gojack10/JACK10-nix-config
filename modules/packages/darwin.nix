@@ -511,6 +511,7 @@ in
     pkg-config
     gnutls
     SDL2
+    (lib.getDev SDL2)
     SDL2_ttf
     sdl2-compat
     cairo
@@ -523,6 +524,8 @@ in
   ];
 
   home.sessionVariables = lib.mkIf (hostname == "m5-max") {
+    ANDROID_NDK_HOME = "${pkgs.androidenv.androidPkgs.ndk-bundle}/libexec/android-sdk/ndk/${pkgs.androidenv.androidPkgs.ndk-bundle.version}";
+    PKG_CONFIG_PATH = "${config.home.profileDirectory}/lib/pkgconfig:${config.home.profileDirectory}/share/pkgconfig";
     JAVA_HOME = "${pkgs.jdk25.home}";
     JAVA_17_HOME = "${pkgs.jdk17.home}";
     JAVA_21_HOME = "${pkgs.jdk21.home}";

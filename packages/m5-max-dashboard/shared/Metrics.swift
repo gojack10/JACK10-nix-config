@@ -3,20 +3,28 @@ import Foundation
 struct Snapshot {
     let data: Data
     let values: [String: Any]
+    let shaderCores: GPUCoreSample
 
-    init(full: Bool) throws {
+    init(full: Bool, shaderCores: GPUCoreSample = .unavailable("Bridge not running :8766")) throws {
         let capacity = 32768
         var buffer = [CChar](repeating: 0, count: capacity)
         m5_sample(&buffer, Int32(capacity), full ? 1 : 0)
-        data = Data(buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) })
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        let nativeData = Data(buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) })
+        guard var object = try JSONSerialization.jsonObject(with: nativeData) as? [String: Any] else {
             throw CocoaError(.propertyListReadCorrupt)
         }
         if let message = object["error"] as? String {
             throw NSError(domain: "m5-max-dashboard", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: message])
         }
+        self.shaderCores = shaderCores
+        if full {
+            var gpu = object["gpu"] as? [String: Any] ?? [:]
+            gpu["shader_cores"] = shaderCores.json
+            object["gpu"] = gpu
+        }
         values = object
+        data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }
 
     func value(_ path: String) -> Any? {

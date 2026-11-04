@@ -131,6 +131,43 @@ static void top_processes(JSON *out) {
     append(out, "]");
 }
 
+#define MAX_CPU_CORES 256
+
+// Match Mach's logical CPU IDs to the device tree, not perflevel array order.
+static char cpu_kinds[MAX_CPU_CORES][32];
+static void cpu_topology(void) {
+    static int loaded = 0;
+    if (loaded) return;
+    loaded = 1;
+    char fastest[32] = "Performance";
+    size_t size = sizeof(fastest);
+    sysctlbyname("hw.perflevel0.name", fastest, &size, NULL, 0);
+    io_registry_entry_t cpus = IORegistryEntryFromPath(kIOMainPortDefault, "IODeviceTree:/cpus");
+    io_iterator_t children = IO_OBJECT_NULL;
+    if (!cpus) return;
+    if (IORegistryEntryGetChildIterator(cpus, kIODeviceTreePlane, &children) == KERN_SUCCESS) {
+        io_registry_entry_t entry;
+        while ((entry = IOIteratorNext(children))) {
+            CFMutableDictionaryRef properties = NULL;
+            if (IORegistryEntryCreateCFProperties(entry, &properties, kCFAllocatorDefault, 0) == KERN_SUCCESS && properties) {
+                double identifier = dictionary_number(properties, CFSTR("logical-cpu-id"));
+                CFTypeRef type = CFDictionaryGetValue(properties, CFSTR("cluster-type"));
+                if (isfinite(identifier) && identifier >= 0 && identifier < MAX_CPU_CORES &&
+                    type && CFGetTypeID(type) == CFDataGetTypeID() && CFDataGetLength(type) > 0) {
+                    char kind = (char)CFDataGetBytePtr(type)[0];
+                    const char *name = kind == 'E' ? "Efficiency" : kind == 'M' ? "Performance"
+                        : kind == 'P' ? fastest : "CPU";
+                    snprintf(cpu_kinds[(int)identifier], sizeof(cpu_kinds[0]), "%s", name);
+                }
+                CFRelease(properties);
+            }
+            IOObjectRelease(entry);
+        }
+        IOObjectRelease(children);
+    }
+    IOObjectRelease(cpus);
+}
+
 static void cpu(JSON *out, int full) {
     int cores = 0;
     size_t size = sizeof(cores);
@@ -141,27 +178,54 @@ static void cpu(JSON *out, int full) {
     size = sizeof(model);
     sysctlbyname("hw.model", model, &size, NULL, 0);
 
-    static natural_t previous[CPU_STATE_MAX];
-    static int sampled = 0;
-    host_cpu_load_info_data_t ticks = {0};
-    mach_msg_type_number_t count = HOST_CPU_LOAD_INFO_COUNT;
+    static natural_t previous[MAX_CPU_CORES][CPU_STATE_MAX];
+    static natural_t previous_count = 0;
+    processor_info_array_t ticks = NULL;
+    mach_msg_type_number_t count = 0;
+    natural_t cpu_count = 0;
     host_t host = mach_host_self();
-    double utilization = NAN;
-    if (host_statistics(host, HOST_CPU_LOAD_INFO, (host_info_t)&ticks, &count) == KERN_SUCCESS) {
+    double utilization = NAN, per_core[MAX_CPU_CORES];
+    for (int i = 0; i < MAX_CPU_CORES; i++) per_core[i] = NAN;
+    kern_return_t result = host_processor_info(host, PROCESSOR_CPU_LOAD_INFO, &cpu_count, &ticks, &count);
+    if (result == KERN_SUCCESS && cpu_count <= MAX_CPU_CORES && count >= cpu_count * CPU_STATE_MAX) {
         uint64_t total = 0, busy = 0;
-        for (int i = 0; i < CPU_STATE_MAX; i++) {
-            natural_t delta = ticks.cpu_ticks[i] - previous[i];
-            total += delta;
-            if (i != CPU_STATE_IDLE) busy += delta;
-            previous[i] = ticks.cpu_ticks[i];
+        for (natural_t i = 0; i < cpu_count; i++) {
+            uint64_t core_total = 0, core_busy = 0;
+            for (int state = 0; state < CPU_STATE_MAX; state++) {
+                natural_t current = (natural_t)ticks[i * CPU_STATE_MAX + state];
+                natural_t delta = current - previous[i][state];
+                core_total += delta;
+                if (state != CPU_STATE_IDLE) core_busy += delta;
+                previous[i][state] = current;
+            }
+            if (previous_count == cpu_count && core_total)
+                per_core[i] = 100.0 * core_busy / core_total;
+            total += core_total;
+            busy += core_busy;
         }
-        if (sampled && total) utilization = 100.0 * busy / total;
-        sampled = 1;
+        if (previous_count == cpu_count && total) utilization = 100.0 * busy / total;
+        previous_count = cpu_count;
+        cores = (int)cpu_count;
+    } else {
+        previous_count = 0;
     }
+    if (ticks) vm_deallocate(mach_task_self(), (vm_address_t)ticks, count * sizeof(integer_t));
     mach_port_deallocate(mach_task_self(), host);
     append(out, "{\"count\":%d,\"model\":", cores); string(out, model);
     append(out, ","); field(out, "utilization", utilization);
     append(out, ","); field(out, "load_avg", load[0]);
+    if (full) {
+        cpu_topology();
+        append(out, ",\"cores\":[");
+        for (int i = 0; i < cores && i < MAX_CPU_CORES; i++) {
+            if (i) append(out, ",");
+            append(out, "{\"id\":%d,\"kind\":", i);
+            string(out, cpu_kinds[i][0] ? cpu_kinds[i] : "CPU");
+            append(out, ","); field(out, "utilization", per_core[i]);
+            append(out, "}");
+        }
+        append(out, "]");
+    }
     append(out, ",\"top\":");
     if (full) top_processes(out); else append(out, "[]");
     append(out, "}");

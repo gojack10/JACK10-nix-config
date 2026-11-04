@@ -1,6 +1,6 @@
 import Foundation
 
-enum Tone { case plain, success, warning, urgent, heading }
+enum Tone { case plain, muted, success, warning, urgent, heading }
 struct Piece {
     let text: String
     var tone: Tone = .plain
@@ -25,6 +25,34 @@ private func barRow(_ label: String, _ percent: Double?, _ detail: String) -> Ro
     return [Piece(text: "  " + rightPad(label, 14)),
             Piece(text: String(repeating: "█", count: filled) + String(repeating: "░", count: 10 - filled), tone: level(percent)),
             Piece(text: " " + fixed(percent, places: 0, width: 3, suffix: "%") + " | " + detail)]
+}
+
+private func coreSection(_ group: CoreGroup) -> Section {
+    // 20 characters per meter, then a four-character gutter in both core views.
+    let cellWidth = 20
+    var rows: [Row] = [[Piece(text: "  " + group.detail, tone: .muted)]]
+    if !group.columns.isEmpty {
+        rows.append([Piece(text: "  " + group.columns.map { rightPad($0.title, cellWidth) }
+            .joined(separator: "    "), tone: .muted)])
+    }
+    for index in 0..<group.rowCount {
+        var pieces: Row = [Piece(text: "  ")]
+        for (columnIndex, column) in group.columns.enumerated() {
+            if columnIndex > 0 { pieces.append(Piece(text: "    ")) }
+            guard index < column.cores.count else {
+                pieces.append(Piece(text: String(repeating: " ", count: cellWidth)))
+                continue
+            }
+            let core = column.cores[index]
+            let filled = core.percent.map { Int((min(100, max(0, $0)) / 10).rounded()) } ?? 0
+            pieces += [Piece(text: leftPad(String(core.id), 2) + " ["),
+                       Piece(text: String(repeating: "█", count: filled), tone: level(core.percent)),
+                       Piece(text: String(repeating: core.percent == nil ? "·" : "░", count: 10 - filled), tone: .muted),
+                       Piece(text: "] " + fixed(core.percent, places: 0, width: 3, suffix: "%"))]
+        }
+        rows.append(pieces)
+    }
+    return Section(title: group.title + (group.summary.isEmpty ? "" : " - " + group.summary), rows: rows)
 }
 
 func sections(_ snapshot: Snapshot) -> [Section] {
@@ -102,7 +130,8 @@ func sections(_ snapshot: Snapshot) -> [Section] {
         row("system", fixed(n("power.system_watts"), width: 6, suffix: "W")),
         row("net", n("power.net_watts").map { String(format: "%+6.1fW", $0) } ?? "     -W")
     ])
-    return [gpu, cpu, memory, swap, pressureSection, thermal, fans, top, power]
+    return [cpu, coreSection(.cpu(snapshot)), top, gpu, coreSection(.gpu(snapshot.shaderCores)),
+            memory, swap, pressureSection, thermal, fans, power]
 }
 
 func dashboard(_ snapshot: Snapshot) -> [Row] {

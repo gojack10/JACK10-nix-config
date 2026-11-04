@@ -68,6 +68,59 @@ private struct MetricRow: View {
     }
 }
 
+private struct CoreMeter: View {
+    let core: CoreReading
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(String(core.id)).frame(width: 18, alignment: .trailing)
+            CapacityIndicator(label: "Core \(core.id)", value: core.percent)
+                .frame(maxWidth: .infinity).frame(height: 10)
+            Text(fixed(core.percent, places: 0, suffix: "%"))
+                .frame(width: 36, alignment: .trailing)
+        }
+        .font(.system(size: 11)).monospacedDigit()
+        .frame(maxWidth: .infinity).frame(height: 18)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Core \(core.id), \(core.percent.map { fixed($0, places: 0) + " percent" } ?? "unavailable")")
+    }
+}
+
+private struct CoreMeters: View {
+    let title: String
+    let group: CoreGroup
+
+    var body: some View {
+        MetricSection(title) {
+            if !group.summary.isEmpty {
+                Text(group.summary).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            }
+            // Equal-width lanes fill the panel; fixed ID/value fields keep every
+            // bar aligned. CPU has three six-core lanes, GPU four ten-core lanes.
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 0), spacing: 16,
+                                                         alignment: .leading),
+                                     count: max(1, group.columns.count)),
+                      alignment: .leading, spacing: 3) {
+                ForEach(group.columns.indices, id: \.self) { index in
+                    Text(group.columns[index].title).font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                ForEach(0..<group.rowCount, id: \.self) { row in
+                    ForEach(group.columns.indices, id: \.self) { index in
+                        let column = group.columns[index]
+                        if row < column.cores.count {
+                            CoreMeter(core: column.cores[row])
+                        } else {
+                            Color.clear.frame(height: 18).accessibilityHidden(true)
+                        }
+                    }
+                }
+            }
+            Text(group.detail).font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+}
+
 private struct MetricSection<Content: View>: View {
     let title: String
     let content: Content
@@ -100,9 +153,12 @@ struct DashboardView: View {
             ScrollView {
                 if let s = model.snapshot {
                     VStack(alignment: .leading, spacing: 10) {
-                        gpu(s)
-                        Divider()
                         cpu(s)
+                        CoreMeters(title: "CPU cores", group: .cpu(s))
+                        processes(s)
+                        Divider()
+                        gpu(s)
+                        CoreMeters(title: "GPU shader cores", group: .gpu(s.shaderCores))
                         Divider()
                         memory(s)
                         Divider()
@@ -118,8 +174,6 @@ struct DashboardView: View {
                         thermals(s)
                         Divider()
                         fans(s)
-                        Divider()
-                        processes(s)
                         Divider()
                         power(s)
                     }

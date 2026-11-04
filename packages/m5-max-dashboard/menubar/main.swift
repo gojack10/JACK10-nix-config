@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let titleView = StatusTitleView(frame: .zero)
     private let popover = NSPopover()
     private let model = DashboardModel()
+    private let gpuCores = GPUCoreReader()
     private let queue = DispatchQueue(label: "m5-max-dashboard.metrics", qos: .utility)
     private var timer: Timer?
     private var sampling = false
@@ -44,9 +45,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func sample() {
         guard !sampling else { return }
         let full = popover.isShown
+        if full { gpuCores.refresh() }
+        let shaderCores = gpuCores.sample()
         sampling = true
         queue.async { [weak self] in
-            let result = Result { try Snapshot(full: full) }
+            let result = Result { try Snapshot(full: full, shaderCores: shaderCores) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.sampling = false

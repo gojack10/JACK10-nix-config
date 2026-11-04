@@ -5,7 +5,7 @@ SDKROOT ?= /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
 CFLAGS = -O2 -Wall -Wextra -isysroot $(SDKROOT)
 FRAMEWORKS = -framework IOKit -framework CoreFoundation -framework Foundation
 SWIFTFLAGS = -swift-version 5 -O -sdk $(SDKROOT) -import-objc-header native/metrics.h
-SHARED = shared/Metrics.swift shared/Layout.swift
+SHARED = shared/Metrics.swift shared/CoreMetrics.swift shared/Layout.swift
 MENU = $(wildcard menubar/*.swift)
 NATIVE = $(BUILD)/metrics.o $(BUILD)/charge_limit.o
 

@@ -7,7 +7,8 @@ if arguments.contains("--help") || arguments.contains("-h") {
     print("""
     m5-max-dashboard [--once | --watch] [--json]
 
-    System pulse - CPU, GPU, memory, swap, pressure, thermals, fans and top CPU.
+    System pulse - CPU, GPU, per-core meters, memory, thermals, fans and top CPU.
+    GPU shader meters use the optional per-core bridge at 127.0.0.1:8766.
     Interactive terminals watch by default. Pipes get one snapshot.
       --once   Print one reading and exit
       --watch  Refresh every second
@@ -49,6 +50,7 @@ func render(_ piece: Piece) -> String {
     let style: String
     switch piece.tone {
     case .plain: return piece.text
+    case .muted: style = "2"
     case .success: style = "32"
     case .warning: style = "33"
     case .urgent: style = "31"
@@ -79,7 +81,9 @@ for value in [SIGINT, SIGTERM] {
 if screen { write("\u{1b}[?1049h\u{1b}[?25l") }
 defer { restore() }
 
+let gpuCores = GPUCoreReader()
 do {
+    gpuCores.refresh()
     // Prime the CPU tick delta. No lifetime-average percentage masquerading as now.
     _ = try Snapshot(full: false)
     Thread.sleep(forTimeInterval: 1)
@@ -89,7 +93,8 @@ do {
     while true {
         var dirty = false
         if Date() >= nextSample {
-            let snapshot = try Snapshot(full: true)
+            gpuCores.refresh()
+            let snapshot = try Snapshot(full: true, shaderCores: gpuCores.sample())
             if json {
                 FileHandle.standardOutput.write(snapshot.data)
                 write("\n")

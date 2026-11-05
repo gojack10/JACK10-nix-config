@@ -50,7 +50,7 @@ private final class StatusMetricView: NSStackView {
 // Native fields inside the status button: fixed slots, no title-string reflow.
 final class StatusTitleView: NSStackView {
     private let cpu = StatusMetricView(label: "CPU", unit: "%", capacity: "000")
-    private let memory = StatusMetricView(label: "MEM", unit: "%", capacity: "000")
+    private let memory = StatusMetricView(label: "MEM", unit: "GiB", capacity: "0000.0")
     private let battery = StatusMetricView(label: "BAT", unit: "%", capacity: "000")
     private let power = StatusMetricView(label: "", unit: "W", capacity: "+000.0")
 
@@ -87,7 +87,7 @@ final class StatusTitleView: NSStackView {
 
     func update(_ snapshot: Snapshot?) -> String {
         let cpuText = fixed(snapshot?.number("cpu.utilization"), places: 0)
-        let memoryText = fixed(snapshot?.percent("memory.in_use_gb", of: "memory.total_gb"), places: 0)
+        let memoryText = fixed(snapshot?.number("memory.in_use_gb"))
         let batteryPercent = snapshot?.number("power.battery_pct")
         let batteryText = fixed(batteryPercent, places: 0)
         let watts = snapshot?.number("power.net_watts")
@@ -95,12 +95,13 @@ final class StatusTitleView: NSStackView {
 
         cpu.update(cpuText)
         memory.update(memoryText)
-        battery.update(batteryText)
-        let external = snapshot?.value("power.external_connected") as? Bool ?? false
+        let batteryColor: NSColor = (batteryPercent ?? 100) <= 10 ? .systemRed
+            : (batteryPercent ?? 100) <= 25 ? .systemYellow : statusTextColor
+        battery.update(batteryText, color: batteryColor)
         let powerColor: NSColor = (batteryPercent ?? 100) < 15 ? .systemRed
-            : !external ? statusTextColor : (watts ?? 0) > 0.5 ? .systemGreen
+            : (watts ?? 0) > 0.5 ? .systemGreen
             : (watts ?? 0) < -0.5 ? .systemOrange : statusTextColor
         power.update(powerText, color: powerColor)
-        return "Net power \(powerText) watts, battery \(batteryText)%, CPU \(cpuText)%, memory \(memoryText)%"
+        return "Net power \(powerText) watts, battery \(batteryText)%, CPU \(cpuText)%, memory \(memoryText) GiB"
     }
 }

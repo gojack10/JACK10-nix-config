@@ -8,7 +8,7 @@ if arguments.contains("--help") || arguments.contains("-h") {
     m5-max-dashboard [--once | --watch] [--json]
 
     System pulse - CPU, GPU, per-core meters, memory, thermals, fans and top CPU.
-    GPU shader meters use the optional per-core bridge at 127.0.0.1:8766.
+    GPU shader and memory-bandwidth meters use the bridge at 127.0.0.1:8766.
     Interactive terminals watch by default. Pipes get one snapshot.
       --once   Print one reading and exit
       --watch  Refresh every second
@@ -81,9 +81,9 @@ for value in [SIGINT, SIGTERM] {
 if screen { write("\u{1b}[?1049h\u{1b}[?25l") }
 defer { restore() }
 
-let gpuCores = GPUCoreReader()
+let gpu = GPUReader()
 do {
-    gpuCores.refresh()
+    gpu.refresh()
     // Prime the CPU tick delta. No lifetime-average percentage masquerading as now.
     _ = try Snapshot(full: false)
     Thread.sleep(forTimeInterval: 1)
@@ -93,8 +93,9 @@ do {
     while true {
         var dirty = false
         if Date() >= nextSample {
-            gpuCores.refresh()
-            let snapshot = try Snapshot(full: true, shaderCores: gpuCores.sample())
+            gpu.refresh()
+            let readings = gpu.sample()
+            let snapshot = try Snapshot(full: true, shaderCores: readings.cores, bandwidth: readings.bandwidth)
             if json {
                 FileHandle.standardOutput.write(snapshot.data)
                 write("\n")

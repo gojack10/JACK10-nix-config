@@ -5,12 +5,12 @@ SDKROOT ?= /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
 CFLAGS = -O2 -Wall -Wextra -isysroot $(SDKROOT)
 FRAMEWORKS = -framework IOKit -framework CoreFoundation -framework Foundation
 SWIFTFLAGS = -swift-version 5 -O -sdk $(SDKROOT) -import-objc-header native/metrics.h
-SHARED = shared/Metrics.swift shared/CoreMetrics.swift shared/Layout.swift
+SHARED = shared/Metrics.swift shared/CoreMetrics.swift shared/GPUBandwidth.swift shared/Layout.swift
 MENU = $(wildcard menubar/*.swift)
 NATIVE = $(BUILD)/metrics.o $(BUILD)/charge_limit.o
 
 .PHONY: all clean
-all: $(BUILD)/libmetrics.dylib $(BUILD)/m5-max-dashboard $(BUILD)/m5-max-dashboard-menu
+all: $(BUILD)/libmetrics.dylib $(BUILD)/m5-max-dashboard $(BUILD)/m5-max-dashboard-menu $(BUILD)/shader-decode
 
 $(BUILD):
 	mkdir -p $@
@@ -29,6 +29,9 @@ $(BUILD)/m5-max-dashboard: $(SHARED) cli/main.swift $(NATIVE)
 
 $(BUILD)/m5-max-dashboard-menu: $(SHARED) $(MENU) $(NATIVE)
 	$(SWIFTC) $(SWIFTFLAGS) $(SHARED) $(MENU) $(NATIVE) $(FRAMEWORKS) -framework AppKit -framework SwiftUI -o $@
+
+$(BUILD)/shader-decode: collector/shader-decode.m | $(BUILD)
+	$(CC) $(CFLAGS) -fobjc-arc -fmodules -fmodules-cache-path=$(BUILD)/modules $< -framework Foundation -o $@
 
 clean:
 	rm -rf $(BUILD)

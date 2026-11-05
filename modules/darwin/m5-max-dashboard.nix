@@ -23,6 +23,18 @@ in lib.mkIf (hostname == "m5-max") {
     };
   };
 
+  # The bridge owns the signed helpers; the Swift sampler only reads loopback.
+  launchd.agents.m5-max-dashboard-gpu = {
+    enable = true;
+    config = {
+      Label = "com.jack.m5-max-dashboard.gpu";
+      ProgramArguments = [ "${dashboard}/bin/m5-max-dashboard-gpu" ];
+      RunAtLoad = true;
+      KeepAlive = { SuccessfulExit = false; };
+      ExitTimeOut = 40;
+    };
+  };
+
   launchd.agents.m5-max-dashboard-menu = {
     enable = true;
     config = {

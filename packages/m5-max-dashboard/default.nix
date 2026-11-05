@@ -24,6 +24,11 @@ stdenv.mkDerivation {
     cp menubar/Info.plist "$app/Contents/Info.plist"
     cp -R web/. "$out/share/m5-max-dashboard/"
     install -m755 .build/libmetrics.dylib "$out/share/m5-max-dashboard/libmetrics.dylib"
+    cp -R collector "$out/share/m5-max-dashboard/collector"
+    install -m755 .build/shader-decode "$out/share/m5-max-dashboard/collector/shader-decode"
+    makeWrapper ${uv}/bin/uv "$out/bin/m5-max-dashboard-gpu" \
+      --set PYTHONDONTWRITEBYTECODE 1 \
+      --add-flags "run --offline --no-project --python ${python3}/bin/python3 $out/share/m5-max-dashboard/collector/bridge.py"
     makeWrapper ${uv}/bin/uv "$out/bin/m5-max-dashboard-web" \
       --add-flags "run --offline --no-project --python ${python3}/bin/python3 $out/share/m5-max-dashboard/app.py"
     runHook postInstall
@@ -32,6 +37,7 @@ stdenv.mkDerivation {
   postFixup = ''
     /usr/bin/codesign --force --sign - "$out/bin/m5-max-dashboard"
     /usr/bin/codesign --force --sign - "$out/share/m5-max-dashboard/libmetrics.dylib"
+    /usr/bin/codesign --force --sign - "$out/share/m5-max-dashboard/collector/shader-decode"
     /usr/bin/codesign --force --sign - "$out/Applications/M5 Max Dashboard.app"
   '';
 

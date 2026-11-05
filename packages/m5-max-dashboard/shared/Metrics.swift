@@ -4,8 +4,10 @@ struct Snapshot {
     let data: Data
     let values: [String: Any]
     let shaderCores: GPUCoreSample
+    let bandwidth: GPUBandwidthSample
 
-    init(full: Bool, shaderCores: GPUCoreSample = .unavailable("Bridge not running :8766")) throws {
+    init(full: Bool, shaderCores: GPUCoreSample = .unavailable("Bridge not running :8766"),
+         bandwidth: GPUBandwidthSample = .unavailable("Bridge not running :8766")) throws {
         let capacity = 32768
         var buffer = [CChar](repeating: 0, count: capacity)
         m5_sample(&buffer, Int32(capacity), full ? 1 : 0)
@@ -18,9 +20,11 @@ struct Snapshot {
                           userInfo: [NSLocalizedDescriptionKey: message])
         }
         self.shaderCores = shaderCores
+        self.bandwidth = bandwidth
         if full {
             var gpu = object["gpu"] as? [String: Any] ?? [:]
             gpu["shader_cores"] = shaderCores.json
+            gpu["bandwidth"] = bandwidth.json
             object["gpu"] = gpu
         }
         values = object

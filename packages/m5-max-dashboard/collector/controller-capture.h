@@ -103,9 +103,9 @@ int gpu_bridge_stream(const char *output, const char *control, const char *respo
     dup2(nullFD, 1); dup2(nullFD, 2); close(nullFD);
     for (;;) {
         char command = 0;
-        long count = read(input, &command, 1);
-        if (count < 0 && *__error() == 4) continue;
-        if (count != 1 || command == 'q') break;
+        long received = read(input, &command, 1);
+        if (received < 0 && *__error() == 4) continue;
+        if (received != 1 || command == 'q') break;
         if (command != 's') break;
         char result = (char)('0' + dashboard_capture_controller(output));
         if (write(resultFD, &result, 1) != 1) break;

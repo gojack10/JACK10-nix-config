@@ -93,32 +93,33 @@ static int dashboard_capture_shader(const char *output) {
         NSMutableArray *buffers = [NSMutableArray array];
         NSUInteger accepted = 0;
         for (unsigned i = 0; i < ringCount && captureOK; ++i) {
-            void *base = NULL;
-            unsigned size = 0, offset = 0, count = 0;
-            BOOL ok = [source ringBufferInfoAtIndex:i base:&base size:&size dataOffset:&offset dataSize:&count];
+            void *rawBase = NULL;
+            unsigned rawSize = 0, rawOffset = 0, rawCount = 0;
+            BOOL ok = [source ringBufferInfoAtIndex:i base:&rawBase size:&rawSize dataOffset:&rawOffset dataSize:&rawCount];
             if (!ok) { captureOK = NO; break; }
-            if (!count) {
+            if (!rawCount) {
                 [buffers addObject:[NSMutableData data]];
                 continue;
             }
-            if (!base || !size || offset >= size || count > size || accepted + count > 64*1024*1024) {
+            if (!rawBase || !rawSize || rawOffset >= rawSize || rawCount > rawSize || accepted + rawCount > 64*1024*1024) {
                 captureOK = NO;
                 break;
             }
             NSMutableData *buffer = [NSMutableData data];
-            unsigned first = count < size - offset ? count : size - offset;
-            [buffer appendBytes:(char *)base + offset length:first];
-            if (count > first) [buffer appendBytes:base length:count-first];
+            unsigned first = rawCount < rawSize - rawOffset ? rawCount : rawSize - rawOffset;
+            [buffer appendBytes:(char *)rawBase + rawOffset length:first];
+            if (rawCount > first) [buffer appendBytes:rawBase length:rawCount-first];
             [buffers addObject:buffer];
-            accepted += count;
+            accepted += rawCount;
         }
         [source setEnabled:NO];
         if (!captureOK || !stopped) return 1;
         NSString *directory = [@(output) stringByAppendingPathComponent:@"capture"];
         if (![[NSFileManager defaultManager] createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:&error]) return 1;
         for (NSUInteger i = 0; i < buffers.count; ++i) {
+            NSData *data = buffers[i];
             NSString *path = [directory stringByAppendingPathComponent:[NSString stringWithFormat:@"ring-%lu.bin", (unsigned long)i]];
-            if (![buffers[i] writeToFile:path options:NSDataWritingAtomic error:&error]) return 1;
+            if (![data writeToFile:path options:NSDataWritingAtomic error:&error]) return 1;
         }
         return accepted ? 0 : 2;
     }
@@ -132,9 +133,9 @@ int gpu_bridge_stream(const char *output, const char *control, const char *respo
     dup2(nullFD, 1); dup2(nullFD, 2); close(nullFD);
     for (;;) {
         char command = 0;
-        long count = read(input, &command, 1);
-        if (count < 0 && *__error() == 4) continue;
-        if (count != 1 || command == 'q') break;
+        long received = read(input, &command, 1);
+        if (received < 0 && *__error() == 4) continue;
+        if (received != 1 || command == 'q') break;
         if (command != 's') break;
         char result = (char)('0' + dashboard_capture_shader(output));
         if (write(resultFD, &result, 1) != 1) break;

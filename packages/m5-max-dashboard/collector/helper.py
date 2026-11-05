@@ -48,7 +48,7 @@ script t = lldb.debugger.GetSelectedTarget(); b = t.BreakpointCreateByAddress(t.
 '''
         else:
             commands += f'''target create {json.dumps(SHADER_HOST)}
-settings set target.run-args --help
+settings set -- target.run-args --help
 breakpoint set --name fclose --condition '$lr >= 0x100000000 && $lr < 0x100010000'
 run
 breakpoint disable 1
@@ -71,6 +71,7 @@ expression -l objc++ -- int gpu_bridge_prepare(const char *); printf("GPU_READY=
             if self.wait(b'\n').strip() != '1':
                 raise RuntimeError('Controller entry breakpoint unavailable')
             self.send('continue\n')
+            self.wait(b'stop reason = breakpoint')
         self.send(preparation)
         self.wait(b'\nGPU_READY=')
         if self.wait(b'\n').strip() != '0':

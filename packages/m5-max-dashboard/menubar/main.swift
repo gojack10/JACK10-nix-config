@@ -43,9 +43,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func sample() {
-        guard !sampling else { return }
         let full = popover.isShown
         if full { gpu.refresh() }
+        guard !sampling else { return }
         let readings = gpu.sample()
         sampling = true
         queue.async { [weak self] in

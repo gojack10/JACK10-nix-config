@@ -13,14 +13,14 @@ import tempfile
 import threading
 import time
 
-from helper import Helper, ROOT
+from helper import CaptureError, Helper, ROOT
 from shader import derive
 
 STOP = threading.Event()
 LOCK = threading.Lock()
 DEMAND = threading.Event()
 LAST_REQUEST = 0.0
-STATE = {'core': {'status': 'idle'}, 'controller': {'status': 'idle'}}
+STATE = {'core': {'status': 'starting'}, 'controller': {'status': 'starting'}}
 SOURCE = 'IOReport / AMC / PRIM GFX DCS'
 
 
@@ -57,8 +57,12 @@ def decode_shader(directory):
     subprocess.run([str(ROOT / 'shader-decode'), str(directory / 'catalog.json'),
                     str(directory / 'capture'), str(directory), '0', '--throughput'],
                    capture_output=True, timeout=15)
+    readable = json.loads((directory / 'capture' / 'capture.json').read_text())['readable']
     values = []
     for index in range(40):
+        if not readable[index]:
+            values.append(None)
+            continue
         ring = directory / 'capture' / f'ring-{index}.bin'
         profile = directory / f'profile-{index}.json'
         if ring.stat().st_size == 0:
@@ -86,11 +90,6 @@ def controller_value(directory):
             'seconds': seconds, 'timestamp': timestamp}
 
 
-def requested():
-    with LOCK:
-        return time.monotonic() - LAST_REQUEST < 5
-
-
 def wait_for_request():
     while not STOP.is_set():
         DEMAND.wait()
@@ -103,14 +102,20 @@ def wait_for_request():
 
 def collect(kind):
     key = 'core' if kind == 'shader' else 'controller'
-    while wait_for_request():
+    while not STOP.is_set():
         try:
             with tempfile.TemporaryDirectory(prefix='m5-gpu-' + kind + '-', dir='/private/tmp') as tmp:
                 directory = Path(tmp)
-                with Helper(directory, kind) as helper:
-                    while not STOP.is_set() and requested():
+                with Helper(directory, kind, stop=STOP) as helper:
+                    # Keep the initialized helper; only collection follows demand.
+                    while wait_for_request():
                         started = time.monotonic()
-                        helper.capture()
+                        try:
+                            helper.capture()
+                        except CaptureError as error:
+                            publish(key, {'status': 'unavailable', 'error': str(error)})
+                            STOP.wait(1)
+                            continue
                         captured = time.time()
                         if kind == 'shader':
                             values = decode_shader(directory)
@@ -119,7 +124,6 @@ def collect(kind):
                         else:
                             publish(key, controller_value(directory))
                         STOP.wait(max(0, 1 - (time.monotonic() - started)))
-            publish(key, {'status': 'idle'})
         except Exception as error:
             publish(key, {'status': 'unavailable', 'error': str(error)})
             STOP.wait(5)
@@ -136,9 +140,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         with LOCK:
             LAST_REQUEST = time.monotonic()
-            for key, value in STATE.items():
-                if value['status'] == 'idle':
-                    STATE[key] = {'status': 'starting'}
             DEMAND.set()
             states = [value['status'] for value in STATE.values()]
             status = 'live' if all(value == 'live' for value in states) else 'partial'

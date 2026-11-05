@@ -14,10 +14,24 @@ SHADER_HOST = '/Applications/Xcode.app/Contents/SharedFrameworks/DVTInstrumentsF
 ENV = dict(os.environ, DEVELOPER_DIR=XCODE, TERM='dumb')
 
 
+class CaptureError(RuntimeError):
+    pass
+
+
+SHADER_ERRORS = {
+    1: 'counter group unavailable', 3: 'APS_USC source unavailable',
+    4: 'counter selection rejected', 5: 'trigger selection rejected',
+    6: 'sampling start rejected', 7: 'unexpected shader ring count',
+    10: 'sampling stop rejected', 11: 'capture directory unavailable',
+    12: 'shader ring write failed',
+}
+
+
 class Helper:
-    def __init__(self, directory, kind):
+    def __init__(self, directory, kind, stop=None):
         self.directory = directory
         self.kind = kind
+        self.stop = stop
         self.process = None
         self.control = None
         self.response = None
@@ -101,10 +115,9 @@ expression -l objc++ -- int gpu_bridge_prepare(const char *); printf("GPU_READY=
         self.process.stdin.flush()
 
     def wait(self, marker):
-        deadline = time.monotonic() + 30
         while marker not in self.buffer:
-            if time.monotonic() > deadline:
-                raise RuntimeError('Helper startup timed out: ' + self.buffer[-1500:].decode(errors='replace'))
+            if self.stop is not None and self.stop.is_set():
+                raise InterruptedError('GPU bridge stopping')
             if select.select([self.process.stdout], [], [], 0.2)[0]:
                 chunk = os.read(self.process.stdout.fileno(), 65536)
                 if not chunk:
@@ -123,8 +136,12 @@ expression -l objc++ -- int gpu_bridge_prepare(const char *); printf("GPU_READY=
         if not select.select([self.response], [], [], 5)[0]:
             raise RuntimeError(self.kind + ' capture timed out')
         result = os.read(self.response, 1)
+        if not result:
+            raise RuntimeError(self.kind + ' helper disconnected')
         if result != b'0' and not (self.kind == 'shader' and result == b'2'):
-            raise RuntimeError(self.kind + ' capture rejected')
+            code = result[0] - ord('0')
+            detail = SHADER_ERRORS.get(code, f'capture rejected ({code})') if self.kind == 'shader' else f'capture rejected ({code})'
+            raise CaptureError(self.kind + ': ' + detail)
 
     def close(self):
         try:

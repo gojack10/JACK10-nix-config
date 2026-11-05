@@ -17,8 +17,6 @@ extern "C" void _exit(int);
 
 static CFTypeRef controllerSubscription;
 static CFMutableDictionaryRef controllerChannels;
-static CFDictionaryRef controllerPrevious;
-static double controllerBefore;
 static CFDictionaryRef (*controllerSample)(CFTypeRef, CFMutableDictionaryRef, CFTypeRef);
 static CFDictionaryRef (*controllerDelta)(CFDictionaryRef, CFDictionaryRef, CFTypeRef);
 static int64_t (*controllerValue)(CFDictionaryRef, int);
@@ -60,23 +58,22 @@ int gpu_bridge_prepare(const char *output) {
             return 2;
         }
         if (error) CFRelease(error);
-        controllerPrevious = controllerSample(controllerSubscription, controllerChannels, NULL);
-        controllerBefore = NSProcessInfo.processInfo.systemUptime;
-        return controllerPrevious ? 0 : 3;
+        return 0;
     }
 }
 
 static int dashboard_capture_controller(const char *output) {
     @autoreleasepool {
+        // Each requested interval gets its own baseline, excluding time paused.
+        CFDictionaryRef baseline = controllerSample(controllerSubscription, controllerChannels, NULL);
+        double before = NSProcessInfo.processInfo.systemUptime;
+        if (!baseline) return 1;
         usleep(1000000);
-        CFDictionaryRef current = controllerSample(controllerSubscription, controllerChannels, NULL);
-        double now = NSProcessInfo.processInfo.systemUptime;
-        if (!current) return 1;
-        CFDictionaryRef diff = controllerDelta(controllerPrevious, current, NULL);
-        double seconds = now - controllerBefore;
-        CFRelease(controllerPrevious);
-        controllerPrevious = current;
-        controllerBefore = now;
+        CFDictionaryRef latest = controllerSample(controllerSubscription, controllerChannels, NULL);
+        double seconds = NSProcessInfo.processInfo.systemUptime - before;
+        CFDictionaryRef diff = latest ? controllerDelta(baseline, latest, NULL) : NULL;
+        CFRelease(baseline);
+        if (latest) CFRelease(latest);
         if (!diff) return 1;
         NSMutableDictionary *bytes = [NSMutableDictionary dictionary];
         for (NSDictionary *channel in ((__bridge NSDictionary *)diff)[@"IOReportChannels"]) {
@@ -110,7 +107,6 @@ int gpu_bridge_stream(const char *output, const char *control, const char *respo
         char result = (char)('0' + dashboard_capture_controller(output));
         if (write(resultFD, &result, 1) != 1) break;
     }
-    CFRelease(controllerPrevious);
     CFRelease(controllerChannels);
     CFRelease(controllerSubscription);
     close(input); close(resultFD);

@@ -69,43 +69,43 @@ static int dashboard_capture_shader(const char *output) {
         NSObject *group = all[0], *source = nil;
         for (NSObject *candidate in group.sourceList)
             if ([candidate.name isEqualToString:@"APS_USC"]) source = candidate;
-        if (!source) return 1;
+        if (!source) return 3;
         NSMutableArray *selected = [NSMutableArray array];
         Class counterSelect = NSClassFromString(@"GPURawCounterSelect");
         Class triggerSelect = NSClassFromString(@"GPURawCounterSourceTriggerSelect");
         for (NSObject *counter in source.availableCounters)
             [selected addObject:[counterSelect selectWithName:counter.name options:@{}]];
         NSUInteger failed = ~(NSUInteger)0;
-        if (![source requestCounters:selected firstErrorIndex:&failed]) return 1;
+        if (![source requestCounters:selected firstErrorIndex:&failed]) return 4;
         [source setOptions:@{@"SystemTimePeriod":@8192}];
         NSArray *triggers = @[[triggerSelect selectWithName:@"KickAndStateTracing" options:@{@"CountPeriod":@32768, @"PulsePeriod":@2048}]];
-        if (![source requestTriggers:triggers firstErrorIndex:&failed]) return 1;
+        if (![source requestTriggers:triggers firstErrorIndex:&failed]) return 5;
         [source setEnabled:YES];
         if (![group startSampling]) {
             [group stopSampling];
             [source setEnabled:NO];
-            return 1;
+            return 6;
         }
         unsigned ringCount = [source ringBufferNum];
-        BOOL captureOK = ringCount == 40;
+        int captureError = ringCount == 40 ? 0 : 7;
         usleep(20000);
         BOOL stopped = [group stopSampling];
         NSMutableArray *buffers = [NSMutableArray array];
+        NSMutableArray *readable = [NSMutableArray array];
+        NSMutableArray *ringInfo = [NSMutableArray array];
         NSUInteger accepted = 0;
-        for (unsigned i = 0; i < ringCount && captureOK; ++i) {
+        for (unsigned i = 0; i < ringCount && !captureError; ++i) {
             void *rawBase = NULL;
             unsigned rawSize = 0, rawOffset = 0, rawCount = 0;
             BOOL ok = [source ringBufferInfoAtIndex:i base:&rawBase size:&rawSize dataOffset:&rawOffset dataSize:&rawCount];
-            if (!ok) { captureOK = NO; break; }
-            if (!rawCount) {
-                [buffers addObject:[NSMutableData data]];
+            BOOL valid = ok && (!rawCount || (rawBase && rawSize && rawOffset < rawSize && rawCount <= rawSize && accepted + rawCount <= 64*1024*1024));
+            [readable addObject:@(valid)];
+            [ringInfo addObject:@{@"size":@(rawSize), @"offset":@(rawOffset), @"bytes":@(rawCount)}];
+            NSMutableData *buffer = [NSMutableData data];
+            if (!valid || !rawCount) {
+                [buffers addObject:buffer];
                 continue;
             }
-            if (!rawBase || !rawSize || rawOffset >= rawSize || rawCount > rawSize || accepted + rawCount > 64*1024*1024) {
-                captureOK = NO;
-                break;
-            }
-            NSMutableData *buffer = [NSMutableData data];
             unsigned first = rawCount < rawSize - rawOffset ? rawCount : rawSize - rawOffset;
             [buffer appendBytes:(char *)rawBase + rawOffset length:first];
             if (rawCount > first) [buffer appendBytes:rawBase length:rawCount-first];
@@ -113,14 +113,17 @@ static int dashboard_capture_shader(const char *output) {
             accepted += rawCount;
         }
         [source setEnabled:NO];
-        if (!captureOK || !stopped) return 1;
+        if (captureError) return captureError;
+        if (!stopped) return 10;
         NSString *directory = [@(output) stringByAppendingPathComponent:@"capture"];
-        if (![[NSFileManager defaultManager] createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:&error]) return 1;
+        if (![[NSFileManager defaultManager] createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:&error]) return 11;
         for (NSUInteger i = 0; i < buffers.count; ++i) {
             NSData *data = buffers[i];
             NSString *path = [directory stringByAppendingPathComponent:[NSString stringWithFormat:@"ring-%lu.bin", (unsigned long)i]];
-            if (![data writeToFile:path options:NSDataWritingAtomic error:&error]) return 1;
+            if (![data writeToFile:path options:NSDataWritingAtomic error:&error]) return 12;
         }
+        NSData *metadata = [NSJSONSerialization dataWithJSONObject:@{@"readable":readable, @"rings":ringInfo} options:0 error:&error];
+        if (!metadata || ![metadata writeToFile:[directory stringByAppendingPathComponent:@"capture.json"] options:NSDataWritingAtomic error:&error]) return 12;
         return accepted ? 0 : 2;
     }
 }

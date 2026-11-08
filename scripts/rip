@@ -3,9 +3,9 @@
 rip - opinionated media downloader and converter
 
 download (default destination: /tmp):
-  rip URL                    download as opus audio (default)
+  rip URL                    preserve best available source audio (default)
   rip -m URL                 download as mp3 audio
-  rip -w URL                 download as wav audio (lossless)
+  rip -w URL                 decode to floating-point WAV (preserves headroom)
   rip -v URL                 download as mp4 video
   rip -s URL                 force single video (strip playlist)
   rip -p URL                 force full playlist
@@ -13,7 +13,7 @@ download (default destination: /tmp):
   rip --path DIR URL         download into DIR
 
 convert:
-  rip -c FILE                convert to opus audio
+  rip -c FILE                decode to floating-point WAV
   rip -c -m FILE             convert to mp3 audio
   rip -c -w FILE             convert to wav audio
   rip -cv FILE               convert to optimized mp4
@@ -264,7 +264,7 @@ def prompt_playlist_choice(playlist_title, count):
 
 
 # --- Download ---
-def download(url, video_mode=False, force_single=False, force_playlist=False, audio_fmt='opus', dry_run=False, custom_name=None, dest=Path('/tmp')):
+def download(url, video_mode=False, force_single=False, force_playlist=False, audio_fmt='best', dry_run=False, custom_name=None, dest=Path('/tmp')):
     """download media from URL"""
 
     # clean URL
@@ -320,13 +320,14 @@ def download(url, video_mode=False, force_single=False, force_playlist=False, au
         else:
             filename = 'download'
 
-        ext = 'mp4' if video_mode else audio_fmt
+        ext = 'mp4' if video_mode else 'source-format' if audio_fmt == 'best' else audio_fmt
         output_tpl = f"{filename}.%(ext)s"
         log_detail(f"output: {dest / f'{filename}.{ext}'}")
 
     # build command
-    # YouTube workaround: use iOS client and m3u8 formats to bypass 403 errors
-    yt_extractor_args = 'youtube:player_client=default,ios,-android_sdkless;formats=missing_pot'
+    # Let yt-dlp rank playable audio; do not prefer a lower-quality HLS stream
+    # or advertise formats that need a missing proof-of-origin token.
+    yt_extractor_args = 'youtube:player_client=default,ios,-android_sdkless'
 
     if video_mode:
         cmd = [
@@ -339,14 +340,16 @@ def download(url, video_mode=False, force_single=False, force_playlist=False, au
         cmd = [
             'yt-dlp',
             '--extractor-args', yt_extractor_args,
-            '-f', 'ba[protocol=m3u8_native]/ba/b',
+            '-f', 'bestaudio/best',
             '-x', '--audio-format', audio_fmt,
         ]
-        # add quality for lossy formats (wav is lossless, no quality needed)
-        if audio_fmt == 'opus':
-            cmd += ['--audio-quality', '128K']
+        if audio_fmt == 'best':
+            log_detail('preserving the source audio codec; no volume changes or lossy re-encode')
         elif audio_fmt == 'mp3':
-            cmd += ['--audio-quality', '192K']
+            cmd += ['--audio-quality', '0']
+        elif audio_fmt == 'wav':
+            # Integer PCM would clamp hot AAC/Opus decoder output at full scale.
+            cmd += ['--postprocessor-args', 'ExtractAudio+ffmpeg_o:-c:a pcm_f32le']
 
     cmd += [
         '-ci', '--ignore-errors',
@@ -370,7 +373,7 @@ def download(url, video_mode=False, force_single=False, force_playlist=False, au
             line = line.rstrip()
             if line:
                 # filter noise, show progress
-                if any(x in line.lower() for x in ['download', 'extract', 'merger', 'delet', '%']):
+                if any(x in line.lower() for x in ['download', 'extract', 'merger', 'delet', 'error', 'warning', '%']):
                     print(f"  {C.DIM}{line}{C.RESET}")
         proc.wait()
 
@@ -389,7 +392,7 @@ def download(url, video_mode=False, force_single=False, force_playlist=False, au
 
 
 # --- Spotify Download ---
-def download_spotify(url, video_mode=False, force_single=False, force_playlist=False, audio_fmt='opus', dry_run=False, custom_name=None, dest=Path('/tmp')):
+def download_spotify(url, video_mode=False, force_single=False, force_playlist=False, audio_fmt='best', dry_run=False, custom_name=None, dest=Path('/tmp')):
     """download audio from Spotify using spotdl"""
 
     # clean URL (strip tracking params)
@@ -409,8 +412,13 @@ def download_spotify(url, video_mode=False, force_single=False, force_playlist=F
     if force_single:
         log_ok("single flag passed (spotdl auto-detects content type)")
 
-    # build command
-    cmd = ['spotdl', '--simple-tui', '--format', audio_fmt, '--bitrate', '128k']
+    # spotdl resolves Spotify tracks to another audio provider; it cannot retain
+    # Spotify's original stream. Avoid an additional lossy encode by default.
+    if audio_fmt == 'best':
+        audio_fmt = 'flac'
+        log_detail('Spotify lookup: FLAC export; quality depends on the matched source')
+    cmd = ['spotdl', '--simple-tui', '--format', audio_fmt,
+           '--bitrate', 'disable' if audio_fmt in ('flac', 'wav') else '320k']
 
     if custom_name and not force_playlist:
         safe_name = sanitize(custom_name) or 'download'
@@ -456,7 +464,7 @@ def download_spotify(url, video_mode=False, force_single=False, force_playlist=F
 
 
 # --- Convert ---
-def convert(filepath, video_mode=False, audio_fmt='opus', dry_run=False):
+def convert(filepath, video_mode=False, audio_fmt='wav', dry_run=False):
     """convert local file to optimized format"""
     path = Path(filepath)
 
@@ -490,8 +498,8 @@ def convert(filepath, video_mode=False, audio_fmt='opus', dry_run=False):
             cmd += ['-c:a', 'libmp3lame', '-b:a', '192k']
             log_detail("mp3 192k")
         elif audio_fmt == 'wav':
-            cmd += ['-c:a', 'pcm_s16le']
-            log_detail("wav pcm 16-bit")
+            cmd += ['-c:a', 'pcm_f32le']
+            log_detail("floating-point WAV; preserves decoder headroom")
         cmd += ['-y', str(output)]
 
     log_detail(f"output: {output.name}")
@@ -567,9 +575,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 {C.DIM}examples:{C.RESET}
-  rip youtube.com/watch?v=xxx      {C.DIM}download as opus audio{C.RESET}
+  rip youtube.com/watch?v=xxx      {C.DIM}preserve best source audio without re-encoding{C.RESET}
   rip -m youtube.com/watch?v=xxx   {C.DIM}download as mp3 audio{C.RESET}
-  rip -w youtube.com/watch?v=xxx   {C.DIM}download as wav (lossless){C.RESET}
+  rip -w youtube.com/watch?v=xxx   {C.DIM}decode to floating-point WAV{C.RESET}
   rip -v youtube.com/watch?v=xxx   {C.DIM}download as mp4 video{C.RESET}
   rip -s youtube.com/watch?v=xxx   {C.DIM}single video (ignore playlist){C.RESET}
   rip -p youtube.com/watch?v=xxx   {C.DIM}full playlist{C.RESET}
@@ -577,7 +585,7 @@ def main():
   rip --cwd URL                    {C.DIM}download into the current directory{C.RESET}
   rip --path ~/media URL           {C.DIM}download into ~/media{C.RESET}
   rip open.spotify.com/playlist/x  {C.DIM}spotify playlist/album/track{C.RESET}
-  rip -c video.mp4                 {C.DIM}convert to opus audio{C.RESET}
+  rip -c video.mp4                 {C.DIM}decode to floating-point WAV{C.RESET}
   rip -c -m video.mp4              {C.DIM}convert to mp3 audio{C.RESET}
   rip -cv video.mkv                {C.DIM}convert to h265 mp4{C.RESET}
   rip -u                           {C.DIM}update yt-dlp via uv tool{C.RESET}
@@ -599,8 +607,8 @@ def main():
 
     # audio format options (mutually exclusive)
     fmt_group = parser.add_mutually_exclusive_group()
-    fmt_group.add_argument('-m', '--mp3', action='store_true', help='output as mp3 (default: opus)')
-    fmt_group.add_argument('-w', '--wav', action='store_true', help='output as wav (lossless)')
+    fmt_group.add_argument('-m', '--mp3', action='store_true', help='encode MP3 (default: preserve source audio)')
+    fmt_group.add_argument('-w', '--wav', action='store_true', help='decode to floating-point WAV without clipping decoder peaks')
 
     args = parser.parse_args()
 
@@ -610,7 +618,7 @@ def main():
     elif args.wav:
         audio_fmt = 'wav'
     else:
-        audio_fmt = 'opus'
+        audio_fmt = 'best'
 
     # error if audio format specified with video mode
     if args.video and (args.mp3 or args.wav):
@@ -632,7 +640,7 @@ def main():
 
     # convert mode
     if args.convert:
-        sys.exit(0 if convert(args.target, args.video, audio_fmt, args.dry) else 1)
+        sys.exit(0 if convert(args.target, args.video, 'wav' if audio_fmt == 'best' else audio_fmt, args.dry) else 1)
 
     dest = resolve_destination(args.cwd, args.path)
 

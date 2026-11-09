@@ -8,6 +8,8 @@ let
   proxyLog = "${home}/.pi/agent/local-proxy.log";
   proxyVenv = "${home}/.local/share/local-llm-proxy-venv";
   proxyPython = "${proxyVenv}/bin/python";
+  gatewayScript = "${home}/.pi/agent/codex-proxy.py";
+  gatewayLog = "${home}/.pi/agent/codex-proxy.log";
 in {
   home.packages = [ pkgs.uv ];
 
@@ -26,6 +28,24 @@ in {
     fi
     ${pkgs.uv}/bin/uv pip install --python ${lib.escapeShellArg proxyPython} aiohttp==3.14.3
   '');
+
+  # Codex cloud routing must survive local inference shutdown and maintenance.
+  launchd.agents.codex-gateway = lib.mkIf enabled {
+    enable = true;
+    config = {
+      Label = "com.codex.gateway";
+      ProgramArguments = [ proxyPython gatewayScript ];
+      WorkingDirectory = home;
+      EnvironmentVariables = {
+        HOME = home;
+        PATH = "${home}/.local/bin:/usr/local/bin:/usr/bin:/bin";
+      };
+      StandardOutPath = gatewayLog;
+      StandardErrorPath = gatewayLog;
+      RunAtLoad = true;
+      KeepAlive = true;
+    };
+  };
 
   # Engines are proxy-owned and loaded only by a model request. MLX's reviewed
   # runtime is pinned in ~/.pi/agent/mlx-service/pin.json, not rebuilt by hms.

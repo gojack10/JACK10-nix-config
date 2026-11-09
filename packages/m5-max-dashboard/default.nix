@@ -42,7 +42,7 @@ stdenv.mkDerivation {
   '';
 
   meta = {
-    description = "Read-only M5 Max system pulse - web, menu bar and terminal";
+    description = "M5 Max system monitor for the web, menu bar and terminal";
     mainProgram = "m5-max-dashboard";
     platforms = [ "aarch64-darwin" ];
   };

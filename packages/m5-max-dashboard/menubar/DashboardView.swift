@@ -1,9 +1,43 @@
 import AppKit
+import IOKit.ps
 import SwiftUI
 
 final class DashboardModel: ObservableObject {
     @Published var snapshot: Snapshot?
     @Published var error: String?
+    @Published private(set) var lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+    @Published private(set) var changingLowPowerMode = false
+    @Published private(set) var lowPowerError: String?
+
+    func refreshLowPowerMode() {
+        let enabled = ProcessInfo.processInfo.isLowPowerModeEnabled
+        if lowPowerMode != enabled { lowPowerMode = enabled }
+    }
+
+    func setLowPowerMode(_ enabled: Bool) {
+        guard !changingLowPowerMode else { return }
+        lowPowerError = nil
+        refreshLowPowerMode()
+        guard lowPowerMode != enabled else { return }
+        guard let sources = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let source = IOPSGetProvidingPowerSourceType(sources)?.takeUnretainedValue() as String?,
+              source == kIOPMBatteryPowerKey || source == kIOPMACPowerKey else {
+            lowPowerError = "Couldn’t determine the current power source."
+            return
+        }
+
+        let scope = source == kIOPMBatteryPowerKey ? "-b" : "-c"
+        let mode = enabled ? 1 : 0
+        changingLowPowerMode = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let error = LowPowerPermission.apply(mode: mode, scope: scope)
+            DispatchQueue.main.async {
+                self.refreshLowPowerMode()
+                self.lowPowerError = error
+                self.changingLowPowerMode = false
+            }
+        }
+    }
 }
 
 private enum MetricColumns {
@@ -23,7 +57,7 @@ private func temperatureColor(_ value: Double?) -> Color {
 private struct CapacityIndicator: NSViewRepresentable {
     let label: String
     let value: Double?
-    var battery = false
+    var batteryColor: NSColor? = nil
     var neutral = false
 
     func makeNSView(context: Context) -> NSLevelIndicator {
@@ -42,9 +76,7 @@ private struct CapacityIndicator: NSViewRepresentable {
     func updateNSView(_ indicator: NSLevelIndicator, context: Context) {
         indicator.doubleValue = min(100, max(0, value ?? 0))
         indicator.isEnabled = value != nil
-        if neutral || battery {
-            let color: NSColor = neutral ? .systemBlue
-                : (value ?? 100) <= 10 ? .systemRed : (value ?? 100) <= 25 ? .systemYellow : .systemGreen
+        if let color = neutral ? NSColor.systemBlue : batteryColor {
             indicator.fillColor = color
             indicator.warningFillColor = color
             indicator.criticalFillColor = color
@@ -263,18 +295,27 @@ struct DashboardView: View {
                 }
             }
             Divider()
-            HStack {
-                Button(action: copyAllStats) {
-                    Label("Copy All Stats", systemImage: "doc.on.doc")
+            VStack(alignment: .trailing, spacing: 5) {
+                if let error = model.lowPowerError {
+                    Text("Couldn’t change Low Power Mode").font(.caption).foregroundStyle(.red).help(clean(error))
                 }
-                .disabled(model.snapshot == nil)
-                .help("Copy all sections as aligned text")
-                Button("Open Web", action: openWeb)
-                Text(copyFeedback).font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("Quit", action: quit)
+                HStack {
+                    Button(action: copyAllStats) {
+                        Label("Copy All Stats", systemImage: "doc.on.doc")
+                    }
+                    .disabled(model.snapshot == nil)
+                    .help("Copy all sections as aligned text")
+                    Button("Open Web", action: openWeb)
+                    Text(copyFeedback).font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Toggle("Low Power Mode", isOn: Binding(get: { model.lowPowerMode }, set: model.setLowPowerMode))
+                        .toggleStyle(.switch)
+                        .disabled(model.changingLowPowerMode)
+                        .help("Change Low Power Mode for the current power source. An administrator can grant your account one-time permission to use this toggle.")
+                    Button("Quit", action: quit)
+                }
+                .controlSize(.small)
             }
-            .controlSize(.small)
             .padding(12)
         }
         .font(.system(size: 12))
@@ -435,12 +476,13 @@ struct DashboardView: View {
         let limit = s.number("power.charge_limit_pct")
         let limitText = limit.map { $0 < 100 ? fixed($0, places: 0) : "none" } ?? "-"
         let limitUnit = limit.map { $0 < 100 ? "%" : "" } ?? ""
+        let color = batteryWarningColor(percent, lowPowerMode: model.lowPowerMode) ?? .systemGreen
         return Button {
             NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Battery-Settings.extension")!)
         } label: {
             HStack(spacing: MetricColumns.gap) {
                 MetricLabel(text: "Battery")
-                CapacityIndicator(label: "Battery", value: percent, battery: true)
+                CapacityIndicator(label: "Battery", value: percent, batteryColor: color)
                     .frame(width: MetricColumns.bar, height: 12)
                     .overlay(alignment: .trailing) {
                         if let limit, limit > 0, limit < 100 {

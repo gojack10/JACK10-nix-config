@@ -43,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func sample() {
+        model.refreshLowPowerMode()
         let full = popover.isShown
         if full { gpu.refresh() }
         guard !sampling else { return }
@@ -55,12 +56,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.sampling = false
                 switch result {
                 case .success(let snapshot):
-                    self.statusItem.button?.setAccessibilityValue(self.titleView.update(snapshot))
+                    self.statusItem.button?.setAccessibilityValue(self.titleView.update(snapshot, lowPowerMode: self.model.lowPowerMode))
                     self.statusItem.button?.toolTip = "M5 Max Dashboard - sampled \(snapshot.sampledAt.formatted(date: .omitted, time: .standard))"
                     self.model.error = nil
                     if full { self.model.snapshot = snapshot }
                 case .failure(let error):
-                    _ = self.titleView.update(nil)
+                    _ = self.titleView.update(nil, lowPowerMode: self.model.lowPowerMode)
                     self.statusItem.button?.setAccessibilityValue("System stats unavailable")
                     self.statusItem.button?.toolTip = "M5 Max Dashboard - \(error.localizedDescription)"
                     self.model.error = error.localizedDescription

@@ -3,6 +3,12 @@ import AppKit
 // Native vibrant-dark menu white, matching the supplied weather reference.
 private let statusTextColor = NSColor(white: 1, alpha: 229.0 / 255.0)
 
+func batteryWarningColor(_ percent: Double?, lowPowerMode: Bool) -> NSColor? {
+    if let percent, percent <= 10 { return .systemRed }
+    if lowPowerMode || (percent ?? 100) <= 25 { return .systemYellow }
+    return nil
+}
+
 private final class StatusMetricView: NSStackView {
     private let value = NSTextField(labelWithString: "-")
     private let unit: String
@@ -85,7 +91,7 @@ final class StatusTitleView: NSStackView {
         ])
     }
 
-    func update(_ snapshot: Snapshot?) -> String {
+    func update(_ snapshot: Snapshot?, lowPowerMode: Bool) -> String {
         let cpuText = fixed(snapshot?.number("cpu.utilization"), places: 0)
         let memoryText = fixed(snapshot?.number("memory.in_use_gb"))
         let batteryPercent = snapshot?.number("power.battery_pct")
@@ -95,13 +101,13 @@ final class StatusTitleView: NSStackView {
 
         cpu.update(cpuText)
         memory.update(memoryText)
-        let batteryColor: NSColor = (batteryPercent ?? 100) <= 10 ? .systemRed
-            : (batteryPercent ?? 100) <= 25 ? .systemYellow : statusTextColor
+        let batteryColor = batteryWarningColor(batteryPercent, lowPowerMode: lowPowerMode) ?? statusTextColor
         battery.update(batteryText, color: batteryColor)
         let powerColor: NSColor = (batteryPercent ?? 100) < 15 ? .systemRed
             : (watts ?? 0) > 0.5 ? .systemGreen
             : (watts ?? 0) < -0.5 ? .systemOrange : statusTextColor
         power.update(powerText, color: powerColor)
-        return "Net power \(powerText) watts, battery \(batteryText)%, CPU \(cpuText)%, memory \(memoryText) GiB"
+        let mode = lowPowerMode ? ", Low Power Mode on" : ""
+        return "Net power \(powerText) watts, battery \(batteryText)%\(mode), CPU \(cpuText)%, memory \(memoryText) GiB"
     }
 }

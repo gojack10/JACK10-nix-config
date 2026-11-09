@@ -11,18 +11,6 @@ in lib.mkIf (hostname == "m5-max") {
     mkdir -p ${lib.escapeShellArg logDir}
   '';
 
-  launchd.agents.m5-max-dashboard-web = {
-    enable = true;
-    config = {
-      Label = "com.jack.m5-max-dashboard.web";
-      ProgramArguments = [ "${dashboard}/bin/m5-max-dashboard-web" ];
-      RunAtLoad = true;
-      KeepAlive = { SuccessfulExit = false; };
-      StandardOutPath = "${logDir}/m5-max-dashboard-web.log";
-      StandardErrorPath = "${logDir}/m5-max-dashboard-web.err.log";
-    };
-  };
-
   # The bridge owns the signed helpers; the Swift sampler only reads loopback.
   launchd.agents.m5-max-dashboard-gpu = {
     enable = true;

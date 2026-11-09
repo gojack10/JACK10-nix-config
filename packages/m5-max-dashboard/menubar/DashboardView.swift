@@ -250,7 +250,6 @@ private struct MetricSection<Content: View>: View {
 
 struct DashboardView: View {
     @ObservedObject var model: DashboardModel
-    let openWeb: () -> Void
     let quit: () -> Void
     @State private var copyFeedback = ""
 
@@ -305,7 +304,6 @@ struct DashboardView: View {
                     }
                     .disabled(model.snapshot == nil)
                     .help("Copy all sections as aligned text")
-                    Button("Open Web", action: openWeb)
                     Text(copyFeedback).font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Toggle("Low Power Mode", isOn: Binding(get: { model.lowPowerMode }, set: model.setLowPowerMode))

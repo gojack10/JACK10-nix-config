@@ -10,7 +10,7 @@ MENU = $(wildcard menubar/*.swift)
 NATIVE = $(BUILD)/metrics.o $(BUILD)/charge_limit.o
 
 .PHONY: all clean
-all: $(BUILD)/libmetrics.dylib $(BUILD)/m5-max-dashboard $(BUILD)/m5-max-dashboard-menu $(BUILD)/shader-decode
+all: $(BUILD)/m5-max-dashboard $(BUILD)/m5-max-dashboard-menu $(BUILD)/shader-decode
 
 $(BUILD):
 	mkdir -p $@
@@ -20,9 +20,6 @@ $(BUILD)/metrics.o: native/metrics.c native/metrics.h | $(BUILD)
 
 $(BUILD)/charge_limit.o: native/charge_limit.m native/metrics.h | $(BUILD)
 	$(CC) $(CFLAGS) -fobjc-arc -c $< -o $@
-
-$(BUILD)/libmetrics.dylib: $(NATIVE)
-	$(CC) $(CFLAGS) -dynamiclib $(NATIVE) $(FRAMEWORKS) -o $@
 
 $(BUILD)/m5-max-dashboard: $(SHARED) cli/main.swift $(NATIVE)
 	$(SWIFTC) $(SWIFTFLAGS) $(SHARED) cli/main.swift $(NATIVE) $(FRAMEWORKS) -o $@

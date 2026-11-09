@@ -22,7 +22,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         popover.contentViewController = NSHostingController(rootView: DashboardView(
             model: model,
-            openWeb: { NSWorkspace.shared.open(URL(string: "http://localhost:8765/")!) },
             quit: { NSApp.terminate(nil) }))
         popover.contentSize = NSSize(width: 640, height: 740)
         popover.behavior = .transient

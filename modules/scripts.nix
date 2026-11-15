@@ -4,7 +4,12 @@ let
   tmuxOil = pkgs.writeShellApplication {
     name = "tmux-oil";
     runtimeInputs = [ config.programs.tmux.package pkgs.neovim ];
-    text = builtins.readFile ../scripts/tmux-oil;
+    # Consume the same shared editor preferences as the regular Nix editor,
+    # then apply only the tree-menu-specific profile to the session buffer.
+    text = ''
+      export TMUX_OIL_SHARED_CONFIG=${./editor/files/shared.lua}
+      export TMUX_OIL_TREE_MENU_CONFIG=${./editor/files/tree-menu-specific.lua}
+    '' + builtins.readFile ../scripts/tmux-oil;
   };
 in {
   # Scripts sourced from ../scripts/ are managed by Home Manager and linked to ~/.local/bin.

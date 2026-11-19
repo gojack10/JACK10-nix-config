@@ -7,6 +7,25 @@ let
     /usr/bin/pbpaste | ${config.programs.tmux.package}/bin/tmux load-buffer -
     exec ${config.programs.tmux.package}/bin/tmux paste-buffer -p -t "$1"
   '';
+
+  # tmux-continuum normally injects its save hook into status-right, but
+  # status-format[] bypasses status-right. Run the same hook invisibly instead.
+  continuumSave = "#(${pkgs.tmuxPlugins.continuum}/share/tmux-plugins/continuum/scripts/continuum_save.sh)";
+
+  # One entry per top-level agent chat, drawn like a tmux-oil row:
+  # [✓] done, [~] busy, [ ] idle; π Pi, * Claude. Pi and the Claude Code hook
+  # publish @pi_cache_state; sessions with @pi_subagent_parent_id are workers.
+  agentState = "#{@pi_cache_state}";
+  agentEntry = nameColour: lib.concatStrings [
+    "#{?#{m:*\"busyStartedAt\"*,${agentState}},#[fg=yellow][~],"
+    "#{?#{m:*\"agentDone\":true*,${agentState}},#[fg=green][✓],#[fg=white][ ]}}"
+    "#{?#{m:*\"pi\"*,${agentState}},#[fg=white]π,}"
+    "#{?#{m:*\"claude\"*,${agentState}},#[fg=colour173]*,}"
+    " #[fg=${nameColour}]#{session_name}#[fg=white]  "
+  ];
+  topLevel = entry: "#{?@pi_subagent_parent_id,,${entry}}";
+  # The second #{S:} format applies to the client's current session.
+  agentChats = "#{S:${topLevel (agentEntry "white")},${topLevel (agentEntry "green")}}";
 in {
   programs.tmux = {
     enable = true;
@@ -156,15 +175,22 @@ in {
 
       # Status bar (basic 8 colors for TTY/framebuffer compatibility)
       set -g status-style 'bg=black fg=white'
-      set -g status-interval 1
       set -g message-style 'bg=black fg=white'
 
       set -g status on
 
+      ${if pkgs.stdenv.isDarwin then ''
+      # macOS: the menu bar shows machine stats, so the line shows only
+      # top-level agent chats, plus PASS while F12 passthrough is on.
+      # Every set-option redraws clients, so chat state appears immediately;
+      # the interval only paces the continuum save check.
+      set -g status-interval 60
+      set -g status-format[0] '${continuumSave}#[align=left fg=white] ${agentChats}#[align=right]#{?#{==:#{client_key_table},off},#[fg=green]PASS ,}'
+      '' else ''
       # Line 0: session+windows left, stats+date right
-      # tmux-continuum normally injects its save hook into status-right, but
-      # status-format[] bypasses status-right. Run the same hook invisibly here.
-      set -g status-format[0] '#(${pkgs.tmuxPlugins.continuum}/share/tmux-plugins/continuum/scripts/continuum_save.sh)#[align=left fg=white] #S #{W:#{?window_active,#[fg=green] #I:#W #[fg=white], #I:#W }}#[align=right fg=white]#{?#{==:#{client_key_table},off},#[fg=green]PASS#[fg=white],LOCAL} | #(~/.local/bin/tmux-status) '
+      set -g status-interval 1
+      set -g status-format[0] '${continuumSave}#[align=left fg=white] #S #{W:#{?window_active,#[fg=green] #I:#W #[fg=white], #I:#W }}#[align=right fg=white]#{?#{==:#{client_key_table},off},#[fg=green]PASS#[fg=white],LOCAL} | #(~/.local/bin/tmux-status) '
+      ''}
 
     '';
   };

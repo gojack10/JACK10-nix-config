@@ -93,12 +93,6 @@ in {
     force = true;
   };
 
-  home.file.".local/bin/tmux-status" = lib.mkIf pkgs.stdenv.isDarwin {
-    source = ../scripts/tmux-status;
-    executable = true;
-    force = true;
-  };
-
   home.file.".local/bin/stimulant" = lib.mkIf pkgs.stdenv.isDarwin {
     source = ../scripts/stimulant;
     executable = true;

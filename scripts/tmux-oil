@@ -1168,10 +1168,14 @@ local function new_identity(buf, rows)
     end
   end
   local root_first
-  local function known_snapshot(tree)
+  local function known_snapshot(tree, before_current)
+    -- before_current skips the in-progress transaction's own snapshot, so a
+    -- refusal can undo the whole transaction instead of "reverting" to itself.
     local seq = tree.seq_cur
     while seq do
-      if I.history[seq] then return I.history[seq], seq end
+      if I.history[seq] and not (before_current and seq == tree.seq_cur) then
+        return I.history[seq], seq
+      end
       local parent = undo_parent(seq, tree.entries, -1)
       if parent == -1 then
         if not root_first and seq == I.root + 1 then root_first = seq end
@@ -1203,6 +1207,10 @@ local function new_identity(buf, rows)
     vim.notify("tmux-oil: " .. pending.message, vim.log.levels.WARN, { title = "tmux-oil" })
   end
 
+  local function inserting()
+    local mode = a.nvim_get_mode().mode:sub(1, 1)
+    return mode == "i" or mode == "R"
+  end
   function I.current()
     if I.fault then fail(I.fault) end
     if I.busy then error("identity state reentry; undo to a known state or :TmuxOilAcceptLive", 0) end
@@ -1214,10 +1222,14 @@ local function new_identity(buf, rows)
         fail("identity history unavailable; undo to a known state or :TmuxOilAcceptLive")
       end
       if s.refuse and s.refuse_to and not I.busy then
+        -- Undo inside an open insert leaves its later keystrokes unrecorded, so
+        -- the revert waits until insert mode ends (ModeChanged reads again).
+        if inserting() then return s end
         I.pending = { from = s.refuse_to, message = s.refuse }
       else
         settle_move(s)
         if s.refuse and s.refuse_to and not I.busy then
+          if inserting() then return s end
           I.pending = { from = s.refuse_to, message = s.refuse }
         else
           if not I.history[tree.seq_cur] then
@@ -1331,9 +1343,21 @@ local function new_identity(buf, rows)
       -- A real edit may follow several unobserved text-no-op undo headers.
       local base, base_seq = known_snapshot(tree)
       if not base then error("missing undo ancestry (history was replaced/pruned)") end
+      -- Earlier notifications of this same transaction (one insert session, e.g.
+      -- erasing a name and then backspacing into the row above) already recorded
+      -- base at seq_cur, and undoing to it would be a no-op that strands the
+      -- identity. Refusals and unresolved moves revert to the state before it.
+      local revert_seq = base_seq
+      if base_seq == tree.seq_cur then
+        local _, before_seq = known_snapshot(tree, true)
+        revert_seq = before_seq
+      end
       if I.refuse and I.refuse.seq == tree.seq_cur and I.refuse.from == base_seq then
         -- Sticky: this transaction was already refused; inherit the refusal.
+        -- Keep the refused snapshot's text current, or the next read reports
+        -- lost identity history before it reaches the pending revert.
         I.refuse.after = text()
+        if base_seq == tree.seq_cur then base.lines = I.refuse.after end
         I.bytes, I.glue, I.brk = nil, nil, nil
         return
       end
@@ -1350,7 +1374,7 @@ local function new_identity(buf, rows)
       local function refuse(message)
         -- Refusal never becomes save intent: record the pre-transaction state
         -- (its seq) so the next read can undo-traverse the whole transaction.
-        s.refuse, s.refuse_to = message, base_seq
+        s.refuse, s.refuse_to = message, revert_seq
         I.refuse = { seq = tree.seq_cur, from = base_seq, before = base.lines,
           after = now, message = message }
         I.notice = message
@@ -1407,7 +1431,7 @@ local function new_identity(buf, rows)
         -- Keep an unresolved transaction until native move-region has adjusted
         -- extmarks. Never infer its permutation from names alone.
         s.move = s.move or vim.deepcopy(base)
-        s.move_to = base_seq
+        s.move_to = revert_seq
         for _ = 1, newcount do inserted[#inserted + 1] = token() end
       end
       local tokens = {}
@@ -1476,6 +1500,14 @@ local function new_identity(buf, rows)
     if (key == "p" or key == "P") and f.mode(1) == "n" then observe_put(vim.v.register) end
     -- Observer only: no returned string, feedkeys, normal command or mapping.
   end), I.ns)
+  a.nvim_create_autocmd("ModeChanged", { group = group, callback = guarded(function()
+    -- Apply a refusal deferred during insert mode as soon as insert mode ends.
+    local e = vim.v.event
+    if a.nvim_get_current_buf() == buf and e.old_mode:match("^[iR]")
+        and not e.new_mode:match("^[iR]") then
+      pcall(I.current)
+    end
+  end) })
   a.nvim_create_autocmd("CmdlineLeave", { group = group, callback = guarded(function()
     if a.nvim_get_current_buf() ~= buf or f.getcmdtype() ~= ":" or vim.v.event.abort then return end
     local ok, cmd = pcall(a.nvim_parse_cmd, f.getcmdline(), {})
@@ -2014,6 +2046,10 @@ function M.start()
   end
   vim.api.nvim_buf_set_name(M.buf, "tmux-oil://sessions")
   dofile(vim.env.TMUX_OIL_TREE_MENU_CONFIG)
+  -- Rows are sessions, so insert-mode Backspace, <Del>, CTRL-W and CTRL-U stop
+  -- at the row edge instead of joining into the neighbouring row (joins are
+  -- always refused). 'backspace' is global; this nvim serves only this buffer.
+  vim.o.backspace = "indent,start"
   local target_row, current = 1, current_session_id()
   for row, id in ipairs(M.baseline.order) do
     if id == current then target_row = row; break end

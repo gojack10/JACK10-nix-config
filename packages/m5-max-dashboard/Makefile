@@ -15,7 +15,7 @@ all: $(BUILD)/m5-max-dashboard $(BUILD)/m5-max-dashboard-menu $(BUILD)/shader-de
 $(BUILD):
 	mkdir -p $@
 
-$(BUILD)/metrics.o: native/metrics.c native/metrics.h | $(BUILD)
+$(BUILD)/metrics.o: native/metrics.c native/metrics.h native/gpu_counters.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/charge_limit.o: native/charge_limit.m native/metrics.h | $(BUILD)

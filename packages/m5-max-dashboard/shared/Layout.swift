@@ -88,6 +88,9 @@ func sections(_ snapshot: Snapshot) -> [Section] {
         metricRow("Utilization", fixed(n("gpu.utilization"), places: 0), unit: "%", percent: n("gpu.utilization"), bar: true),
         metricRow("Renderer", fixed(n("gpu.renderer_util"), places: 0), unit: "%"),
         metricRow("Tiler", fixed(n("gpu.tiler_util"), places: 0), unit: "%"),
+        metricRow("Clock", fixed(n("gpu.clock_mhz"), places: 0), unit: "MHz",
+                  detail: "active " + fixed(n("gpu.active_pct"), places: 0, suffix: "%")),
+        metricRow("Power", fixed(n("gpu.power_watts")), unit: "W"),
         metricRow("Shared memory", fixed(n("memory.total_gb"), places: 0), unit: "GiB"),
         metricRow("Allocated", gib("gpu.alloc_sys_mem_gb"), unit: "GiB",
                   percent: snapshot.percent("gpu.alloc_sys_mem_gb", of: "memory.total_gb"), bar: true,
@@ -121,6 +124,13 @@ func sections(_ snapshot: Snapshot) -> [Section] {
         memoryRows.append(metricRow(label, gib("memory." + key), unit: "GiB"))
     }
     let memory = Section(title: "MEMORY | " + total, rows: memoryRows)
+    let ssd = Section(title: "SSD | internal", rows: [
+        metricRow("Read", fixed(n("ssd.read_gb_s"), places: 2), unit: "GB/s",
+                  detail: fixed(n("ssd.read_ops_s"), places: 0) + " ops/s"),
+        metricRow("Write", fixed(n("ssd.write_gb_s"), places: 2), unit: "GB/s",
+                  detail: fixed(n("ssd.write_ops_s"), places: 0) + " ops/s"),
+        metricRow("Read time", fixed(n("ssd.read_ms_avg"), places: 2), unit: "ms", detail: "per operation")
+    ])
     let swap = Section(title: "SWAP | " + fixed(n("swap.total_mb"), places: 0) + " MiB", rows: [
         metricRow("Used", fixed(n("swap.used_mb"), places: 0), unit: "MiB",
                   percent: snapshot.percent("swap.used_mb", of: "swap.total_mb"), bar: true,
@@ -161,7 +171,7 @@ func sections(_ snapshot: Snapshot) -> [Section] {
         metricRow("Net", n("power.net_watts").map { String(format: "%+.1f", $0) } ?? "-", unit: "W")
     ])
     return [cpu, coreSection(.cpu(snapshot)), top, gpu, coreSection(.gpu(snapshot.shaderCores)),
-            memory, swap, pressureSection, thermal, fans, power]
+            memory, swap, pressureSection, ssd, thermal, fans, power]
 }
 
 func dashboard(_ snapshot: Snapshot) -> [Row] {

@@ -18,6 +18,9 @@
 #include <string.h>
 #include <time.h>
 
+#define GPU_COUNTERS_IMPLEMENTATION
+#include "gpu_counters.h"
+
 static const double gib = 1024.0 * 1024.0 * 1024.0;
 // Heuristic, not a measurement or attribution to ML. Kept in this one core.
 static const double kernel_wired_baseline_gb = 3.4;
@@ -251,8 +254,67 @@ static void gpu(JSON *out) {
     append(out, ","); field(out, "tiler_util", dictionary_number(stats, CFSTR("Tiler Utilization %")));
     append(out, ","); field(out, "alloc_sys_mem_gb", dictionary_number(stats, CFSTR("Alloc system memory")) / gib);
     append(out, ","); field(out, "in_use_sys_mem_gb", dictionary_number(stats, CFSTR("In use system memory")) / gib);
+    // Averages since the previous full sample; a gap over 5 s (closed popover) restarts.
+    gpu_counters_reading clock = {0, 0, -1, 0};
+    const int fresh = gpu_counters_read(&clock) && clock.seconds <= 5;
+    append(out, ","); field(out, "clock_mhz", fresh && clock.active > 0 ? clock.mhz : NAN);
+    append(out, ","); field(out, "active_pct", fresh ? clock.active * 100 : NAN);
+    append(out, ","); field(out, "power_watts", fresh && clock.watts >= 0 ? clock.watts : NAN);
     append(out, "}");
     CFRelease(properties);
+}
+
+// Internal SSD traffic from IOBlockStorageDriver's cumulative counters, as
+// iostat reads them: the driver above the embedded NVMe device, so mounted disk
+// images are not counted twice. Rates cover the time since the previous full
+// sample; a gap over 5 s restarts.
+static int64_t ssd_counter(CFDictionaryRef stats, CFStringRef key) {
+    CFTypeRef value = stats ? CFDictionaryGetValue(stats, key) : NULL;
+    int64_t result = -1;
+    if (value && CFGetTypeID(value) == CFNumberGetTypeID())
+        CFNumberGetValue(value, kCFNumberSInt64Type, &result);
+    return result;
+}
+
+static void ssd(JSON *out) {
+    static int64_t previous[5];
+    static uint64_t previous_ns;
+    int64_t now[5] = {-1, -1, -1, -1, -1};
+    io_iterator_t it;
+    if (IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOBlockStorageDriver"), &it) == KERN_SUCCESS) {
+        io_object_t driver;
+        while ((driver = IOIteratorNext(it))) {
+            io_registry_entry_t device = 0;
+            if (now[0] < 0 && IORegistryEntryGetParentEntry(driver, kIOServicePlane, &device) == KERN_SUCCESS &&
+                IOObjectConformsTo(device, "IOEmbeddedNVMeBlockDevice")) {
+                CFTypeRef stats = IORegistryEntryCreateCFProperty(driver, CFSTR("Statistics"), kCFAllocatorDefault, 0);
+                if (stats && CFGetTypeID(stats) == CFDictionaryGetTypeID()) {
+                    now[0] = ssd_counter(stats, CFSTR("Bytes (Read)"));
+                    now[1] = ssd_counter(stats, CFSTR("Bytes (Write)"));
+                    now[2] = ssd_counter(stats, CFSTR("Operations (Read)"));
+                    now[3] = ssd_counter(stats, CFSTR("Operations (Write)"));
+                    now[4] = ssd_counter(stats, CFSTR("Total Time (Read)"));
+                }
+                if (stats) CFRelease(stats);
+            }
+            if (device) IOObjectRelease(device);
+            IOObjectRelease(driver);
+        }
+        IOObjectRelease(it);
+    }
+    const uint64_t now_ns = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    const double seconds = previous_ns ? (now_ns - previous_ns) / 1e9 : 0;
+    const int fresh = now[0] >= 0 && previous_ns && seconds > 0 && seconds <= 5 && previous[0] >= 0;
+    double d[5];
+    for (int i = 0; i < 5; i++) d[i] = fresh && now[i] >= previous[i] ? (double)(now[i] - previous[i]) : NAN;
+    append(out, "{"); field(out, "read_gb_s", d[0] / seconds / 1e9);
+    append(out, ","); field(out, "write_gb_s", d[1] / seconds / 1e9);
+    append(out, ","); field(out, "read_ops_s", d[2] / seconds);
+    append(out, ","); field(out, "write_ops_s", d[3] / seconds);
+    append(out, ","); field(out, "read_ms_avg", d[2] > 0 ? d[4] / d[2] / 1e6 : NAN);
+    append(out, "}");
+    memcpy(previous, now, sizeof(previous));
+    previous_ns = now_ns;
 }
 
 // Natural 80-byte alignment required by AppleSMC. Never pack this structure.
@@ -429,7 +491,7 @@ void m5_sample(char *buffer, int capacity, int full) {
     append(&out, "{\"sampled_at\":%.3f,\"memory\":", now.tv_sec + now.tv_usec / 1000000.0);
     memory(&out);
     append(&out, ",\"cpu\":"); cpu(&out, full);
-    if (full) { append(&out, ",\"gpu\":"); gpu(&out); }
+    if (full) { append(&out, ",\"gpu\":"); gpu(&out); append(&out, ",\"ssd\":"); ssd(&out); }
     int32_t pressure = 0;
     size_t size = sizeof(pressure);
     int pressure_result = sysctlbyname("kern.memorystatus_vm_pressure_level", &pressure, &size, NULL, 0);

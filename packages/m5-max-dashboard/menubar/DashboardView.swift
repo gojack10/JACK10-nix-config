@@ -271,6 +271,8 @@ struct DashboardView: View {
                         Divider()
                         swap(s)
                         Divider()
+                        ssd(s)
+                        Divider()
                         MetricSection("Pressure") {
                             Text(s.text("memory_pressure"))
                                 .foregroundStyle(s.text("memory_pressure") == "OK" ? Color(nsColor: .systemGreen)
@@ -360,6 +362,9 @@ struct DashboardView: View {
                       percent: s.number("gpu.utilization"), bar: true)
             MetricRow(label: "Renderer", value: fixed(s.number("gpu.renderer_util"), places: 0), unit: "%")
             MetricRow(label: "Tiler", value: fixed(s.number("gpu.tiler_util"), places: 0), unit: "%")
+            MetricRow(label: "Clock", value: fixed(s.number("gpu.clock_mhz"), places: 0), unit: "MHz",
+                      share: "active " + fixed(s.number("gpu.active_pct"), places: 0, suffix: "%"))
+            MetricRow(label: "Power", value: fixed(s.number("gpu.power_watts")), unit: "W")
             MetricRow(label: "Shared memory", value: fixed(s.number("memory.total_gb"), places: 0), unit: "GiB")
             MetricRow(label: "Allocated", value: fixed(s.number("gpu.alloc_sys_mem_gb")), unit: "GiB",
                       share: fixed(s.percent("gpu.alloc_sys_mem_gb", of: "memory.total_gb"), places: 0, suffix: "%"),
@@ -409,6 +414,18 @@ struct DashboardView: View {
             MetricRow(label: "Compressor", value: fixed(s.number("memory.compressor_gb")), unit: "GiB")
             MetricRow(label: "Reclaimable (est.)", value: fixed(s.number("memory.reclaimable_gb")), unit: "GiB")
         }
+    }
+
+    private func ssd(_ s: Snapshot) -> some View {
+        MetricSection("SSD | internal") {
+            MetricRow(label: "Read", value: fixed(s.number("ssd.read_gb_s"), places: 2), unit: "GB/s",
+                      share: fixed(s.number("ssd.read_ops_s"), places: 0) + " ops/s")
+            MetricRow(label: "Write", value: fixed(s.number("ssd.write_gb_s"), places: 2), unit: "GB/s",
+                      share: fixed(s.number("ssd.write_ops_s"), places: 0) + " ops/s")
+            MetricRow(label: "Read time", value: fixed(s.number("ssd.read_ms_avg"), places: 2), unit: "ms",
+                      share: "per operation")
+        }
+        .help("Internal SSD, all processes, from the drive's I/O counters")
     }
 
     private func swap(_ s: Snapshot) -> some View {

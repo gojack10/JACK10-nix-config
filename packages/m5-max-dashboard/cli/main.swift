@@ -84,8 +84,9 @@ defer { restore() }
 let gpu = GPUReader()
 do {
     gpu.refresh()
-    // Prime the CPU tick delta. No lifetime-average percentage masquerading as now.
-    _ = try Snapshot(full: false)
+    // Prime the CPU tick, GPU counter and SSD deltas. No lifetime-average
+    // percentage masquerading as now.
+    _ = try Snapshot(full: true)
     Thread.sleep(forTimeInterval: 1)
     var nextSample = Date.distantPast
     var rows: [Row] = []

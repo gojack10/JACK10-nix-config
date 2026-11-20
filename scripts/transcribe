@@ -8,9 +8,8 @@ export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export UV_OFFLINE=1
 
-# Backend: MLX Parakeet TDT v3 by default. Speaker attribution is not provided by
-# the MLX backend, so any speaker flag routes back to the Canary engine. Override
-# with TRANSCRIBE_BACKEND=canary to force the old engine.
+# The MLX project runs Fluid Speech Pro. Speaker flags select Canary;
+# TRANSCRIBE_BACKEND=canary also selects it explicitly.
 backend="${TRANSCRIBE_BACKEND:-mlx}"
 want_speakers=0
 for a in "$@"; do

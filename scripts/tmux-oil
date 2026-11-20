@@ -1454,9 +1454,10 @@ local function new_identity(buf, rows)
   local group = a.nvim_create_augroup("tmux_oil_identity", { clear = true })
   a.nvim_create_autocmd("TextYankPost", { group = group, callback = guarded(function()
     local e = vim.v.event
-    local reg = e.regname ~= "" and e.regname or '"'
-    local info = f.getreginfo(reg)
-    local capture = { contents = vim.deepcopy(info.regcontents), type = info.regtype,
+    -- An implicit cut reports regname="" even when plain p reads + or *.
+    -- Use the event payload: the clipboard provider may still hold the previous cut.
+    local reg = e.regname ~= "" and e.regname or vim.v.register
+    local capture = { contents = vim.deepcopy(e.regcontents), type = e.regtype,
       new = (a.nvim_get_current_buf() ~= buf or e.operator == "c") and not reg:match("%u") }
     if a.nvim_get_current_buf() == buf and e.regtype == "V" and e.operator ~= "c"
         and not reg:match("%u") then
@@ -1514,7 +1515,7 @@ local function new_identity(buf, rows)
     if ok and cmd.cmd == "rundo" then
       I.fault = "undo history imported without row identity; :TmuxOilAcceptLive required"
     elseif ok and cmd.cmd == "put" and cmd.nextcmd == "" then
-      observe_put(cmd.args[1] or '"')
+      observe_put(cmd.args[1] or vim.v.register)
     end
   end) })
   return I

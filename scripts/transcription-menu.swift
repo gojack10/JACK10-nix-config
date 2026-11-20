@@ -320,22 +320,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pasteboard.clearContents()
         let copied = pasteboard.setString(text, forType: .string)
         run?.marks["clipboard_end"] = uptimeNS()
-        // Leave the transcript on the clipboard; paste a copy at the insertion point.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+        // setString is synchronous; only post after the pasteboard accepted this text.
+        var posted = false
+        if copied {
             let source = CGEventSource(stateID: .hidSystemState)
             let vKeyCode: CGKeyCode = 9 // kVK_ANSI_V
-            let down = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true)
-            down?.flags = .maskCommand
-            let up = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: false)
-            up?.flags = .maskCommand
-            down?.post(tap: .cghidEventTap)
-            if down != nil { run?.marks["paste_dispatch"] = uptimeNS() }
-            up?.post(tap: .cghidEventTap)
-            let posted = down != nil && up != nil
-            run?.finish(!copied ? "clipboard_failed" : posted ? "dispatched" : "event_failed")
-            if copied && posted { logLine("transcript pasted (\(text.count) characters)") }
+            if let down = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true),
+               let up = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: false) {
+                down.flags = .maskCommand
+                up.flags = .maskCommand
+                run?.marks["paste_post_begin"] = uptimeNS()
+                down.post(tap: .cghidEventTap)
+                run?.marks["paste_dispatch"] = uptimeNS()
+                up.post(tap: .cghidEventTap)
+                posted = true
+            }
         }
-        state = .done
+        run?.finish(!copied ? "clipboard_failed" : posted ? "dispatched" : "event_failed")
+        if posted { logLine("transcript pasted (\(text.count) characters)") }
+        state = posted ? .done : .failed
         updateIcon()
         scheduleIdleReset()
     }

@@ -252,16 +252,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.recorder = recorder
         self.transcriber = transcriber
         profile?.marks["pipeline_started"] = uptimeNS()
-        // One reader per recording; process termination alone isn't stdout EOF.
+        // The private worker sends exactly one newline-terminated JSON string. Accept only
+        // a complete record; newlines inside a transcript are escaped, not message boundaries.
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            let eof = uptimeNS()
-            transcriber.waitUntilExit()
+            let reader = output.fileHandleForReading
+            var record = Data()
+            while record.last != 0x0a {
+                let part = reader.availableData
+                if part.isEmpty { break }
+                record.append(part)
+            }
+            let ready = uptimeNS()
+            let text = record.last == 0x0a ? try? JSONDecoder().decode(String.self, from: record) : nil
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.transcriber === transcriber else { return }
-                self.profile?.marks["stdout_eof"] = eof
-                self.finishTranscription(data)
+                self.profile?.marks["result_ready"] = ready
+                self.finishTranscription(text)
             }
+            transcriber.waitUntilExit()
         }
         state = .recording
         updateIcon()
@@ -297,7 +305,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateIcon()
     }
 
-    private func finishTranscription(_ transcript: Data) {
+    private func finishTranscription(_ transcript: String?) {
         let run = profile
         run?.detach()
         profile = nil
@@ -305,8 +313,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recorderInput = nil
         recorder = nil
         transcriber = nil
-        let text = String(data: transcript, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let text = transcript?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !text.isEmpty else {
             run?.finish("no_text")
             logLine("transcription produced no text")

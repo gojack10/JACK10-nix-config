@@ -54,7 +54,10 @@ for a in "$@"; do
   if [[ -f "$a" ]]; then src="$a"; break; fi
 done
 
-if [[ -z "$src" && ! -t 0 ]]; then
+if [[ "${F5_RECORDING:-}" == 1 && "$backend" == mlx && "$tmp" == 1 && $# == 0 && ! -t 0 ]]; then
+  # Only the menu owns this pipe. Load concurrently; the worker still requires EOF.
+  set -- --recording-stdin
+elif [[ -z "$src" && ! -t 0 ]]; then
   trap '' INT
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ -z "$src" && -n "$line" ]]; then

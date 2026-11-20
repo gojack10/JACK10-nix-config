@@ -220,6 +220,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         transcriber.standardOutput = output
         transcriber.standardError = FileHandle.standardError
         transcriber.environment = [
+            "F5_RECORDING": "1",
             "HOME": home,
             "PATH": "\(home)/.nix-profile/bin:\(home)/.local/bin:/usr/local/bin:/usr/bin:/bin",
         ]

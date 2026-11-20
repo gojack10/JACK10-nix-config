@@ -61,6 +61,10 @@ if [[ -z "$src" && ! -t 0 ]]; then
       src="$line"
     fi
   done
+  if [[ -n "${F5_PROFILE_CLOCK:-}" ]]; then
+    F5_EOF_NS="$("$F5_PROFILE_CLOCK")" || F5_EOF_NS=''
+    export F5_EOF_NS
+  fi
   trap - INT
   if [[ -z "$src" ]]; then
     echo "transcribe: upstream supplied no audio path; recording failed or was cancelled before capture" >&2
@@ -159,5 +163,9 @@ if [[ -n "$archive" ]]; then
     --ref-audio "$ref_audio" \
     -- "${cmd[@]}"
 else
+  if [[ -n "${F5_PROFILE_CLOCK:-}" ]]; then
+    F5_EXEC_NS="$("$F5_PROFILE_CLOCK")" || F5_EXEC_NS=''
+    export F5_EXEC_NS
+  fi
   exec /usr/bin/python3 "$SUPERVISOR" -- "${cmd[@]}"
 fi

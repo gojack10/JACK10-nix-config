@@ -60,7 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var recorder: Process?
     private var recorderInput: FileHandle?
     private var transcriber: Process?
-    private var transcript = Data()
+    private var profile: DictationProfile?
     private let recordingIcon = RecordingIcon()
     private let spinner = MenuSpinner()
     private var animationTimer: Timer?
@@ -156,7 +156,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
             if keyCode == f5KeyCode {
                 if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
-                    DispatchQueue.main.async { [weak self] in self?.toggle() }
+                    let pressed = event.timestamp
+                    DispatchQueue.main.async { [weak self] in self?.toggle(at: pressed, source: "f5") }
                 }
                 return nil
             }
@@ -172,7 +173,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             logLine("systemDefined keyType=\(keyType) keyState=\(keyState)")
             if dictationKeyTypes.contains(keyType) {
                 if keyState == 0x0A { // Key down; 0x0B is key up.
-                    DispatchQueue.main.async { [weak self] in self?.toggle() }
+                    let pressed = event.timestamp
+                    DispatchQueue.main.async { [weak self] in self?.toggle(at: pressed, source: "dictation_key") }
                 }
                 return nil
             }
@@ -182,13 +184,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Recording pipeline
 
-    @objc private func toggleFromMenu() { toggle() }
+    @objc private func toggleFromMenu() { toggle(at: uptimeNS(), source: "menu") }
 
-    private func toggle() {
+    private func toggle(at pressed: UInt64, source: String) {
         switch state {
         case .idle, .done, .failed:
+            profile = DictationProfile(start: pressed)
             startRecording()
         case .recording:
+            profile?.stopSource = source
+            profile?.marks["stop"] = pressed
             stopRecording()
         case .transcribing:
             break
@@ -219,15 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "PATH": "\(home)/.nix-profile/bin:\(home)/.local/bin:/usr/local/bin:/usr/bin:/bin",
         ]
 
-        transcript = Data()
-        output.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            if !data.isEmpty { self?.transcript.append(data) }
-        }
-        transcriber.terminationHandler = { [weak self] _ in
-            output.fileHandleForReading.readabilityHandler = nil
-            DispatchQueue.main.async { self?.finishTranscription() }
-        }
+        transcriber.environment?.merge(profile?.childEnvironment ?? [:]) { _, new in new }
 
         do {
             try recorder.run()
@@ -238,20 +235,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try? control.fileHandleForReading.close()
             try? link.fileHandleForWriting.close()
             try? link.fileHandleForReading.close()
-            output.fileHandleForReading.readabilityHandler = nil
+            endProfile("launch_failed")
             logLine("could not start pipeline: \(error)")
             state = .failed
             updateIcon()
             scheduleIdleReset()
             return
         }
-        // The parent must close its copies or the transcriber never sees EOF.
+        // Don't keep a writer open in the parent for either reader waiting on EOF.
+        try? output.fileHandleForWriting.close()
         try? link.fileHandleForWriting.close()
         try? link.fileHandleForReading.close()
 
         self.recorderInput = control.fileHandleForWriting
         self.recorder = recorder
         self.transcriber = transcriber
+        profile?.marks["pipeline_started"] = uptimeNS()
+        // One reader per recording; process termination alone isn't stdout EOF.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            let eof = uptimeNS()
+            transcriber.waitUntilExit()
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.transcriber === transcriber else { return }
+                self.profile?.marks["stdout_eof"] = eof
+                self.finishTranscription(data)
+            }
+        }
         state = .recording
         updateIcon()
         logLine("recording started")
@@ -264,11 +274,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // SIGINT is the stop the record-mic client forwards to its helper; the
         // helper finalizes the audio and publishes its path, which starts the
         // transcriber. SIGTERM would discard the recording.
+        profile?.marks["sigint"] = uptimeNS()
         kill(recorder.processIdentifier, SIGINT)
         logLine("recording stop requested")
     }
 
+    private func endProfile(_ outcome: String) {
+        profile?.detach()
+        profile?.finish(outcome)
+        profile = nil
+    }
+
     @objc private func cancelRecording() {
+        endProfile("cancelled")
         try? recorderInput?.close()
         recorderInput = nil
         transcriber?.terminate()
@@ -278,7 +296,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateIcon()
     }
 
-    private func finishTranscription() {
+    private func finishTranscription(_ transcript: Data) {
+        let run = profile
+        run?.detach()
+        profile = nil
         try? recorderInput?.close()
         recorderInput = nil
         recorder = nil
@@ -286,15 +307,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let text = String(data: transcript, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !text.isEmpty else {
+            run?.finish("no_text")
             logLine("transcription produced no text")
             state = .failed
             updateIcon()
             scheduleIdleReset()
             return
         }
+        run?.marks["clipboard_begin"] = uptimeNS()
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        let copied = pasteboard.setString(text, forType: .string)
+        run?.marks["clipboard_end"] = uptimeNS()
         // Leave the transcript on the clipboard; paste a copy at the insertion point.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             let source = CGEventSource(stateID: .hidSystemState)
@@ -304,12 +328,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let up = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: false)
             up?.flags = .maskCommand
             down?.post(tap: .cghidEventTap)
+            if down != nil { run?.marks["paste_dispatch"] = uptimeNS() }
             up?.post(tap: .cghidEventTap)
+            let posted = down != nil && up != nil
+            run?.finish(!copied ? "clipboard_failed" : posted ? "dispatched" : "event_failed")
+            if copied && posted { logLine("transcript pasted (\(text.count) characters)") }
         }
         state = .done
         updateIcon()
         scheduleIdleReset()
-        logLine("transcript pasted (\(text.count) characters)")
     }
 
     // MARK: - Menu bar presentation

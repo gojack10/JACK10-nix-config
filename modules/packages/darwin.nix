@@ -398,23 +398,32 @@ let
     '';
   };
 
+  transcriptionBuildId = builtins.substring 0 16 (builtins.hashString "sha256"
+    (builtins.concatStringsSep "" (map builtins.readFile [
+      ../../scripts/transcription-menu.swift ../../scripts/dictation-profile.swift
+      ../../scripts/transcription-clock.c ../../scripts/transcribe
+    ])));
   transcriptionMenu = pkgs.stdenv.mkDerivation {
     pname = "transcription-menu";
     version = "1";
     src = ../../scripts/transcription-menu.swift;
     dontUnpack = true;
     buildPhase = ''
-      cp $src transcription-menu.swift
+      cp $src main.swift
+      cp ${../../scripts/dictation-profile.swift} dictation-profile.swift
+      chmod u+w dictation-profile.swift
+      substituteInPlace dictation-profile.swift --replace-fail '@F5_BUILD@' '${transcriptionBuildId}'
+      $CC -O2 ${../../scripts/transcription-clock.c} -o transcription-clock
       export DEVELOPER_DIR=/Library/Developer/CommandLineTools
       /Library/Developer/CommandLineTools/usr/bin/swiftc -swift-version 5 -O \
         -sdk /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk \
         -framework AppKit -framework ApplicationServices \
-        -o transcription-menu transcription-menu.swift
+        -o transcription-menu main.swift dictation-profile.swift
     '';
     installPhase = ''
       app="$out/Applications/Transcription.app"
       mkdir -p "$app/Contents/MacOS"
-      install -m755 transcription-menu "$app/Contents/MacOS/transcription-menu"
+      install -m755 transcription-menu transcription-clock "$app/Contents/MacOS/"
       cp ${../../scripts/transcription-menu-Info.plist} "$app/Contents/Info.plist"
     '';
     postFixup = ''

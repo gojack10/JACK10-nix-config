@@ -64,7 +64,37 @@ local function validate_name(name)
 end
 M.validate_name = validate_name
 
-local function decode_json_string(text)
+-- A "# name" row starts a group; each session stores its group in @oil_group.
+local function validate_group(name)
+  if type(name) ~= "string" or name == "" then
+    fail("group headers need a name, like: # school")
+  end
+  for i = 1, #name do
+    local byte = name:byte(i)
+    if byte < 32 or byte == 127 then
+      fail("group names may not contain ASCII control characters")
+    end
+  end
+  return name
+end
+M.validate_group = validate_group
+
+-- Ungrouped items first, then each named group in order of its first item.
+local function bucket_by_group(items, group_of)
+  local first = { group = "", items = {} }
+  local buckets, result = { [""] = first }, { first }
+  for _, item in ipairs(items) do
+    local group = group_of(item) or ""
+    if not buckets[group] then
+      buckets[group] = { group = group, items = {} }
+      result[#result + 1] = buckets[group]
+    end
+    table.insert(buckets[group].items, item)
+  end
+  return result
+end
+
+local function decode_json_string(text, validate)
   if #text < 2 or text:byte(1) ~= 34 or text:byte(#text) ~= 34 then
     fail("name field must be exactly one JSON string")
   end
@@ -94,7 +124,7 @@ local function decode_json_string(text)
   if not ok or type(value) ~= "string" then
     fail("invalid JSON string")
   end
-  return validate_name(value)
+  return (validate or validate_name)(value)
 end
 
 local function split_row(line, source)
@@ -114,7 +144,8 @@ local function model(rows)
   end
   local result = {
     order = {}, server_order = {}, by_id = {}, parent_by_id = {},
-    parent_option_by_id = {}, tree_prefix_by_id = {},
+    parent_option_by_id = {}, tree_prefix_by_id = {}, group_by_id = {},
+    display_group_by_id = {},
   }
   local raw_order, raw_parent = {}, {}
   for _, row in ipairs(rows) do
@@ -122,6 +153,7 @@ local function model(rows)
     raw_order[#raw_order + 1] = row.id
     result.by_id[row.id] = row.name
     result.parent_option_by_id[row.id] = row.parent
+    result.group_by_id[row.id] = row.group ~= "" and row.group or nil
     raw_parent[row.id] = row.parent
   end
   result.server_order = raw_order
@@ -146,17 +178,24 @@ local function model(rows)
       roots[#roots + 1] = id
     end
   end
-  local function append(id, display_prefix, child_prefix)
+  -- Subagent sessions display under their parent, in the parent's group.
+  local function append(id, display_prefix, child_prefix, group)
     result.order[#result.order + 1] = id
     result.tree_prefix_by_id[id] = display_prefix
+    result.display_group_by_id[id] = group
     local descendants = children[id] or {}
     for index, child in ipairs(descendants) do
       local last = index == #descendants
       append(child, child_prefix .. (last and " └── " or " ├── "),
-        child_prefix .. (last and "     " or " │   "))
+        child_prefix .. (last and "     " or " │   "), group)
     end
   end
-  for _, id in ipairs(roots) do append(id, "", "") end
+  local buckets = bucket_by_group(roots, function(id) return result.group_by_id[id] end)
+  for _, bucket in ipairs(buckets) do
+    for _, id in ipairs(bucket.items) do
+      append(id, "", "", bucket.group ~= "" and bucket.group or nil)
+    end
+  end
   return result
 end
 
@@ -165,13 +204,16 @@ function M.parse_snapshot(output)
   if output == "" then return model({}) end
   local rows = {}
   for _, line in ipairs(vim.split(output, "\n", { plain = true })) do
-    local rank, id, name, parent = line:match("^(%d+)\t([^\t]+)\t([^\t]*)\t([^\t]*)$")
+    local rank, id, name, parent, group =
+      line:match("^(%d+)\t([^\t]+)\t([^\t]*)\t([^\t]*)\t([^\t]*)$")
+    if not rank then rank, id, name, parent = line:match("^(%d+)\t([^\t]+)\t([^\t]*)\t([^\t]*)$") end
     if not rank then rank, id, name = line:match("^(%d+)\t([^\t]+)\t(.*)$") end
     if not rank then id, name = split_row(line, "snapshot") end
     if not id:match("^%$%d+$") then fail("invalid snapshot session ID " .. id) end
     rows[#rows + 1] = {
       id = id, name = validate_name(name), rank = tonumber(rank),
       parent = parent and parent:match("^%$%d+$") and parent or nil,
+      group = group,
     }
   end
   return model(rows)
@@ -195,7 +237,7 @@ function M.snapshot()
   local rank = persistent_order and "#{session_order}" or "#{session_created}"
   return M.parse_snapshot(M.tmux({
     "list-sessions", "-F", rank
-      .. "\t#{session_id}\t#{session_name}\t#{@pi_subagent_parent_id}",
+      .. "\t#{session_id}\t#{session_name}\t#{@pi_subagent_parent_id}\t#{@oil_group}",
   }))
 end
 
@@ -211,32 +253,40 @@ function M.parse_manifest(text, baseline)
   if text:sub(-1) == "\n" then
     text = text:sub(1, -2)
   end
-  local intent = { order = {}, existing = {}, new = {} }
+  -- group_by_* hold "" for rows above the first header (ungrouped).
+  local intent = { order = {}, existing = {}, new = {}, group_by_id = {}, group_by_new = {} }
   local names = {}
   if text == "" then
     return intent
   end
+  local group = ""
   for _, line in ipairs(vim.split(text, "\n", { plain = true })) do
     local marker, encoded_name = split_row(line, "manifest")
-    local name = decode_json_string(encoded_name)
-    if names[name] then
-      fail("duplicate resulting session name " .. name)
-    end
-    names[name] = true
-    if marker == "+" then
-      intent.new[#intent.new + 1] = name
-      intent.order[#intent.order + 1] = { marker = marker, name = name }
-    elseif marker:match("^%$%d+$") then
-      if baseline.by_id[marker] == nil then
-        fail("unknown or forged session ID " .. marker)
-      end
-      if intent.existing[marker] ~= nil then
-        fail("duplicate session ID " .. marker)
-      end
-      intent.existing[marker] = name
-      intent.order[#intent.order + 1] = { marker = marker, name = name }
+    if marker == "#" then
+      group = decode_json_string(encoded_name, validate_group)
     else
-      fail("invalid new-row marker or unsupported field " .. marker)
+      local name = decode_json_string(encoded_name)
+      if names[name] then
+        fail("duplicate resulting session name " .. name)
+      end
+      names[name] = true
+      if marker == "+" then
+        intent.new[#intent.new + 1] = name
+        intent.order[#intent.order + 1] = { marker = marker, name = name }
+        intent.group_by_new[name] = group
+      elseif marker:match("^%$%d+$") then
+        if baseline.by_id[marker] == nil then
+          fail("unknown or forged session ID " .. marker)
+        end
+        if intent.existing[marker] ~= nil then
+          fail("duplicate session ID " .. marker)
+        end
+        intent.existing[marker] = name
+        intent.order[#intent.order + 1] = { marker = marker, name = name }
+        intent.group_by_id[marker] = group
+      else
+        fail("invalid new-row marker or unsupported field " .. marker)
+      end
     end
   end
   return intent
@@ -279,6 +329,7 @@ local function copy_state(state)
     parent_by_id = vim.deepcopy(state.parent_by_id or {}),
     parent_option_by_id = vim.deepcopy(state.parent_option_by_id or {}),
     tree_prefix_by_id = vim.deepcopy(state.tree_prefix_by_id or {}),
+    group_by_id = vim.deepcopy(state.group_by_id or {}),
   }
 end
 
@@ -517,7 +568,8 @@ function M.reconcile(baseline, intent, current)
   return {
     order = rows_for(result_order), display_order = rows_for(display_order),
     existing = vim.deepcopy(existing), new = vim.deepcopy(intent.new),
-    kills = kills,
+    kills = kills, group_by_id = vim.deepcopy(intent.group_by_id or {}),
+    group_by_new = vim.deepcopy(intent.group_by_new or {}),
   }
 end
 
@@ -823,6 +875,8 @@ function M.apply(baseline, intent)
       expected.by_id[operation.id] = operation.name
     elseif operation.kind == "move" then
       move_before(expected, operation.id, operation.target)
+    elseif operation.kind == "group" then
+      expected.group_by_id[operation.id] = operation.group ~= "" and operation.group or nil
     elseif operation.kind == "create" then
       local after_create = M.snapshot()
       local created_id
@@ -872,6 +926,27 @@ function M.apply(baseline, intent)
     report.warning = "server lacks move-session; row reordering was not persisted; "
       .. "restart with the patched tmux binary to enable persistent ordering"
   end
+
+  -- Tag each row with the header above it. Sessions absent from the buffer
+  -- (created elsewhere while editing) keep their current group.
+  local ids, first_group = desired_order(intent, expected), #operations + 1
+  for index, row in ipairs(intent.order) do
+    local id = ids[index]
+    local group
+    if row.marker == "+" then
+      group = (intent.group_by_new or {})[row.name]
+    else
+      group = (intent.group_by_id or {})[row.marker]
+    end
+    if group ~= nil and group ~= (expected.group_by_id[id] or "") then
+      operations[#operations + 1] = {
+        kind = "group", id = id, group = group,
+        argv = M.argv(group == "" and { "set-option", "-u", "-t", id, "@oil_group" }
+          or { "set-option", "-t", id, "@oil_group", group }),
+      }
+    end
+  end
+  for index = first_group, #operations do execute(operations[index], index) end
 
   local after = M.snapshot()
   report.current = after
@@ -1296,8 +1371,10 @@ local function new_identity(buf, rows)
     local by_id = {}
     for t, id in pairs(I.bindings) do by_id[id] = t end
     for _, row in ipairs(new_rows) do
+      -- New-session ("+") and group header ("#") rows carry no session identity.
+      local id = row.marker:match("^%$%d+$")
       s.lines[#s.lines + 1] = row.name
-      s.tokens[#s.tokens + 1] = by_id[row.marker] or token(row.marker ~= "+" and row.marker or nil)
+      s.tokens[#s.tokens + 1] = id and by_id[id] or token(id)
     end
     if #s.lines == 0 then
       s.lines, s.tokens = { "" }, { token() }
@@ -1553,6 +1630,14 @@ local function annotate(live, metadata)
   local statuses, status_col = {}, 0
   for row, id in ipairs(ids) do
     local row_width = vim.fn.strdisplaywidth(lines[row])
+    if id == "+" and lines[row]:sub(1, 1) == "#" then
+      -- A blank line above each header after the first separates the groups.
+      vim.api.nvim_buf_set_extmark(M.buf, M.ns, row - 1, 0, {
+        end_col = #lines[row], hl_group = "TmuxOilGroup",
+        virt_lines = row > 1 and { { { " ", "TmuxOilMeta" } } } or nil,
+        virt_lines_above = true,
+      })
+    end
     if id and M.baseline.by_id[id] then
       local text, group = metadata[id] or "", "Comment"
       local marker, marker_group = "[ ]", "TmuxOilMeta"
@@ -1702,6 +1787,7 @@ function M.cleanup()
 end
 
 local manifest_help = 'To create a session, add a plain line like: work\n'
+  .. 'To start a group, add a header line like: # school\n'
   .. 'Edit names to rename; dd/p moves rows. Empty existing names must be filled, not deleted.'
 
 local function editor_manifest(lines)
@@ -1710,7 +1796,11 @@ local function editor_manifest(lines)
   for row, line in ipairs(lines) do
     local id = ids[row]
     if not id then fail("missing row identity") end
-    if id == "+" and line == "" and row ~= placeholder then
+    if id == "+" and line:sub(1, 1) == "#" then
+      encoded[#encoded + 1] = "#\t" .. vim.json.encode(validate_group(line:match("^#%s*(.-)%s*$")))
+    elseif id ~= "+" and line:sub(1, 1) == "#" and line ~= M.baseline.by_id[id] then
+      fail("session names can't start with '#'; '#' lines are group headers")
+    elseif id == "+" and line == "" and row ~= placeholder then
       fail("new rows need a session name; fill it in or delete the row (dd)")
     elseif id ~= "+" or line ~= "" then
       if id ~= "+" and not M.baseline.by_id[id] then
@@ -1763,11 +1853,13 @@ local function intent_with_created_ids(intent, created_ids)
   local result = vim.deepcopy(intent)
   result.existing = vim.deepcopy(intent.existing)
   result.order, result.new = {}, {}
+  result.group_by_id = vim.deepcopy(intent.group_by_id or {})
   for _, row in ipairs(intent.order) do
     local id = row.marker == "+" and created_ids[row.name]
     if id then
       result.existing[id] = row.name
       result.order[#result.order + 1] = { marker = id, name = row.name }
+      result.group_by_id[id] = (intent.group_by_new or {})[row.name]
     else
       result.order[#result.order + 1] = vim.deepcopy(row)
     end
@@ -1778,11 +1870,21 @@ local function intent_with_created_ids(intent, created_ids)
   return result
 end
 
+-- Groups always come from the current buffer; created sessions keep theirs by name.
+local function with_buffer_groups(result, current, created_ids)
+  result.group_by_id = vim.deepcopy(current.group_by_id or {})
+  result.group_by_new = vim.deepcopy(current.group_by_new or {})
+  for name, id in pairs(created_ids or {}) do
+    if result.group_by_new[name] ~= nil then result.group_by_id[id] = result.group_by_new[name] end
+  end
+  return result
+end
+
 local function recovery_intent(current, recovery)
   if vim.deep_equal(current, recovery.buffer_intent) then
     local result = vim.deepcopy(recovery.intent)
     result.display_order = vim.deepcopy(current.order)
-    return result
+    return with_buffer_groups(result, current, recovery.created_ids)
   end
   local result = vim.deepcopy(recovery.intent)
   local original = recovery.original_baseline
@@ -1844,7 +1946,7 @@ local function recovery_intent(current, recovery)
     end
   end
   result.display_order = vim.deepcopy(current.order)
-  return result
+  return with_buffer_groups(result, current, created_ids)
 end
 
 local function failure_counts(report)
@@ -1957,6 +2059,16 @@ function M.save()
   return true, result
 end
 
+-- Buffer rows for a display order, with a "# name" header row opening each group.
+local function rows_with_headers(rows, group_of)
+  local result = {}
+  for _, bucket in ipairs(bucket_by_group(rows, group_of)) do
+    if bucket.group ~= "" then result[#result + 1] = { marker = "#", name = "# " .. bucket.group } end
+    vim.list_extend(result, bucket.items)
+  end
+  return result
+end
+
 local function intent_matches_state(intent, state)
   local rows = intent.display_order or intent.order
   if #intent.new > 0 or #rows ~= #state.order then return false end
@@ -1964,6 +2076,8 @@ local function intent_matches_state(intent, state)
     if row.marker ~= state.order[index] or row.name ~= state.by_id[row.marker] then
       return false
     end
+    local group = (intent.group_by_id or {})[row.marker]
+    if group ~= nil and group ~= (state.group_by_id[row.marker] or "") then return false end
   end
   return true
 end
@@ -1986,7 +2100,12 @@ function M.refresh()
     local live = M.snapshot()
     local reconciled, conflict = M.reconcile(base, refresh_intent, live)
     if not reconciled then fail(conflict .. "\nedit the conflicting row or use :TmuxOilAcceptLive") end
-    identity.replace(reconciled.display_order or reconciled.order)
+    identity.replace(rows_with_headers(reconciled.display_order or reconciled.order, function(row)
+      if row.marker == "+" then return reconciled.group_by_new[row.name] end
+      local group = reconciled.group_by_id[row.marker]
+      if group == nil then group = live.display_group_by_id[row.marker] end
+      return group
+    end))
     M.baseline = live
     vim.bo[M.buf].modified = not intent_matches_state(reconciled, live)
     M.pending_recovery = nil
@@ -2037,6 +2156,7 @@ function M.start()
   M.started_polls, M.completed_polls, M.overlapping_polls = 0, 0, 0
   local rows = {}
   for _, id in ipairs(M.baseline.order) do rows[#rows + 1] = { marker = id, name = M.baseline.by_id[id] } end
+  rows = rows_with_headers(rows, function(row) return M.baseline.display_group_by_id[row.marker] end)
   if identity and identity.buf == M.buf then
     identity.replace(rows)
   else
@@ -2052,8 +2172,8 @@ function M.start()
   -- always refused). 'backspace' is global; this nvim serves only this buffer.
   vim.o.backspace = "indent,start"
   local target_row, current = 1, current_session_id()
-  for row, id in ipairs(M.baseline.order) do
-    if id == current then target_row = row; break end
+  for row, entry in ipairs(rows) do
+    if entry.marker == current then target_row = row; break end
   end
   vim.api.nvim_win_set_cursor(0, { target_row, 0 })
   local group = vim.api.nvim_create_augroup("tmux_oil_private", { clear = true })

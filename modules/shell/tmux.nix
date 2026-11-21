@@ -8,6 +8,27 @@ let
     exec ${config.programs.tmux.package}/bin/tmux paste-buffer -p -t "$1"
   '';
 
+  # tmux-resurrect does not save session options, so tmux-oil's @oil_group
+  # tags are carried across server restarts by session name.
+  oilGroupsFile = ''"''${XDG_STATE_HOME:-$HOME/.local/state}/tmux-oil/groups.tsv"'';
+  saveOilGroups = pkgs.writeShellScript "tmux-oil-save-groups" ''
+    set -euo pipefail
+    file=${oilGroupsFile}
+    mkdir -p "$(dirname "$file")"
+    ${config.programs.tmux.package}/bin/tmux list-sessions -F "#{session_name}"$'\t'"#{@oil_group}" \
+      | awk -F '\t' '$2 != ""' > "$file.tmp"
+    mv "$file.tmp" "$file"
+  '';
+  restoreOilGroups = pkgs.writeShellScript "tmux-oil-restore-groups" ''
+    set -euo pipefail
+    file=${oilGroupsFile}
+    [ -f "$file" ] || exit 0
+    while IFS=$'\t' read -r name group; do
+      # Sessions saved earlier may no longer exist.
+      ${config.programs.tmux.package}/bin/tmux set-option -t "=$name" @oil_group "$group" 2>/dev/null || true
+    done < "$file"
+  '';
+
   # tmux-continuum normally injects its save hook into status-right, but
   # status-format[] bypasses status-right. Run the same hook invisibly instead.
   continuumSave = "#(${pkgs.tmuxPlugins.continuum}/share/tmux-plugins/continuum/scripts/continuum_save.sh)";
@@ -57,6 +78,8 @@ in {
           set -g @resurrect-capture-pane-contents 'on'
           set -g @resurrect-strategy-nvim 'session'
           set -g @resurrect-strategy-vim 'session'
+          set -g @resurrect-hook-post-save-all '${saveOilGroups}'
+          set -g @resurrect-hook-post-restore-all '${restoreOilGroups}'
         '';
       }
       {

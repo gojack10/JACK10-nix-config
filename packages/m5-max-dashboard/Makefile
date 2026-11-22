@@ -10,7 +10,7 @@ MENU = $(wildcard menubar/*.swift)
 NATIVE = $(BUILD)/metrics.o $(BUILD)/charge_limit.o
 
 .PHONY: all clean
-all: $(BUILD)/m5-max-dashboard $(BUILD)/m5-max-dashboard-menu $(BUILD)/shader-decode
+all: $(BUILD)/m5-max-dashboard $(BUILD)/m5-max-dashboard-menu $(BUILD)/m5-max-dashboard-memory $(BUILD)/shader-decode
 
 $(BUILD):
 	mkdir -p $@
@@ -26,6 +26,9 @@ $(BUILD)/m5-max-dashboard: $(SHARED) cli/main.swift $(NATIVE)
 
 $(BUILD)/m5-max-dashboard-menu: $(SHARED) $(MENU) $(NATIVE)
 	$(SWIFTC) $(SWIFTFLAGS) $(SHARED) $(MENU) $(NATIVE) $(FRAMEWORKS) -framework AppKit -framework SwiftUI -o $@
+
+$(BUILD)/m5-max-dashboard-memory: native/memory_reader.c | $(BUILD)
+	$(CC) $(CFLAGS) $< -o $@
 
 $(BUILD)/shader-decode: collector/shader-decode.m | $(BUILD)
 	$(CC) $(CFLAGS) -fobjc-arc -fmodules -fmodules-cache-path=$(BUILD)/modules $< -framework Foundation -o $@

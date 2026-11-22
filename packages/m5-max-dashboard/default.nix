@@ -21,6 +21,7 @@ stdenv.mkDerivation {
     app="$out/Applications/M5 Max Dashboard.app"
     mkdir -p "$app/Contents/MacOS" "$out/share/m5-max-dashboard"
     install -m755 .build/m5-max-dashboard-menu "$app/Contents/MacOS/m5-max-dashboard-menu"
+    install -m755 .build/m5-max-dashboard-memory "$app/Contents/MacOS/m5-max-dashboard-memory"
     cp menubar/Info.plist "$app/Contents/Info.plist"
     cp -R collector "$out/share/m5-max-dashboard/collector"
     install -m755 .build/shader-decode "$out/share/m5-max-dashboard/collector/shader-decode"
@@ -33,6 +34,8 @@ stdenv.mkDerivation {
   postFixup = ''
     /usr/bin/codesign --force --sign - "$out/bin/m5-max-dashboard"
     /usr/bin/codesign --force --sign - "$out/share/m5-max-dashboard/collector/shader-decode"
+    # Nested code must be signed before the bundle that seals it.
+    /usr/bin/codesign --force --sign - "$out/Applications/M5 Max Dashboard.app/Contents/MacOS/m5-max-dashboard-memory"
     /usr/bin/codesign --force --sign - "$out/Applications/M5 Max Dashboard.app"
   '';
 

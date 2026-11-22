@@ -8,6 +8,23 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
     @Published private(set) var changingLowPowerMode = false
     @Published private(set) var lowPowerError: String?
+    @Published private(set) var memoryReaderCurrent = MemoryReader.isCurrent
+    @Published private(set) var installingMemoryReader = false
+    @Published private(set) var memoryReaderError: String?
+
+    func installMemoryReader() {
+        guard !installingMemoryReader else { return }
+        installingMemoryReader = true
+        memoryReaderError = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            let error = MemoryReader.install()
+            DispatchQueue.main.async {
+                self.memoryReaderCurrent = MemoryReader.isCurrent
+                self.memoryReaderError = error
+                self.installingMemoryReader = false
+            }
+        }
+    }
 
     func refreshLowPowerMode() {
         let enabled = ProcessInfo.processInfo.isLowPowerModeEnabled
@@ -229,6 +246,31 @@ private struct CoreMeters: View {
     }
 }
 
+private struct ProcessTable: View {
+    let rows: [[String: Any]]
+    let valueTitle: String
+    let key: String
+    let places: Int
+
+    var body: some View {
+        HStack(spacing: 20) {
+            Text("PID").frame(width: 64, alignment: .trailing)
+            Text(valueTitle).frame(width: 64, alignment: .trailing)
+            Text("Process").frame(maxWidth: .infinity, alignment: .leading)
+        }.font(.caption).foregroundStyle(.secondary)
+        ForEach(rows.indices, id: \.self) { i in
+            let name = clean(rows[i]["name"] as? String ?? "-")
+            HStack(spacing: 20) {
+                Text((rows[i]["pid"] as? NSNumber)?.stringValue ?? "-").frame(width: 64, alignment: .trailing)
+                Text(fixed((rows[i][key] as? NSNumber)?.doubleValue, places: places)).frame(width: 64, alignment: .trailing)
+                Text(name).lineLimit(1).truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .help(name)
+            }.monospacedDigit()
+        }
+    }
+}
+
 private struct MetricSection<Content: View>: View {
     let title: String
     let content: Content
@@ -268,6 +310,7 @@ struct DashboardView: View {
                         CoreMeters(title: "GPU shader throughput | % peak", group: .gpu(s.shaderCores))
                         Divider()
                         memory(s)
+                        memoryProcesses(s)
                         Divider()
                         swap(s)
                         Divider()
@@ -466,24 +509,33 @@ struct DashboardView: View {
     }
 
     private func processes(_ s: Snapshot) -> some View {
-        let rows = s.value("cpu.top") as? [[String: Any]] ?? []
-        return MetricSection("Top CPU") {
-            HStack(spacing: 20) {
-                Text("PID").frame(width: 64, alignment: .trailing)
-                Text("CPU %").frame(width: 64, alignment: .trailing)
-                Text("Process").frame(maxWidth: .infinity, alignment: .leading)
-            }.font(.caption).foregroundStyle(.secondary)
-            ForEach(rows.indices, id: \.self) { i in
-                HStack(spacing: 20) {
-                    Text((rows[i]["pid"] as? NSNumber)?.stringValue ?? "-").frame(width: 64, alignment: .trailing)
-                    Text(fixed((rows[i]["cpu"] as? NSNumber)?.doubleValue)).frame(width: 64, alignment: .trailing)
-                    Text(clean(rows[i]["name"] as? String ?? "-")).lineLimit(1).truncationMode(.middle)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .help(clean(rows[i]["name"] as? String ?? "-"))
-                }.monospacedDigit()
-            }
+        MetricSection("Top CPU") {
+            ProcessTable(rows: s.value("cpu.top") as? [[String: Any]] ?? [], valueTitle: "CPU %", key: "cpu", places: 1)
         }
         .help("ps %CPU")
+    }
+
+    private func memoryProcesses(_ s: Snapshot) -> some View {
+        let rows = s.value("memory.top") as? [[String: Any]]
+        return MetricSection("Top Memory") {
+            if let rows {
+                ProcessTable(rows: rows, valueTitle: "GiB", key: "gb", places: 2)
+            } else {
+                Text("Unavailable").foregroundStyle(.secondary)
+            }
+            if !model.memoryReaderCurrent {
+                HStack {
+                    Button(rows == nil ? "Install Reader" : "Update Reader", action: model.installMemoryReader)
+                        .controlSize(.small)
+                        .disabled(model.installingMemoryReader)
+                        .help("Install the root helper that reads every process's memory. macOS asks for an administrator password.")
+                    if let error = model.memoryReaderError {
+                        Text("Install failed").font(.caption).foregroundStyle(.red).help(clean(error))
+                    }
+                }
+            }
+        }
+        .help("Physical footprint, the Memory column in Activity Monitor")
     }
 
     private func battery(_ s: Snapshot) -> some View {

@@ -154,15 +154,10 @@ func sections(_ snapshot: Snapshot) -> [Section] {
                                              fixed(n(key + ".min"), places: 0), fixed(n(key + ".max"), places: 0)]))
     }
     let fans = Section(title: "FANS | \(fanCount)", rows: fanRows)
-    let processes = snapshot.value("cpu.top") as? [[String: Any]] ?? []
-    var processRows: [Row] = [[Piece(text: "  " + leftPad("PID", 8) + "  " + leftPad("CPU %", 9) + "  Process", tone: .muted)]]
-    for process in processes {
-        let pid = (process["pid"] as? NSNumber)?.stringValue ?? "-"
-        let usage = (process["cpu"] as? NSNumber)?.doubleValue
-        processRows.append([Piece(text: "  " + leftPad(pid, 8) + "  " + fixed(usage, width: 9)
-                                  + "  " + clean(process["name"] as? String ?? "-"))])
-    }
-    let top = Section(title: "TOP CPU", rows: processRows)
+    let top = processSection("TOP CPU", snapshot.value("cpu.top") as? [[String: Any]] ?? [],
+                             valueTitle: "CPU %", key: "cpu", places: 1)
+    let topMemory = processSection("TOP MEMORY", snapshot.value("memory.top") as? [[String: Any]],
+                                   valueTitle: "GiB", key: "gb", places: 2)
     let limit = n("power.charge_limit_pct").map { $0 < 100 ? fixed($0, places: 0, suffix: "%") : "none" } ?? "-"
     let power = Section(title: "POWER", rows: [
         metricRow("Battery", fixed(n("power.battery_pct"), places: 0), unit: "%", detail: "Limit " + limit),
@@ -171,7 +166,21 @@ func sections(_ snapshot: Snapshot) -> [Section] {
         metricRow("Net", n("power.net_watts").map { String(format: "%+.1f", $0) } ?? "-", unit: "W")
     ])
     return [cpu, coreSection(.cpu(snapshot)), top, gpu, coreSection(.gpu(snapshot.shaderCores)),
-            memory, swap, pressureSection, ssd, thermal, fans, power]
+            memory, topMemory, swap, pressureSection, ssd, thermal, fans, power]
+}
+
+// Nil rows mean the source is unavailable, not that no process uses the resource.
+private func processSection(_ title: String, _ processes: [[String: Any]]?, valueTitle: String,
+                            key: String, places: Int) -> Section {
+    guard let processes else { return Section(title: title, rows: [[Piece(text: "  Unavailable", tone: .muted)]]) }
+    var rows: [Row] = [[Piece(text: "  " + leftPad("PID", 8) + "  " + leftPad(valueTitle, 9) + "  Process", tone: .muted)]]
+    for process in processes {
+        let pid = (process["pid"] as? NSNumber)?.stringValue ?? "-"
+        let value = (process[key] as? NSNumber)?.doubleValue
+        rows.append([Piece(text: "  " + leftPad(pid, 8) + "  " + fixed(value, places: places, width: 9)
+                           + "  " + clean(process["name"] as? String ?? "-"))])
+    }
+    return Section(title: title, rows: rows)
 }
 
 func dashboard(_ snapshot: Snapshot) -> [Row] {

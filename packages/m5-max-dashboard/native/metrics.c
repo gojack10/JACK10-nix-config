@@ -1,4 +1,5 @@
 // Read-only Apple Silicon metrics. Mach + IOKit + SMC, no root required.
+// Top memory comes from the optional root reader's socket when it is installed.
 #include "metrics.h"
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
@@ -7,8 +8,10 @@
 #include <mach/mach.h>
 #include <mach/host_info.h>
 #include <mach/vm_statistics.h>
+#include <sys/socket.h>
 #include <sys/sysctl.h>
 #include <sys/time.h>
+#include <sys/un.h>
 #include <ctype.h>
 #include <math.h>
 #include <stdarg.h>
@@ -17,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #define GPU_COUNTERS_IMPLEMENTATION
 #include "gpu_counters.h"
@@ -65,7 +69,9 @@ static void field(JSON *out, const char *key, double value) {
     number(out, value);
 }
 
-static void memory(JSON *out) {
+static void top_memory(JSON *out);
+
+static void memory(JSON *out, int full) {
     host_t host = mach_host_self();
     vm_statistics64_data_t vm = {0};
     mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
@@ -105,7 +111,43 @@ static void memory(JSON *out) {
     append(out, ",\"wired_context\":{");
     field(out, "kernel_baseline_gb", fmin(wired, kernel_wired_baseline_gb));
     append(out, ","); field(out, "other_wired_estimate_gb", fmax(0, wired - kernel_wired_baseline_gb));
-    append(out, "}}");
+    append(out, "}");
+    if (full) { append(out, ",\"top\":"); top_memory(out); }
+    append(out, "}");
+}
+
+// Null when the root reader is not installed or does not answer.
+static void top_memory(JSON *out) {
+    char reply[8192];
+    size_t length = 0;
+    ssize_t received = -1;
+    int reader = socket(AF_UNIX, SOCK_STREAM, 0);
+    struct sockaddr_un address = {.sun_family = AF_UNIX};
+    strlcpy(address.sun_path, M5_MEMORY_READER_SOCKET, sizeof(address.sun_path));
+    struct timeval timeout = {0, 500000};
+    if (reader >= 0 && setsockopt(reader, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0
+        && connect(reader, (struct sockaddr *)&address, sizeof(address)) == 0) {
+        while (length < sizeof(reply) - 1
+               && (received = read(reader, reply + length, sizeof(reply) - 1 - length)) > 0)
+            length += received;
+    }
+    if (reader >= 0) close(reader);
+    if (received != 0) { append(out, "null"); return; }
+    reply[length] = '\0';
+    append(out, "[");
+    int count = 0;
+    char *state = NULL;
+    for (char *line = strtok_r(reply, "\n", &state); line; line = strtok_r(NULL, "\n", &state)) {
+        int pid, offset = 0;
+        double bytes;
+        if (sscanf(line, "%d %lf %n", &pid, &bytes, &offset) != 2) continue;
+        if (count++) append(out, ",");
+        append(out, "{\"pid\":%d,\"gb\":", pid);
+        number(out, bytes / gib);
+        append(out, ",\"name\":"); string(out, line + offset);
+        append(out, "}");
+    }
+    append(out, "]");
 }
 
 static void top_processes(JSON *out) {
@@ -489,7 +531,7 @@ void m5_sample(char *buffer, int capacity, int full) {
     struct timeval now;
     gettimeofday(&now, NULL);
     append(&out, "{\"sampled_at\":%.3f,\"memory\":", now.tv_sec + now.tv_usec / 1000000.0);
-    memory(&out);
+    memory(&out, full);
     append(&out, ",\"cpu\":"); cpu(&out, full);
     if (full) { append(&out, ",\"gpu\":"); gpu(&out); append(&out, ",\"ssd\":"); ssd(&out); }
     int32_t pressure = 0;

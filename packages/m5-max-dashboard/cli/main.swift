@@ -7,7 +7,7 @@ if arguments.contains("--help") || arguments.contains("-h") {
     print("""
     m5-max-dashboard [--once | --watch] [--json]
 
-    System pulse - CPU, GPU, per-core meters, memory, thermals, fans and top CPU.
+    System pulse - CPU, GPU, per-core meters, memory, thermals, fans, top CPU and top memory.
     GPU shader and memory-bandwidth meters use the bridge at 127.0.0.1:8766.
     Interactive terminals watch by default. Pipes get one snapshot.
       --once   Print one reading and exit

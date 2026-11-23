@@ -1,4 +1,4 @@
-{ config, lib, pkgs, configRevision, ... }:
+{ config, lib, pkgs, configSource, ... }:
 
 let
   tmux = config.programs.tmux.package;
@@ -13,7 +13,7 @@ let
     text = ''
       export TMUX_OIL_SHARED_CONFIG=${./editor/files/shared.lua}
       export TMUX_OIL_TREE_MENU_CONFIG=${./editor/files/tree-menu-specific.lua}
-      export TMUX_OIL_BUILD='JACK10-nix-config ${configRevision} - tmux ${tmux.version}${tmuxSource}'
+      export TMUX_OIL_BUILD='${configSource} - tmux ${tmux.version}${tmuxSource}'
     '' + builtins.readFile ../scripts/tmux-oil;
   };
 in {

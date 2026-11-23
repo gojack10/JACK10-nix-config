@@ -11,9 +11,9 @@
 
   outputs = { self, nixpkgs, home-manager, ... }:
     let
-      # This configuration's own commit, shown in tmux-oil's usage header;
-      # "-dirty" when built from a working tree with uncommitted edits.
-      configRevision = self.shortRev or self.dirtyShortRev or "unknown";
+      # This configuration's GitHub source and commit, shown in tmux-oil's usage
+      # header; "-dirty" when built from a working tree with uncommitted edits.
+      configSource = "gojack10/JACK10-nix-config@${self.shortRev or self.dirtyShortRev or "unknown"}";
 
       # Machine-specific settings
       # Each machine has a `system` field and optional font/sway overrides.
@@ -139,7 +139,7 @@
         in home-manager.lib.homeManagerConfiguration {
           inherit pkgs;
           extraSpecialArgs = {
-            inherit hostname settings configRevision;
+            inherit hostname settings configSource;
             inherit (settings) fontSize fontSizeFoot fontSizeWaybar useSystemSway;
           };
           modules = sharedModules ++ platformModules;
@@ -162,7 +162,7 @@
                 useUserPackages = true;
                 extraSpecialArgs = {
                   hostname = "10top";
-                  inherit settings configRevision;
+                  inherit settings configSource;
                   inherit (settings) fontSize fontSizeFoot fontSizeWaybar useSystemSway;
                 };
                 users.jack.imports = minimalSharedModules ++ linuxModules;

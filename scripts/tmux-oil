@@ -2158,8 +2158,11 @@ end
 -- - ROOM: derived from the rows above; see room_row.
 -- A centred title and build line sit above the grid: $TMUX_OIL_BUILD (the
 -- config and tmux revisions Nix built this from) and this nvim's version.
--- The split is never focused, and quitting the session window closes it
--- first, so :q, :wq and <CR> still end the popup. Test runs draw no footer.
+-- Ctrl-W j or a click moves into the split to select and yank its text; it
+-- holds still while the cursor is there. Quitting either window ends the
+-- popup: the session window closes the split first, so :q, :wq and <CR>
+-- still exit, and :q in the split quits from the session window. Test runs
+-- draw no footer.
 local usage = {}
 M.usage = usage
 local DIM, TEXT = "TmuxOilQuotaDim", "TmuxOilMeta"
@@ -2371,10 +2374,9 @@ end
 M.usage_groups = usage_groups
 
 local function usage_close()
-  if usage.win and vim.api.nvim_win_is_valid(usage.win) then
-    pcall(vim.api.nvim_win_close, usage.win, true)
-  end
+  local win = usage.win
   usage.win = nil
+  if win and vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
 end
 
 -- Groups sit in a grid, USAGE_GAP apart, each column as wide as its widest
@@ -2439,6 +2441,8 @@ M.usage_lines = usage_lines
 
 local function usage_draw()
   if usage.quitting or not (M.win and vim.api.nvim_win_is_valid(M.win)) then return end
+  -- Hold still under the cursor so a selection doesn't move while yanking.
+  if usage.win and vim.api.nvim_get_current_win() == usage.win then return end
   local seconds, microseconds = vim.uv.gettimeofday()
   local groups = usage_groups(seconds * 1000 + math.floor(microseconds / 1000))
   if #groups == 0 then return usage_close() end
@@ -2491,13 +2495,28 @@ end
 local function usage_start()
   if usage.timer or vim.env.TMUX_OIL_TEST_LUA then return end
   local group = vim.api.nvim_create_augroup("tmux_oil_usage", { clear = true })
-  vim.api.nvim_create_autocmd("WinEnter", {
+  -- Leaving the split catches it up at once rather than on the next tick.
+  vim.api.nvim_create_autocmd("WinEnter", { group = group, callback = usage_tick })
+  -- :q (or ZZ, Ctrl-W q) inside the split quits as if typed in the session
+  -- window, so unsaved session edits still refuse it.
+  vim.api.nvim_create_autocmd("WinClosed", {
     group = group,
-    callback = function()
-      if usage.win and vim.api.nvim_get_current_win() == usage.win
-          and M.win and vim.api.nvim_win_is_valid(M.win) then
-        vim.api.nvim_set_current_win(M.win)
+    callback = function(args)
+      if not usage.win or tonumber(args.match) ~= usage.win
+          or vim.api.nvim_get_current_win() ~= usage.win then
+        return
       end
+      usage.win = nil
+      vim.schedule(function()
+        if not (M.win and vim.api.nvim_win_is_valid(M.win)) then return end
+        vim.api.nvim_set_current_win(M.win)
+        if vim.bo[M.buf].modified then
+          vim.notify("E37: No write since last change (add ! to override)", vim.log.levels.ERROR)
+          usage_tick()
+        else
+          vim.cmd("quit")
+        end
+      end)
     end,
   })
   vim.api.nvim_create_autocmd("QuitPre", {

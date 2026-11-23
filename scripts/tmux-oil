@@ -23,13 +23,6 @@ config_dir="$(dirname "$0")/../modules/editor/files"
 : "${TMUX_OIL_TREE_MENU_CONFIG:=$config_dir/tree-menu-specific.lua}"
 export TMUX_OIL_SHARED_CONFIG TMUX_OIL_TREE_MENU_CONFIG
 
-# Usage footer feed. Nix supplies the packaged script; direct repository
-# launches use the sibling copy. Test runs get no footer unless they set it.
-if [ -z "${TMUX_OIL_TEST_LUA-}" ]; then
-  : "${TMUX_OIL_USAGE=$(dirname "$0")/agent-usage}"
-fi
-export TMUX_OIL_USAGE="${TMUX_OIL_USAGE-}"
-
 TMUX_OIL_INIT=$(awk '
   /^# __TMUX_OIL_LUA_BEGIN__$/ { emit=1; next }
   /^# __TMUX_OIL_LUA_END__$/ { exit }
@@ -2154,31 +2147,226 @@ function M.jump()
   vim.cmd("q!")
 end
 
--- Usage footer: every agent's plan-quota rows, pinned in a split under the
--- sessions. $TMUX_OIL_USAGE --watch (scripts/agent-usage) prints one JSON
--- array of groups (arrays of SGR-styled rows) per second and exits when its
--- stdin closes. The split is never focused, and quitting the session window
--- closes it first, so :q, :wq and <CR> still end the popup. Tests leave
--- TMUX_OIL_USAGE unset.
+-- Usage footer: every agent's plan-quota rows in Pi's footer row format,
+-- pinned in a split under the sessions. This nvim reads the reading each
+-- agent already saves and redraws once a second, so the footer is part of
+-- the first frame:
+-- - CODEX: ~/.pi/agent/codex-usage-state.json, pooled per plan the way Pi's
+--   quotaBuckets does (extensions/codex-quota-extension/store.ts).
+-- - CLAUDE: the /usage answer Claude Code saves in ~/.claude.json.
+-- - GEMINI: the reading agy's status line saves (~/.claude/quota-rows.js).
+-- - ROOM: derived from the rows above; see room_row.
+-- The split is never focused, and quitting the session window closes it
+-- first, so :q, :wq and <CR> still end the popup. Test runs draw no footer.
 local usage = {}
 M.usage = usage
+local DIM, TEXT = "TmuxOilQuotaDim", "TmuxOilMeta"
 
-local sgr_groups = {
-  ["2"] = "TmuxOilQuotaDim", ["31"] = "TmuxOilRed", ["32"] = "TmuxOilGreen", ["33"] = "TmuxOilYellow",
-}
-local function sgr_chunks(text)
-  local chunks, group, offset = {}, "TmuxOilMeta", 1
-  while offset <= #text do
-    local first, last, code = text:find("\27%[([%d;]*)m", offset)
-    local plain = text:sub(offset, first and first - 1 or #text)
-    if plain ~= "" then chunks[#chunks + 1] = { plain, group } end
-    if not first then break end
-    group = sgr_groups[code] or "TmuxOilMeta"
-    offset = last + 1
-  end
-  return chunks
+local function read_json(path)
+  local file = io.open(path, "rb")
+  if not file then return nil end
+  local text = file:read("*a")
+  file:close()
+  local ok, value = pcall(vim.json.decode, text, { luanil = { object = true, array = true } })
+  return ok and type(value) == "table" and value or nil
 end
-M.sgr_chunks = sgr_chunks
+
+-- Epoch milliseconds from an ISO 8601 time with Z or a ±HH:MM offset.
+local function iso_ms(text)
+  local y, mo, d, h, mi, s, zone =
+    tostring(text):match("^(%d+)-(%d+)-(%d+)T(%d+):(%d+):([%d.]+)(.*)$")
+  if not y then return nil end
+  y, mo = tonumber(y), tonumber(mo)
+  if mo <= 2 then y = y - 1 end
+  local era = math.floor(y / 400)
+  local yoe = y - era * 400
+  local doy = math.floor((153 * ((mo + 9) % 12) + 2) / 5) + tonumber(d) - 1
+  local days = era * 146097 + yoe * 365 + math.floor(yoe / 4) - math.floor(yoe / 100) + doy - 719468
+  local seconds = ((days * 24 + tonumber(h)) * 60 + tonumber(mi)) * 60 + tonumber(s)
+  local sign, zh, zm = zone:match("^([+-])(%d%d):?(%d%d)$")
+  if sign then
+    seconds = seconds - (sign == "+" and 1 or -1) * (tonumber(zh) * 3600 + tonumber(zm) * 60)
+  end
+  return seconds * 1000
+end
+
+-- Pi's formatFooterCountdown: D:H:M:S, zero units dropped, bare 0S.
+local function countdown(milliseconds)
+  local total, parts = math.max(0, math.ceil(milliseconds / 1000)), {}
+  for _, unit in ipairs({ { 86400, "D" }, { 3600, "H" }, { 60, "M" }, { 1, "S" } }) do
+    local value = math.floor(total / unit[1])
+    total = total % unit[1]
+    if value > 0 then parts[#parts + 1] = value .. unit[2] end
+  end
+  return #parts > 0 and table.concat(parts, ":") or "0S"
+end
+
+-- One footer row: dim label, 10-cell bar (yellow under 30%, red under 15%
+-- remaining), percent remaining marked "~" when inferred, dim suffix.
+local function quota_row(label, remaining, inferred, suffix)
+  remaining = math.max(0, math.min(100, remaining))
+  local filled = math.floor(remaining / 10 + 0.5)
+  local color = remaining < 15 and "TmuxOilRed" or remaining < 30 and "TmuxOilYellow" or TEXT
+  return {
+    { label, DIM },
+    { string.rep("█", filled) .. string.rep("░", 10 - filled), color },
+    { (inferred and "~" or " ") .. string.format("%5.1f%%", remaining) .. suffix, DIM },
+  }
+end
+
+-- Pi's quotaBuckets + renderQuotaLines: accounts pooled by plan (PLUS, PRO);
+-- remaining is the members' average; refills are summed per reset time.
+local function codex_rows(now, windows)
+  local state, rows = read_json(vim.env.HOME .. "/.pi/agent/codex-usage-state.json"), {}
+  for _, bucket in ipairs({ "PLUS", "PRO" }) do
+    local members = {}
+    for _, account in ipairs(state and state.accounts or {}) do
+      local plan = tostring(account.plan or ""):lower()
+      if (plan:find("plus", 1, true) and "PLUS" or plan:sub(1, 3) == "pro" and "PRO") == bucket then
+        members[#members + 1] = account
+      end
+    end
+    for _, minutes in ipairs({ 300, 10080 }) do
+      local remaining, samples, refills, verifying, blocked = 0, 0, {}, false, true
+      for _, account in ipairs(members) do
+        local own, exhausted = nil, false
+        for _, window in ipairs(account.windows or {}) do
+          local live = window.resetAt * 1000 > now
+          if window.minutes == minutes then own = window end
+          if (window.minutes == minutes or window.minutes == 10080) and live and window.pctUsed >= 100 then
+            exhausted = true
+          end
+        end
+        if own then
+          samples, remaining = samples + 1, remaining + 100 - own.pctUsed
+          blocked = blocked and exhausted
+          if own.resetAt * 1000 <= now then
+            verifying = true
+          elseif own.pctUsed > 0 then
+            refills[own.resetAt] = (refills[own.resetAt] or 0) + own.pctUsed
+          end
+        end
+      end
+      if samples > 0 then
+        local at = vim.tbl_keys(refills)
+        table.sort(at)
+        local schedule = {}
+        for index = 1, math.min(2, #at) do
+          local percent = refills[at[index]] / samples
+          schedule[index] = (index == 1 and "RESETS " or "- ") .. countdown(at[index] * 1000 - now) .. " "
+            .. (percent >= 100 and "FULL" or string.format("+%.0f%%", percent))
+        end
+        local suffix = table.concat(schedule, " ")
+        if suffix == "" and verifying then suffix = "RESETS ?" end
+        if blocked then suffix = suffix == "" and "BLOCKED" or suffix .. " BLOCKED" end
+        local window = minutes == 300 and "5H" or "WEEK"
+        rows[#rows + 1] = quota_row(string.format("CODEX %-4s %s", bucket, window), remaining / samples,
+          false, suffix ~= "" and "   " .. suffix or "")
+        windows[#windows + 1] = { agent = "CODEX", kind = window, remaining = remaining / samples,
+          reset_at = at[1] and at[1] * 1000 }
+      end
+    end
+  end
+  return rows
+end
+
+-- quota-rows.js's renderQuotaRows: a passed reset reads ~100% until a fresh
+-- reading; past ten minutes old the row says how old it is.
+local function reading_row(agent, label, kind, used, reset_at, fetched_at, now, windows)
+  local reset = reset_at ~= nil and reset_at <= now
+  local remaining = reset and 100 or 100 - used
+  local suffix = (reset_at and reset_at > now) and "   RESETS " .. countdown(reset_at - now) or ""
+  if fetched_at and now - fetched_at > 600000 then
+    suffix = suffix .. "   AS OF " .. countdown(math.floor((now - fetched_at) / 60000) * 60000) .. " AGO"
+  end
+  windows[#windows + 1] = { agent = agent, kind = kind, remaining = remaining, reset_at = reset_at }
+  return quota_row(label, remaining, reset, suffix)
+end
+
+local function claude_rows(now, windows)
+  local saved = (read_json(vim.env.HOME .. "/.claude.json") or {}).cachedUsageUtilization or {}
+  local limits, rows = (saved.utilization or {}).limits or {}, {}
+  for _, kind in ipairs({ "session", "weekly_all", "weekly_scoped" }) do
+    for _, limit in ipairs(limits) do
+      local model = ((limit.scope or {}).model or {}).display_name
+      if limit.kind == kind and type(limit.percent) == "number" and (kind ~= "weekly_scoped" or model) then
+        local label = kind == "session" and "CLAUDE 5H" or kind == "weekly_all" and "CLAUDE WEEK ALL"
+          or "CLAUDE " .. tostring(model):upper() .. " WEEK"
+        rows[#rows + 1] = reading_row("CLAUDE", label, kind == "session" and "5H" or "WEEK",
+          limit.percent, iso_ms(limit.resets_at), saved.fetchedAtMs, now, windows)
+      end
+    end
+  end
+  return rows
+end
+
+-- An untouched window's reset time slides with the clock, so it has none.
+local function gemini_rows(now, windows)
+  local saved, rows = read_json(vim.env.HOME .. "/.gemini/tmux-status/quota.json") or {}, {}
+  for _, window in ipairs({ { "5H", "gemini-5h" }, { "WEEK", "gemini-weekly" } }) do
+    local bucket = (saved.quota or {})[window[2]] or {}
+    local fraction = bucket.remaining_fraction
+    if type(fraction) == "number" then
+      rows[#rows + 1] = reading_row("GEMINI", "GEMINI " .. window[1], window[1], 100 - fraction * 100,
+        fraction < 1 and iso_ms(bucket.reset_time) or nil, saved.fetchedAt, now, windows)
+    end
+  end
+  return rows
+end
+
+-- ROOM: how fast each agent's plan can be spent, as a multiple of an even
+-- pace, and still last until its window resets: remaining fraction over the
+-- fraction of the window still to run. 1.00x is even, 2.00x means twice an
+-- even rate lasts, 0.50x means slow to half. Arithmetic on the readings,
+-- not a usage forecast. Each agent shows its tightest window of the kind;
+-- FULL means none of its windows of that kind is running down.
+local WINDOW_MS = { ["5H"] = 5 * 3600000, WEEK = 7 * 86400000 }
+local function room_row(kind, windows, now)
+  local row = { { "ROOM " .. kind, DIM } }
+  for index, agent in ipairs({ "CLAUDE", "GEMINI", "CODEX" }) do
+    local present, room = false, nil
+    for _, window in ipairs(windows) do
+      if window.agent == agent and window.kind == kind then
+        present = true
+        if window.reset_at and window.reset_at > now then
+          local value = window.remaining / 100 / ((window.reset_at - now) / WINDOW_MS[kind])
+          room = room and math.min(room, value) or value
+        end
+      end
+    end
+    local gap = index > 1 and "   " or ""
+    if present then
+      local text = room == nil and "FULL" or string.format(room >= 10 and "%.0f×" or "%.2f×", room)
+      local color = (room == nil or room >= 1) and "TmuxOilGreen" or room >= 0.5 and "TmuxOilYellow"
+        or "TmuxOilRed"
+      row[#row + 1] = { gap .. agent .. " ", DIM }
+      row[#row + 1] = { string.rep(" ", 5 - vim.fn.strchars(text)) .. text, color }
+    else
+      row[#row + 1] = { gap .. string.rep(" ", #agent + 6), DIM }
+    end
+  end
+  return row
+end
+
+-- Groups of rows (each a list of { text, highlight } chunks), every label
+-- padded to one width so bars line up across groups.
+local function usage_groups(now)
+  local windows = {}
+  local groups = {}
+  for _, rows in ipairs({ codex_rows(now, windows), claude_rows(now, windows), gemini_rows(now, windows) }) do
+    if #rows > 0 then groups[#groups + 1] = rows end
+  end
+  if #windows > 0 then groups[#groups + 1] = { room_row("WEEK", windows, now), room_row("5H", windows, now) } end
+  local width = 0
+  for _, rows in ipairs(groups) do
+    for _, row in ipairs(rows) do width = math.max(width, #row[1][1]) end
+  end
+  for _, rows in ipairs(groups) do
+    for _, row in ipairs(rows) do row[1][1] = row[1][1] .. string.rep(" ", width - #row[1][1] + 1) end
+  end
+  return groups
+end
+M.usage_groups = usage_groups
 
 local function usage_close()
   if usage.win and vim.api.nvim_win_is_valid(usage.win) then
@@ -2193,33 +2381,29 @@ end
 -- widest row seen so far, so ticking countdowns never shift the layout.
 local USAGE_GAP = 6
 local function usage_lines(groups, columns)
-  local rendered = {}
-  for index, group in ipairs(groups) do
-    rendered[index] = {}
-    for row, text in ipairs(type(group) == "table" and group or {}) do
-      local chunks = sgr_chunks(tostring(text))
-      local plain = {}
-      for _, chunk in ipairs(chunks) do plain[#plain + 1] = chunk[1] end
-      usage.width = math.max(usage.width or 0, vim.fn.strdisplaywidth(table.concat(plain)))
-      rendered[index][row] = chunks
+  for _, rows in ipairs(groups) do
+    for _, row in ipairs(rows) do
+      local width = 0
+      for _, chunk in ipairs(row) do width = width + vim.fn.strdisplaywidth(chunk[1]) end
+      usage.width = math.max(usage.width or 0, width)
     end
   end
   local width = usage.width or 0
-  local per_band = math.max(1, math.min(#rendered, math.floor((columns + USAGE_GAP) / (width + USAGE_GAP))))
+  local per_band = math.max(1, math.min(#groups, math.floor((columns + USAGE_GAP) / (width + USAGE_GAP))))
   local stride = width + USAGE_GAP
   local margin = math.max(0, math.floor((columns - (per_band * stride - USAGE_GAP)) / 2))
   local lines = {}
-  for first = 1, #rendered, per_band do
-    local last = math.min(#rendered, first + per_band - 1)
+  for first = 1, #groups, per_band do
+    local last = math.min(#groups, first + per_band - 1)
     if first > 1 then lines[#lines + 1] = {} end
     local height = 0
-    for index = first, last do height = math.max(height, #rendered[index]) end
+    for index = first, last do height = math.max(height, #groups[index]) end
     for row = 1, height do
       local line, col = {}, 0
       for index = first, last do
         local start = margin + (index - first) * stride
-        for _, chunk in ipairs(rendered[index][row] or {}) do
-          if start > col then line[#line + 1] = { string.rep(" ", start - col), "TmuxOilMeta" } end
+        for _, chunk in ipairs(groups[index][row] or {}) do
+          if start > col then line[#line + 1] = { string.rep(" ", start - col), TEXT } end
           col = math.max(col, start)
           line[#line + 1] = chunk
           col, start = col + vim.fn.strdisplaywidth(chunk[1]), 0
@@ -2233,9 +2417,10 @@ end
 M.usage_lines = usage_lines
 
 local function usage_draw()
-  local groups = usage.groups or {}
-  if #groups == 0 then return usage_close() end
   if usage.quitting or not (M.win and vim.api.nvim_win_is_valid(M.win)) then return end
+  local seconds, microseconds = vim.uv.gettimeofday()
+  local groups = usage_groups(seconds * 1000 + math.floor(microseconds / 1000))
+  if #groups == 0 then return usage_close() end
   if not (usage.buf and vim.api.nvim_buf_is_valid(usage.buf)) then
     usage.buf = vim.api.nvim_create_buf(false, true)
     usage.ns = vim.api.nvim_create_namespace("tmux-oil-usage")
@@ -2277,15 +2462,13 @@ local function usage_draw()
   vim.wo[M.win].fillchars = "stl: ,stlnc: "
 end
 
-local function usage_stop()
-  local process = usage.process
-  usage.process = nil
-  if process then pcall(function() process:kill(15) end) end
+local function usage_tick()
+  local ok, err = pcall(usage_draw)
+  if not ok then M.last_usage_error = tostring(err) end
 end
 
 local function usage_start()
-  local command = vim.env.TMUX_OIL_USAGE
-  if usage.process or not command or command == "" then return end
+  if usage.timer or vim.env.TMUX_OIL_TEST_LUA then return end
   local group = vim.api.nvim_create_augroup("tmux_oil_usage", { clear = true })
   vim.api.nvim_create_autocmd("WinEnter", {
     group = group,
@@ -2305,32 +2488,22 @@ local function usage_start()
       usage_close()
       vim.schedule(function()
         usage.quitting = false
-        pcall(usage_draw)
+        usage_tick()
       end)
     end,
   })
-  vim.api.nvim_create_autocmd("VimResized", { group = group, callback = function() pcall(usage_draw) end })
-  vim.api.nvim_create_autocmd("VimLeavePre", { group = group, callback = usage_stop })
-  local pending = ""
-  local ok, process = pcall(vim.system, { command, "--watch" }, {
-    stdin = true,
-    stdout = function(_, data)
-      if not data then return end
-      pending = pending .. data
-      local frame
-      for line in pending:gmatch("([^\n]*)\n") do frame = line end
-      pending = pending:match("[^\n]*$")
-      if not frame then return end
-      vim.schedule(function()
-        local decoded, rows = pcall(vim.json.decode, frame)
-        if not decoded or type(rows) ~= "table" then return end
-        usage.groups = rows
-        local drawn, err = pcall(usage_draw)
-        if not drawn then M.last_usage_error = tostring(err) end
-      end)
+  -- Startup runs before the terminal reports its size; lay out again once it does.
+  vim.api.nvim_create_autocmd({ "UIEnter", "VimResized" }, { group = group, callback = usage_tick })
+  vim.api.nvim_create_autocmd("VimLeavePre", {
+    group = group,
+    callback = function()
+      if usage.timer and not usage.timer:is_closing() then usage.timer:close() end
     end,
-  }, function() usage.process = nil end)
-  if ok then usage.process = process else M.last_usage_error = tostring(process) end
+  })
+  usage_tick()
+  local _, microseconds = vim.uv.gettimeofday()
+  usage.timer = assert(vim.uv.new_timer())
+  usage.timer:start(1000 - math.floor(microseconds / 1000), 1000, vim.schedule_wrap(usage_tick))
 end
 
 function M.start()

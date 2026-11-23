@@ -1,14 +1,19 @@
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, configRevision, ... }:
 
 let
+  tmux = config.programs.tmux.package;
+  # The tmux build: a GitHub source names its owner/repo@commit (Jack's fork).
+  tmuxSource = lib.optionalString (tmux.src ? owner && tmux.src ? rev)
+    " ${tmux.src.owner}/${tmux.src.repo}@${lib.substring 0 7 tmux.src.rev}";
   tmuxOil = pkgs.writeShellApplication {
     name = "tmux-oil";
-    runtimeInputs = [ config.programs.tmux.package pkgs.neovim ];
+    runtimeInputs = [ tmux pkgs.neovim ];
     # Consume the same shared editor preferences as the regular Nix editor,
     # then apply only the tree-menu-specific profile to the session buffer.
     text = ''
       export TMUX_OIL_SHARED_CONFIG=${./editor/files/shared.lua}
       export TMUX_OIL_TREE_MENU_CONFIG=${./editor/files/tree-menu-specific.lua}
+      export TMUX_OIL_BUILD='JACK10-nix-config ${configRevision} - tmux ${tmux.version}${tmuxSource}'
     '' + builtins.readFile ../scripts/tmux-oil;
   };
 in {

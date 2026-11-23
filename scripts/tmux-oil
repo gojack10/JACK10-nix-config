@@ -2156,6 +2156,8 @@ end
 -- - CLAUDE: the /usage answer Claude Code saves in ~/.claude.json.
 -- - GEMINI: the reading agy's status line saves (~/.claude/quota-rows.js).
 -- - ROOM: derived from the rows above; see room_row.
+-- A centred title and build line sit above the grid: $TMUX_OIL_BUILD (the
+-- config and tmux revisions Nix built this from) and this nvim's version.
 -- The split is never focused, and quitting the session window closes it
 -- first, so :q, :wq and <CR> still end the popup. Test runs draw no footer.
 local usage = {}
@@ -2375,33 +2377,52 @@ local function usage_close()
   usage.win = nil
 end
 
--- Groups sit in a grid of equal columns, USAGE_GAP apart and centred as a
--- whole, wrapping into another band (a blank row apart) when they don't all
--- fit, so a wrapped group lines up under the one above. Columns use the
--- widest row seen so far, so ticking countdowns never shift the layout.
+-- Groups sit in a grid, USAGE_GAP apart, each column as wide as its widest
+-- group, with as many columns as fit; the grid is centred on its actual
+-- width so it shares an axis with the centred header. Groups that don't fit
+-- wrap into another band (a blank row apart) under the column above. Widths
+-- keep the widest row seen so far, so ticking countdowns never shift it.
 local USAGE_GAP = 6
 local function usage_lines(groups, columns)
-  for _, rows in ipairs(groups) do
+  usage.widths = usage.widths or {}
+  for index, rows in ipairs(groups) do
     for _, row in ipairs(rows) do
       local width = 0
       for _, chunk in ipairs(row) do width = width + vim.fn.strdisplaywidth(chunk[1]) end
-      usage.width = math.max(usage.width or 0, width)
+      usage.widths[index] = math.max(usage.widths[index] or 0, width)
     end
   end
-  local width = usage.width or 0
-  local per_band = math.max(1, math.min(#groups, math.floor((columns + USAGE_GAP) / (width + USAGE_GAP))))
-  local stride = width + USAGE_GAP
-  local margin = math.max(0, math.floor((columns - (per_band * stride - USAGE_GAP)) / 2))
+  local per_band, widths, total = #groups + 1, nil, nil
+  repeat
+    per_band, widths, total = per_band - 1, {}, -USAGE_GAP
+    for index = 1, #groups do
+      local column = (index - 1) % per_band + 1
+      widths[column] = math.max(widths[column] or 0, usage.widths[index])
+    end
+    for _, width in ipairs(widths) do total = total + width + USAGE_GAP end
+  until total <= columns or per_band == 1
+  local starts, at = {}, math.max(0, math.floor((columns - total) / 2))
+  for column, width in ipairs(widths) do starts[column], at = at, at + width + USAGE_GAP end
+
   local lines = {}
+  local function centred(text, group)
+    local pad = math.max(0, math.floor((columns - vim.fn.strdisplaywidth(text)) / 2))
+    lines[#lines + 1] = { { string.rep(" ", pad) .. text, group } }
+  end
+  local version = vim.version()
+  local build = vim.env.TMUX_OIL_BUILD
+  centred("AGENT PLAN QUOTA", "TmuxOilGroup")
+  centred((build and build ~= "" and build .. " - " or "")
+    .. string.format("nvim %d.%d.%d", version.major, version.minor, version.patch), DIM)
   for first = 1, #groups, per_band do
+    lines[#lines + 1] = {}
     local last = math.min(#groups, first + per_band - 1)
-    if first > 1 then lines[#lines + 1] = {} end
     local height = 0
     for index = first, last do height = math.max(height, #groups[index]) end
     for row = 1, height do
       local line, col = {}, 0
       for index = first, last do
-        local start = margin + (index - first) * stride
+        local start = starts[index - first + 1]
         for _, chunk in ipairs(groups[index][row] or {}) do
           if start > col then line[#line + 1] = { string.rep(" ", start - col), TEXT } end
           col = math.max(col, start)

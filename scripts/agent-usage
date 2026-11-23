@@ -53,7 +53,7 @@ const codexRows = (now) =>
 
 const LABEL = /^\x1b\[2m(.*?) *\x1b\[0m/;
 // Rows grouped by quota (CODEX, CLAUDE, GEMINI: the label's first word),
-// labels padded within each group so its bars line up.
+// every label padded to one width so bars line up across groups too.
 const usageGroups = (now = Date.now()) => {
 	const groups = [];
 	for (const row of [
@@ -64,10 +64,10 @@ const usageGroups = (now = Date.now()) => {
 		if (groups.at(-1)?.key !== key) groups.push({ key, rows: [] });
 		groups.at(-1).rows.push(row);
 	}
-	return groups.map(({ rows }) => {
-		const width = Math.max(0, ...rows.map((row) => row.match(LABEL)?.[1].length ?? 0));
-		return rows.map((row) => row.replace(LABEL, (_, label) => `${SGR.dim}${label.padEnd(width)} \x1b[0m`));
-	});
+	const width = Math.max(0, ...groups.flatMap(({ rows }) => rows.map((row) => row.match(LABEL)?.[1].length ?? 0)));
+	return groups.map(({ rows }) =>
+		rows.map((row) => row.replace(LABEL, (_, label) => `${SGR.dim}${label.padEnd(width)} \x1b[0m`)),
+	);
 };
 
 if (process.argv[2] === "--watch") {

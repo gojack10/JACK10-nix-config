@@ -2185,11 +2185,11 @@ local function usage_close()
   usage.win = nil
 end
 
--- Groups sit side by side in equal slots across the width, each centred in
--- its slot, wrapping into another band (a blank row apart) when they don't
--- all fit. Slots use the widest row seen so far, so ticking countdowns that
--- change a row's length never shift the layout.
-local USAGE_GAP = 4
+-- Groups sit in a grid of equal columns, USAGE_GAP apart and centred as a
+-- whole, wrapping into another band (a blank row apart) when they don't all
+-- fit, so a wrapped group lines up under the one above. Columns use the
+-- widest row seen so far, so ticking countdowns never shift the layout.
+local USAGE_GAP = 6
 local function usage_lines(groups, columns)
   local rendered = {}
   for index, group in ipairs(groups) do
@@ -2204,8 +2204,8 @@ local function usage_lines(groups, columns)
   end
   local width = usage.width or 0
   local per_band = math.max(1, math.min(#rendered, math.floor((columns + USAGE_GAP) / (width + USAGE_GAP))))
-  local slot = math.floor(columns / per_band)
-  local inset = math.max(0, math.floor((slot - width) / 2))
+  local stride = width + USAGE_GAP
+  local margin = math.max(0, math.floor((columns - (per_band * stride - USAGE_GAP)) / 2))
   local lines = {}
   for first = 1, #rendered, per_band do
     local last = math.min(#rendered, first + per_band - 1)
@@ -2215,7 +2215,7 @@ local function usage_lines(groups, columns)
     for row = 1, height do
       local line, col = {}, 0
       for index = first, last do
-        local start = (index - first) * slot + inset
+        local start = margin + (index - first) * stride
         for _, chunk in ipairs(rendered[index][row] or {}) do
           if start > col then line[#line + 1] = { string.rep(" ", start - col), "TmuxOilMeta" } end
           col = math.max(col, start)

@@ -9,6 +9,7 @@ let
     text = ''
       export TMUX_OIL_SHARED_CONFIG=${./editor/files/shared.lua}
       export TMUX_OIL_TREE_MENU_CONFIG=${./editor/files/tree-menu-specific.lua}
+      export TMUX_OIL_USAGE=${../scripts/agent-usage}
     '' + builtins.readFile ../scripts/tmux-oil;
   };
 in {
@@ -83,6 +84,13 @@ in {
 
   home.file.".local/bin/pi-push" = {
     source = ../scripts/pi-push;
+    executable = true;
+    force = true;
+  };
+
+  # Every agent's plan-quota rows; tmux-oil's footer runs it with --watch.
+  home.file.".local/bin/agent-usage" = {
+    source = ../scripts/agent-usage;
     executable = true;
     force = true;
   };

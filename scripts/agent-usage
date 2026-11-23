@@ -1,0 +1,77 @@
+#!/usr/bin/env node
+// Every coding agent's plan-quota rows in one block, each drawn by the
+// renderer of the footer that already shows it:
+// - CODEX: Pi's footer (codex-quota-extension quotaBuckets +
+//   context-session-footer renderQuotaLines), from the usage state Pi saves.
+// - CLAUDE: ~/.claude/quota-rows.js, from the usage answer Claude Code saves
+//   in ~/.claude.json (also starts its background /usage refresh when stale).
+// - GEMINI / AGY 3P: ~/.claude/quota-rows.js, from the reading agy's status
+//   line saves (~/.gemini/tmux-status/quota.json).
+// Labels are re-padded so every bar starts in one column.
+//
+// `agent-usage` prints the rows once. `agent-usage --watch` prints one JSON
+// array of rows per second until stdin closes; tmux-oil's footer reads it.
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+
+const home = os.homedir();
+const PI = path.join(home, ".pi", "agent");
+const QUOTA_ROWS = process.env.AGY_QUOTA_ROWS ?? path.join(home, ".claude", "quota-rows.js");
+
+const { quotaBuckets, parseUsageState } = await import(
+	pathToFileURL(path.join(PI, "extensions", "codex-quota-extension", "store.ts")).href
+);
+const { renderQuotaLines } = await import(
+	pathToFileURL(path.join(PI, "extensions", "context-session-footer", "quota.ts")).href
+);
+const { renderQuotaRows, claudeQuotaRows, savedAgyQuotaRows } = createRequire(import.meta.url)(QUOTA_ROWS);
+
+// Same escapes as quota-rows.js, so both renderers parse alike downstream.
+const SGR = { dim: "\x1b[2m", warning: "\x1b[33m", error: "\x1b[31m" };
+const theme = { fg: (color, text) => (SGR[color] ? `${SGR[color]}${text}\x1b[0m` : text) };
+
+const attempt = (rows) => {
+	try {
+		return rows();
+	} catch {
+		return [];
+	}
+};
+
+const codexRows = (now) =>
+	renderQuotaLines(
+		quotaBuckets(parseUsageState(JSON.parse(fs.readFileSync(path.join(PI, "codex-usage-state.json"), "utf8"))), now),
+		Infinity,
+		theme,
+		now,
+		(text) => text.length,
+		(text) => text,
+	);
+
+const LABEL = /^\x1b\[2m(.*?) *\x1b\[0m/;
+const usageRows = (now = Date.now()) => {
+	const rows = [
+		...attempt(() => codexRows(now)),
+		...attempt(() => renderQuotaRows([...claudeQuotaRows(undefined, now), ...savedAgyQuotaRows()], now)),
+	];
+	const width = Math.max(0, ...rows.map((row) => row.match(LABEL)?.[1].length ?? 0));
+	return rows.map((row) => row.replace(LABEL, (_, label) => `${SGR.dim}${label.padEnd(width)} \x1b[0m`));
+};
+
+if (process.argv[2] === "--watch") {
+	// Ends with its reader: stdin closing, a broken stdout, or being orphaned.
+	process.stdin.on("end", () => process.exit(0)).resume();
+	process.stdout.on("error", () => process.exit(0));
+	const tick = () => {
+		if (process.ppid === 1) process.exit(0);
+		process.stdout.write(`${JSON.stringify(usageRows())}\n`);
+		setTimeout(tick, 1000 - (Date.now() % 1000));
+	};
+	tick();
+} else {
+	const rows = usageRows();
+	if (rows.length) process.stdout.write(`${rows.join("\n")}\n`);
+}

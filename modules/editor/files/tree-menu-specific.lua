@@ -20,3 +20,5 @@ hl(0, "TmuxOilYellow", { fg = "#ffff00", ctermfg = 11 })
 hl(0, "TmuxOilRed", { fg = "#ff5f5f", ctermfg = 9 })
 hl(0, "TmuxOilClaude", { fg = "#d77757", ctermfg = 173 })
 hl(0, "TmuxOilAntigravity", { fg = "#4285f4", ctermfg = 69 })
+-- Usage footer labels, matching the dim text of the agents' own footers.
+hl(0, "TmuxOilQuotaDim", { fg = "#8a8a8a", ctermfg = 245 })

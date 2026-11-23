@@ -23,6 +23,13 @@ config_dir="$(dirname "$0")/../modules/editor/files"
 : "${TMUX_OIL_TREE_MENU_CONFIG:=$config_dir/tree-menu-specific.lua}"
 export TMUX_OIL_SHARED_CONFIG TMUX_OIL_TREE_MENU_CONFIG
 
+# Usage footer feed. Nix supplies the packaged script; direct repository
+# launches use the sibling copy. Test runs get no footer unless they set it.
+if [ -z "${TMUX_OIL_TEST_LUA-}" ]; then
+  : "${TMUX_OIL_USAGE=$(dirname "$0")/agent-usage}"
+fi
+export TMUX_OIL_USAGE="${TMUX_OIL_USAGE-}"
+
 TMUX_OIL_INIT=$(awk '
   /^# __TMUX_OIL_LUA_BEGIN__$/ { emit=1; next }
   /^# __TMUX_OIL_LUA_END__$/ { exit }
@@ -2147,9 +2154,139 @@ function M.jump()
   vim.cmd("q!")
 end
 
+-- Usage footer: every agent's plan-quota rows, pinned in a split under the
+-- sessions. $TMUX_OIL_USAGE --watch (scripts/agent-usage) prints one JSON
+-- array of SGR-styled rows per second and exits when its stdin closes. The
+-- split is never focused, and quitting the session window closes it first, so
+-- :q, :wq and <CR> still end the popup. Tests leave TMUX_OIL_USAGE unset.
+local usage = {}
+M.usage = usage
+
+local sgr_groups = { ["2"] = "TmuxOilQuotaDim", ["31"] = "TmuxOilRed", ["33"] = "TmuxOilYellow" }
+local function sgr_chunks(text)
+  local chunks, group, offset = {}, "TmuxOilMeta", 1
+  while offset <= #text do
+    local first, last, code = text:find("\27%[([%d;]*)m", offset)
+    local plain = text:sub(offset, first and first - 1 or #text)
+    if plain ~= "" then chunks[#chunks + 1] = { plain, group } end
+    if not first then break end
+    group = sgr_groups[code] or "TmuxOilMeta"
+    offset = last + 1
+  end
+  return chunks
+end
+M.sgr_chunks = sgr_chunks
+
+local function usage_close()
+  if usage.win and vim.api.nvim_win_is_valid(usage.win) then
+    pcall(vim.api.nvim_win_close, usage.win, true)
+  end
+  usage.win = nil
+end
+
+local function usage_draw()
+  local rows = usage.rows or {}
+  if #rows == 0 then return usage_close() end
+  if usage.quitting or not (M.win and vim.api.nvim_win_is_valid(M.win)) then return end
+  if not (usage.buf and vim.api.nvim_buf_is_valid(usage.buf)) then
+    usage.buf = vim.api.nvim_create_buf(false, true)
+    usage.ns = vim.api.nvim_create_namespace("tmux-oil-usage")
+  end
+  local lines, marks = {}, {}
+  for index, row in ipairs(rows) do
+    local parts, col = {}, 0
+    for _, chunk in ipairs(sgr_chunks(tostring(row))) do
+      parts[#parts + 1] = chunk[1]
+      marks[#marks + 1] = { index - 1, col, col + #chunk[1], chunk[2] }
+      col = col + #chunk[1]
+    end
+    lines[index] = table.concat(parts)
+  end
+  vim.bo[usage.buf].modifiable = true
+  vim.api.nvim_buf_set_lines(usage.buf, 0, -1, false, lines)
+  vim.bo[usage.buf].modifiable = false
+  vim.api.nvim_buf_clear_namespace(usage.buf, usage.ns, 0, -1)
+  for _, mark in ipairs(marks) do
+    vim.api.nvim_buf_set_extmark(usage.buf, usage.ns, mark[1], mark[2],
+      { end_col = mark[3], hl_group = mark[4] })
+  end
+  if usage.win and vim.api.nvim_win_is_valid(usage.win) then
+    if vim.api.nvim_win_get_height(usage.win) ~= #rows then
+      vim.api.nvim_win_set_height(usage.win, #rows)
+    end
+    return
+  end
+  usage.win = vim.api.nvim_open_win(usage.buf, false, { split = "below", win = -1, height = #rows })
+  for option, value in pairs({
+    winfixheight = true, winfixbuf = true, number = false, relativenumber = false,
+    signcolumn = "no", foldcolumn = "0", cursorline = false, wrap = false, list = false,
+  }) do
+    vim.wo[usage.win][option] = value
+  end
+  -- A window above a split always has a status line; leave it a blank gap.
+  vim.wo[M.win].statusline = "%#Normal#"
+  vim.wo[M.win].fillchars = "stl: ,stlnc: "
+end
+
+local function usage_stop()
+  local process = usage.process
+  usage.process = nil
+  if process then pcall(function() process:kill(15) end) end
+end
+
+local function usage_start()
+  local command = vim.env.TMUX_OIL_USAGE
+  if usage.process or not command or command == "" then return end
+  local group = vim.api.nvim_create_augroup("tmux_oil_usage", { clear = true })
+  vim.api.nvim_create_autocmd("WinEnter", {
+    group = group,
+    callback = function()
+      if usage.win and vim.api.nvim_get_current_win() == usage.win
+          and M.win and vim.api.nvim_win_is_valid(M.win) then
+        vim.api.nvim_set_current_win(M.win)
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd("QuitPre", {
+    group = group,
+    callback = function()
+      if vim.api.nvim_get_current_win() ~= M.win then return end
+      -- Reopened on the next loop only if the quit was refused (E37 and the like).
+      usage.quitting = true
+      usage_close()
+      vim.schedule(function()
+        usage.quitting = false
+        pcall(usage_draw)
+      end)
+    end,
+  })
+  vim.api.nvim_create_autocmd("VimLeavePre", { group = group, callback = usage_stop })
+  local pending = ""
+  local ok, process = pcall(vim.system, { command, "--watch" }, {
+    stdin = true,
+    stdout = function(_, data)
+      if not data then return end
+      pending = pending .. data
+      local frame
+      for line in pending:gmatch("([^\n]*)\n") do frame = line end
+      pending = pending:match("[^\n]*$")
+      if not frame then return end
+      vim.schedule(function()
+        local decoded, rows = pcall(vim.json.decode, frame)
+        if not decoded or type(rows) ~= "table" then return end
+        usage.rows = rows
+        local drawn, err = pcall(usage_draw)
+        if not drawn then M.last_usage_error = tostring(err) end
+      end)
+    end,
+  }, function() usage.process = nil end)
+  if ok then usage.process = process else M.last_usage_error = tostring(process) end
+end
+
 function M.start()
   M.cleanup()
   M.buf = vim.api.nvim_get_current_buf()
+  M.win = vim.api.nvim_get_current_win()
   M.baseline = M.snapshot()
   M.ns = M.ns or vim.api.nvim_create_namespace("tmux-oil-live")
 
@@ -2201,6 +2338,7 @@ function M.start()
   vim.api.nvim_buf_create_user_command(M.buf, "TmuxOilRefresh", M.refresh, { force = true })
   vim.api.nvim_buf_create_user_command(M.buf, "TmuxOilAcceptLive", M.accept_live, { force = true })
   M.resume_polling()
+  usage_start()
 end
 
 if vim.env.TMUX_OIL_TEST_LUA then

@@ -273,6 +273,11 @@ in {
 
       # Fast Rust-backed HF downloads (XET transfer backend)
       export HF_XET_HIGH_PERFORMANCE=1
+
+      # zsh's `log` builtin (the watch-list login reporter) shadows Apple's
+      # unified-log CLI, so `log show ...` fails with "too many arguments".
+      # A function outranks the builtin and survives shell snapshots.
+      log() { /usr/bin/log "$@" }
       ''}
 
       # Git helper functions (replaces oh-my-zsh git lib)

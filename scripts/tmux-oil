@@ -2163,7 +2163,9 @@ end
 local usage = {}
 M.usage = usage
 
-local sgr_groups = { ["2"] = "TmuxOilQuotaDim", ["31"] = "TmuxOilRed", ["33"] = "TmuxOilYellow" }
+local sgr_groups = {
+  ["2"] = "TmuxOilQuotaDim", ["31"] = "TmuxOilRed", ["32"] = "TmuxOilGreen", ["33"] = "TmuxOilYellow",
+}
 local function sgr_chunks(text)
   local chunks, group, offset = {}, "TmuxOilMeta", 1
   while offset <= #text do

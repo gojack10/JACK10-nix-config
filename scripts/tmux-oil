@@ -2156,9 +2156,10 @@ end
 
 -- Usage footer: every agent's plan-quota rows, pinned in a split under the
 -- sessions. $TMUX_OIL_USAGE --watch (scripts/agent-usage) prints one JSON
--- array of SGR-styled rows per second and exits when its stdin closes. The
--- split is never focused, and quitting the session window closes it first, so
--- :q, :wq and <CR> still end the popup. Tests leave TMUX_OIL_USAGE unset.
+-- array of groups (arrays of SGR-styled rows) per second and exits when its
+-- stdin closes. The split is never focused, and quitting the session window
+-- closes it first, so :q, :wq and <CR> still end the popup. Tests leave
+-- TMUX_OIL_USAGE unset.
 local usage = {}
 M.usage = usage
 
@@ -2184,18 +2185,64 @@ local function usage_close()
   usage.win = nil
 end
 
+-- Groups sit side by side in equal slots across the width, each centred in
+-- its slot, wrapping into another band (a blank row apart) when they don't
+-- all fit. Slots use the widest row seen so far, so ticking countdowns that
+-- change a row's length never shift the layout.
+local USAGE_GAP = 4
+local function usage_lines(groups, columns)
+  local rendered = {}
+  for index, group in ipairs(groups) do
+    rendered[index] = {}
+    for row, text in ipairs(type(group) == "table" and group or {}) do
+      local chunks = sgr_chunks(tostring(text))
+      local plain = {}
+      for _, chunk in ipairs(chunks) do plain[#plain + 1] = chunk[1] end
+      usage.width = math.max(usage.width or 0, vim.fn.strdisplaywidth(table.concat(plain)))
+      rendered[index][row] = chunks
+    end
+  end
+  local width = usage.width or 0
+  local per_band = math.max(1, math.min(#rendered, math.floor((columns + USAGE_GAP) / (width + USAGE_GAP))))
+  local slot = math.floor(columns / per_band)
+  local inset = math.max(0, math.floor((slot - width) / 2))
+  local lines = {}
+  for first = 1, #rendered, per_band do
+    local last = math.min(#rendered, first + per_band - 1)
+    if first > 1 then lines[#lines + 1] = {} end
+    local height = 0
+    for index = first, last do height = math.max(height, #rendered[index]) end
+    for row = 1, height do
+      local line, col = {}, 0
+      for index = first, last do
+        local start = (index - first) * slot + inset
+        for _, chunk in ipairs(rendered[index][row] or {}) do
+          if start > col then line[#line + 1] = { string.rep(" ", start - col), "TmuxOilMeta" } end
+          col = math.max(col, start)
+          line[#line + 1] = chunk
+          col, start = col + vim.fn.strdisplaywidth(chunk[1]), 0
+        end
+      end
+      lines[#lines + 1] = line
+    end
+  end
+  return lines
+end
+M.usage_lines = usage_lines
+
 local function usage_draw()
-  local rows = usage.rows or {}
-  if #rows == 0 then return usage_close() end
+  local groups = usage.groups or {}
+  if #groups == 0 then return usage_close() end
   if usage.quitting or not (M.win and vim.api.nvim_win_is_valid(M.win)) then return end
   if not (usage.buf and vim.api.nvim_buf_is_valid(usage.buf)) then
     usage.buf = vim.api.nvim_create_buf(false, true)
     usage.ns = vim.api.nvim_create_namespace("tmux-oil-usage")
   end
+  local rows = usage_lines(groups, vim.o.columns)
   local lines, marks = {}, {}
-  for index, row in ipairs(rows) do
+  for index, chunks in ipairs(rows) do
     local parts, col = {}, 0
-    for _, chunk in ipairs(sgr_chunks(tostring(row))) do
+    for _, chunk in ipairs(chunks) do
       parts[#parts + 1] = chunk[1]
       marks[#marks + 1] = { index - 1, col, col + #chunk[1], chunk[2] }
       col = col + #chunk[1]
@@ -2260,6 +2307,7 @@ local function usage_start()
       end)
     end,
   })
+  vim.api.nvim_create_autocmd("VimResized", { group = group, callback = function() pcall(usage_draw) end })
   vim.api.nvim_create_autocmd("VimLeavePre", { group = group, callback = usage_stop })
   local pending = ""
   local ok, process = pcall(vim.system, { command, "--watch" }, {
@@ -2274,7 +2322,7 @@ local function usage_start()
       vim.schedule(function()
         local decoded, rows = pcall(vim.json.decode, frame)
         if not decoded or type(rows) ~= "table" then return end
-        usage.rows = rows
+        usage.groups = rows
         local drawn, err = pcall(usage_draw)
         if not drawn then M.last_usage_error = tostring(err) end
       end)

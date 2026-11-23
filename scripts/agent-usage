@@ -5,12 +5,12 @@
 //   context-session-footer renderQuotaLines), from the usage state Pi saves.
 // - CLAUDE: ~/.claude/quota-rows.js, from the usage answer Claude Code saves
 //   in ~/.claude.json (also starts its background /usage refresh when stale).
-// - GEMINI / AGY 3P: ~/.claude/quota-rows.js, from the reading agy's status
-//   line saves (~/.gemini/tmux-status/quota.json).
-// Labels are re-padded so every bar starts in one column.
+// - GEMINI: ~/.claude/quota-rows.js, from the reading agy's status line
+//   saves (~/.gemini/tmux-status/quota.json).
 //
-// `agent-usage` prints the rows once. `agent-usage --watch` prints one JSON
-// array of rows per second until stdin closes; tmux-oil's footer reads it.
+// `agent-usage` prints the groups once, a blank line apart. `agent-usage
+// --watch` prints one JSON array of groups (arrays of rows) per second until
+// stdin closes; tmux-oil's footer lays them out.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -52,19 +52,22 @@ const codexRows = (now) =>
 	);
 
 const LABEL = /^\x1b\[2m(.*?) *\x1b\[0m/;
-const usageRows = (now = Date.now()) => {
-	const rows = [
+// Rows grouped by quota (CODEX, CLAUDE, GEMINI: the label's first word),
+// labels padded within each group so its bars line up.
+const usageGroups = (now = Date.now()) => {
+	const groups = [];
+	for (const row of [
 		...attempt(() => codexRows(now)),
 		...attempt(() => renderQuotaRows([...claudeQuotaRows(undefined, now), ...savedAgyQuotaRows()], now)),
-	];
-	const width = Math.max(0, ...rows.map((row) => row.match(LABEL)?.[1].length ?? 0));
-	// A blank row between quota groups (CODEX, CLAUDE, GEMINI, AGY 3P), keyed
-	// by the label's first word.
-	const group = (row) => row.match(LABEL)?.[1].split(" ")[0];
-	return rows.flatMap((row, index) => [
-		...(index > 0 && group(row) !== group(rows[index - 1]) ? [""] : []),
-		row.replace(LABEL, (_, label) => `${SGR.dim}${label.padEnd(width)} \x1b[0m`),
-	]);
+	]) {
+		const key = row.match(LABEL)?.[1].split(" ")[0];
+		if (groups.at(-1)?.key !== key) groups.push({ key, rows: [] });
+		groups.at(-1).rows.push(row);
+	}
+	return groups.map(({ rows }) => {
+		const width = Math.max(0, ...rows.map((row) => row.match(LABEL)?.[1].length ?? 0));
+		return rows.map((row) => row.replace(LABEL, (_, label) => `${SGR.dim}${label.padEnd(width)} \x1b[0m`));
+	});
 };
 
 if (process.argv[2] === "--watch") {
@@ -73,11 +76,11 @@ if (process.argv[2] === "--watch") {
 	process.stdout.on("error", () => process.exit(0));
 	const tick = () => {
 		if (process.ppid === 1) process.exit(0);
-		process.stdout.write(`${JSON.stringify(usageRows())}\n`);
+		process.stdout.write(`${JSON.stringify(usageGroups())}\n`);
 		setTimeout(tick, 1000 - (Date.now() % 1000));
 	};
 	tick();
 } else {
-	const rows = usageRows();
-	if (rows.length) process.stdout.write(`${rows.join("\n")}\n`);
+	const groups = usageGroups();
+	if (groups.length) process.stdout.write(`${groups.map((rows) => rows.join("\n")).join("\n\n")}\n`);
 }

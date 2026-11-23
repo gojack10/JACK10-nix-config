@@ -974,7 +974,7 @@ local function state_agents(encoded)
   if type(state.agents) ~= "table" then return { pi = true } end
   local agents = {}
   for _, kind in ipairs(state.agents) do
-    if kind == "pi" or kind == "claude" then agents[kind] = true end
+    if kind == "pi" or kind == "claude" or kind == "antigravity" then agents[kind] = true end
   end
   return next(agents) and agents or nil
 end
@@ -1021,10 +1021,11 @@ local style_groups = {
   red = "TmuxOilRed",
 }
 
--- Badge drawn right after the status box, in this order when a session holds both.
+-- Badge drawn right after the status box, in this order when a session holds several.
 local agent_glyphs = {
   { kind = "pi", text = "π", group = "TmuxOilMeta" },
   { kind = "claude", text = "*", group = "TmuxOilClaude" },
+  { kind = "antigravity", text = "Λ", group = "TmuxOilAntigravity" },
 }
 
 local function agent_chunks(agents)

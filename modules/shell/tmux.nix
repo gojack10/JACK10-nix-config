@@ -34,7 +34,8 @@ let
   continuumSave = "#(${pkgs.tmuxPlugins.continuum}/share/tmux-plugins/continuum/scripts/continuum_save.sh)";
 
   # One entry per top-level agent chat, drawn like a tmux-oil row:
-  # [✓] done, [~] busy, [ ] idle; π Pi, * Claude. Pi and the Claude Code hook
+  # [✓] done, [~] busy, [ ] idle; π Pi, * Claude, Λ Antigravity. Pi, the Claude
+  # Code hook and the Antigravity CLI bridge (~/.gemini/hooks/tmux-status.mjs)
   # publish @pi_cache_state; sessions with @pi_subagent_parent_id are workers.
   agentState = "#{@pi_cache_state}";
   agentEntry = nameColour: lib.concatStrings [
@@ -42,6 +43,7 @@ let
     "#{?#{m:*\"agentDone\":true*,${agentState}},#[fg=green][✓],#[fg=white][ ]}}"
     "#{?#{m:*\"pi\"*,${agentState}},#[fg=white]π,}"
     "#{?#{m:*\"claude\"*,${agentState}},#[fg=colour173]*,}"
+    "#{?#{m:*\"antigravity\"*,${agentState}},#[fg=colour69]Λ,}"
     " #[fg=${nameColour}]#{session_name}#[fg=white]  "
   ];
   topLevel = entry: "#{?@pi_subagent_parent_id,,${entry}}";

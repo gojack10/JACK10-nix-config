@@ -58,7 +58,13 @@ const usageRows = (now = Date.now()) => {
 		...attempt(() => renderQuotaRows([...claudeQuotaRows(undefined, now), ...savedAgyQuotaRows()], now)),
 	];
 	const width = Math.max(0, ...rows.map((row) => row.match(LABEL)?.[1].length ?? 0));
-	return rows.map((row) => row.replace(LABEL, (_, label) => `${SGR.dim}${label.padEnd(width)} \x1b[0m`));
+	// A blank row between quota groups (CODEX, CLAUDE, GEMINI, AGY 3P), keyed
+	// by the label's first word.
+	const group = (row) => row.match(LABEL)?.[1].split(" ")[0];
+	return rows.flatMap((row, index) => [
+		...(index > 0 && group(row) !== group(rows[index - 1]) ? [""] : []),
+		row.replace(LABEL, (_, label) => `${SGR.dim}${label.padEnd(width)} \x1b[0m`),
+	]);
 };
 
 if (process.argv[2] === "--watch") {

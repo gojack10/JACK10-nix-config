@@ -115,6 +115,21 @@ in {
       # Use CSI-u for modified keys; bracketed paste bypasses key encoding.
       set -g extended-keys-format csi-u
 
+      # Antigravity CLI (agy) has no prompt stash and gives ctrl+g and ctrl+s
+      # one shared action, its external editor. C-s in an agy pane first arms
+      # ~/.gemini/hooks/prompt-editor.sh (agy's `editor`), which then stashes
+      # or restores the prompt instead of opening the editor. The key itself
+      # passes through unchanged in every pane.
+      #
+      # agy leaves the alternate screen to run its editor, which flashes the
+      # shell underneath. With alternate-screen off for one second tmux
+      # ignores both switches, so agy's last frame stays up until it repaints.
+      bind -T root C-s if-shell -F '#{==:#{pane_current_command},agy}' {
+        set -p alternate-screen off
+        run-shell -b -d 1 -C 'set -pu -t "#{pane_id}" alternate-screen'
+        run-shell 'mkdir -p "$HOME/.gemini/prompt-stash" && date +%s > "$HOME/.gemini/prompt-stash/.armed-#{pane_id}"'
+      } \; send-keys C-s
+
       # Session/pane persistence (tmux-resurrect + tmux-continuum)
       # Auto-save every 15 minutes and restore panes when a new tmux server
       # starts. Manual save/restore are available with prefix+S/R.
